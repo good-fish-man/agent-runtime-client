@@ -1,7 +1,9 @@
 package model
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -9,6 +11,32 @@ import (
 func TestParseDownloadSize(t *testing.T) {
 	if got, want := parseDownloadSize("7GB"), uint64(7<<30); got != want {
 		t.Fatalf("parseDownloadSize() = %d, want %d", got, want)
+	}
+}
+
+func TestFindExistingFileSkipsMissingPathsAndDirectories(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "bin", "ollama")
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := findExistingFile(filepath.Join(root, "missing"), root, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != file {
+		t.Fatalf("findExistingFile() = %q, want %q", got, file)
+	}
+}
+
+func TestFindExistingFileReturnsNotFound(t *testing.T) {
+	_, err := findExistingFile(filepath.Join(t.TempDir(), "missing"))
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("findExistingFile() error = %v, want exec.ErrNotFound", err)
 	}
 }
 
