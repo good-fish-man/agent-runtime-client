@@ -480,7 +480,11 @@ func findPythonBinary() (string, error) {
 			return path, nil
 		}
 	}
-	return "", exec.ErrNotFound
+	return findExistingFile(
+		"/opt/homebrew/bin/python3",
+		"/usr/local/bin/python3",
+		"/usr/bin/python3",
+	)
 }
 
 func athenaHome() string {
@@ -535,18 +539,48 @@ func findOllamaBinary() (string, error) {
 		return path, nil
 	}
 	if runtime.GOOS == "darwin" {
-		path := "/Applications/Ollama.app/Contents/Resources/ollama"
-		if _, err := os.Stat(path); err == nil {
-			return path, nil
+		candidates := []string{
+			"/opt/homebrew/bin/ollama",
+			"/usr/local/bin/ollama",
+			"/Applications/Ollama.app/Contents/Resources/ollama",
 		}
+		if home, err := os.UserHomeDir(); err == nil {
+			candidates = append(candidates, filepath.Join(home, ".local", "bin", "ollama"))
+		}
+		return findExistingFile(candidates...)
 	}
 	if runtime.GOOS == "windows" {
 		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-			path := filepath.Join(localAppData, "Programs", "Ollama", "ollama.exe")
-			if _, err := os.Stat(path); err == nil {
-				return path, nil
-			}
+			return findExistingFile(filepath.Join(localAppData, "Programs", "Ollama", "ollama.exe"))
 		}
+	}
+	return "", exec.ErrNotFound
+}
+
+// Finder and desktop launchers commonly omit package-manager directories from PATH.
+func findExistingFile(candidates ...string) (string, error) {
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", exec.ErrNotFound
+}
+
+func findBrewBinary() (string, error) {
+	if path, err := exec.LookPath("brew"); err == nil {
+		return path, nil
+	}
+	return findExistingFile("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
+}
+
+func findWingetBinary() (string, error) {
+	if path, err := exec.LookPath("winget"); err == nil {
+		return path, nil
+	}
+	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+		return findExistingFile(filepath.Join(localAppData, "Microsoft", "WindowsApps", "winget.exe"))
 	}
 	return "", exec.ErrNotFound
 }
@@ -554,10 +588,10 @@ func findOllamaBinary() (string, error) {
 func canInstallOllamaRuntime() bool {
 	switch runtime.GOOS {
 	case "darwin":
-		_, err := exec.LookPath("brew")
+		_, err := findBrewBinary()
 		return err == nil
 	case "windows":
-		_, err := exec.LookPath("winget")
+		_, err := findWingetBinary()
 		return err == nil && runtime.GOARCH == "amd64"
 	default:
 		return false
@@ -568,13 +602,13 @@ func installOllamaRuntime() (string, error) {
 	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		brew, err := exec.LookPath("brew")
+		brew, err := findBrewBinary()
 		if err != nil {
 			return "", fmt.Errorf("未找到 Homebrew，请先从 https://ollama.com/download 安装 Ollama")
 		}
 		command = exec.Command(brew, "install", "ollama")
 	case "windows":
-		winget, err := exec.LookPath("winget")
+		winget, err := findWingetBinary()
 		if err != nil || runtime.GOARCH != "amd64" {
 			return "", fmt.Errorf("当前 Windows 环境不支持自动安装，请从 https://ollama.com/download 安装 Ollama")
 		}
