@@ -1,0 +1,12 @@
+/deploy/bin/
+/bin/
+/dist/
+/coverage/
+/agent-runtime-client
+/go.work
+/go.work.sum
+*.log
+.env
+.env.*
+.DS_Store
+.idea/
