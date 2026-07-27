@@ -1,0 +1,348 @@
+// Package model provides the application service orchestrating SysModel use cases.
+package model
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	assembler "github.com/good-fish-man/agent-runtime-client/application/assembler/model"
+	dto "github.com/good-fish-man/agent-runtime-client/application/dto/model"
+	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/model"
+	srv "github.com/good-fish-man/agent-runtime-client/domain/srv/model"
+	"github.com/good-fish-man/agent-runtime-client/infra/data"
+	"github.com/good-fish-man/agent-runtime-client/pkg/query"
+	"github.com/good-fish-man/agent-runtime-client/types/apierror"
+)
+
+// SysModelService is the application service for model-provider configuration.
+type SysModelService struct {
+	asm *assembler.SysModelAssembler
+	srv *srv.SysModelSvc
+}
+
+// NewSysModelService wires the service over the shared data handle.
+func NewSysModelService(d *data.Data) *SysModelService {
+	return &SysModelService{
+		asm: assembler.NewSysModelAssembler(),
+		srv: srv.NewSysModelSvc(d),
+	}
+}
+
+func (s *SysModelService) CreateSysModel(ctx context.Context, req *dto.CreateSysModelReq) (*dto.CreateSysModelRsp, error) {
+	if err := s.validateModelKey(ctx, req.KeyID, req.CreatedBy, req.Provider, req.BaseUrl); err != nil {
+		return nil, err
+	}
+	en := s.asm.D2ECreate(req)
+	ulid, err := s.srv.Create(ctx, en)
+	if err != nil {
+		return nil, err
+	}
+	return &dto.CreateSysModelRsp{Ulid: ulid}, nil
+}
+
+func (s *SysModelService) DeleteSysModel(ctx context.Context, req *dto.DelSysModelReq) error {
+	if _, err := s.requireOwner(ctx, req.Ulid, req.UserID); err != nil {
+		return err
+	}
+	return s.srv.Delete(ctx, &entity.SysModel{Ulid: req.Ulid})
+}
+
+func (s *SysModelService) UpdateSysModel(ctx context.Context, req *dto.UpdateSysModelReq) error {
+	existing, err := s.requireOwner(ctx, req.Ulid, req.UserID)
+	if err != nil {
+		return err
+	}
+	provider := firstNonEmpty(req.Provider, existing.Provider)
+	baseURL := firstNonEmpty(req.BaseUrl, existing.BaseUrl)
+	keyID := existing.KeyID
+	if req.KeyID != nil {
+		keyID = strings.TrimSpace(*req.KeyID)
+	}
+	if err := s.validateModelKey(ctx, keyID, req.UserID, provider, baseURL); err != nil {
+		return err
+	}
+	req.KeyID = &keyID
+	// Availability is controlled through the administrator-only endpoint.
+	req.Status = ""
+	en := s.asm.D2EUpdate(req)
+	return s.srv.Update(ctx, en)
+}
+
+func (s *SysModelService) UpdateSysModelEnabled(ctx context.Context, req *dto.UpdateSysModelEnabledReq) error {
+	model, err := s.srv.FindById(ctx, req.Ulid)
+	if err != nil {
+		return err
+	}
+	if model == nil || model.Ulid == "" || model.DeletedAt != 0 {
+		return apierror.ErrNotFound.WithMessage("model not found or deleted")
+	}
+	return s.srv.UpdateEnabled(ctx, req.Ulid, req.UpdatedBy, *req.Enabled)
+}
+
+func (s *SysModelService) UpdateSysModelRuntimeMode(ctx context.Context, req *dto.UpdateSysModelRuntimeModeReq) error {
+	model, err := s.srv.FindById(ctx, req.Ulid)
+	if err != nil {
+		return err
+	}
+	if model == nil || model.Ulid == "" || model.DeletedAt != 0 {
+		return apierror.ErrNotFound.WithMessage("model not found or deleted")
+	}
+	if !isLocalModel(model.Provider, model.BaseUrl) {
+		return apierror.ErrBadRequest.WithMessage("只有本地安装的模型支持运行模式设置")
+	}
+	return s.srv.UpdateRuntimeMode(ctx, req.Ulid, req.UpdatedBy, req.RuntimeMode)
+}
+
+func isLocalModel(provider, baseURL string) bool {
+	normalized := strings.ToLower(strings.NewReplacer(" ", "", "-", "", "_", "", ".", "").Replace(provider))
+	return normalized == entity.ProviderOllama || normalized == entity.ProviderDiffusers
+}
+
+func (s *SysModelService) FindSysModelAdminAll(ctx context.Context) ([]*dto.FindSysModelRsp, error) {
+	ens, err := s.srv.FindAll(ctx, []*query.Query{{Key: "deleted_at", Operator: query.OpEq, Value: 0}})
+	if err != nil {
+		return nil, err
+	}
+	result := s.asm.E2DList(ens)
+	for _, item := range result {
+		s.enrichKey(ctx, item)
+	}
+	return result, nil
+}
+
+func (s *SysModelService) FindSysModelAdminByID(ctx context.Context, modelID string) (*dto.FindSysModelRsp, error) {
+	model, err := s.srv.FindById(ctx, modelID)
+	if err != nil {
+		return nil, err
+	}
+	if model == nil || model.Ulid == "" || model.DeletedAt != 0 {
+		return nil, apierror.ErrNotFound.WithMessage("model not found or deleted")
+	}
+	return s.asm.E2DFind(model), nil
+}
+
+func (s *SysModelService) FindSysModelById(ctx context.Context, req *dto.FindSysModelByIdReq) (*dto.FindSysModelRsp, error) {
+	en, err := s.srv.FindById(ctx, req.Ulid)
+	if err != nil {
+		return nil, err
+	}
+	if en == nil || en.Ulid == "" || en.DeletedAt != 0 {
+		return nil, apierror.ErrNotFound.WithMessage("model not found or deleted")
+	}
+	if en.CreatedBy != req.UserID {
+		return nil, apierror.ErrForbidden.WithMessage("只能访问自己绑定的模型")
+	}
+	rsp := s.asm.E2DFind(en)
+	s.enrichKey(ctx, rsp)
+	return rsp, nil
+}
+
+func (s *SysModelService) FindSysModelAll(ctx context.Context, req *dto.FindSysModelAllReq) ([]*dto.FindSysModelRsp, error) {
+	queries := []*query.Query{{Key: "deleted_at", Operator: query.OpEq, Value: 0}}
+	queries = append(queries, &query.Query{Key: "created_by", Operator: query.OpEq, Value: req.UserID})
+	if req.ModelType != "" {
+		queries = append(queries, &query.Query{Key: "model_type", Operator: query.OpEq, Value: req.ModelType})
+	}
+	ens, err := s.srv.FindAll(ctx, queries)
+	if err != nil {
+		return nil, err
+	}
+	result := s.asm.E2DList(ens)
+	for _, item := range result {
+		s.enrichKey(ctx, item)
+	}
+	return result, nil
+}
+
+func (s *SysModelService) FindSysModelPage(ctx context.Context, req *dto.FindSysModelPageReq) (*dto.FindSysModelPageRsp, error) {
+	req.Query = append(req.Query, &query.Query{Key: "deleted_at", Operator: query.OpEq, Value: 0}, &query.Query{Key: "created_by", Operator: query.OpEq, Value: req.UserID})
+	ens, pageData, err := s.srv.FindPage(ctx, req.Query, req.PageData, req.SortData)
+	if err != nil {
+		return nil, err
+	}
+	entries := s.asm.E2DList(ens)
+	for _, item := range entries {
+		s.enrichKey(ctx, item)
+	}
+	return &dto.FindSysModelPageRsp{Entries: entries, PageData: pageData}, nil
+}
+
+func (s *SysModelService) FindModelCatalog(ctx context.Context, req *dto.FindModelCatalogReq) ([]*dto.FindModelCatalogRsp, error) {
+	ens, err := s.srv.FindCatalog(ctx, req.ModelType, req.Provider)
+	if err != nil {
+		return nil, err
+	}
+	return s.asm.CatalogE2DList(ens), nil
+}
+
+func (s *SysModelService) FindModelCatalogByID(ctx context.Context, catalogID string) (*dto.FindModelCatalogRsp, error) {
+	items, err := s.FindModelCatalog(ctx, &dto.FindModelCatalogReq{})
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if item.Ulid == catalogID {
+			return item, nil
+		}
+	}
+	return nil, apierror.ErrNotFound.WithMessage("model catalog item not found")
+}
+
+// FindDefaultModel returns the model marked category=default, or nil if none.
+func (s *SysModelService) FindDefaultModel(ctx context.Context, userID string) (*dto.FindSysModelRsp, error) {
+	queries := []*query.Query{
+		{Key: "deleted_at", Operator: query.OpEq, Value: 0},
+		{Key: "category", Operator: query.OpEq, Value: "default"},
+		{Key: "created_by", Operator: query.OpEq, Value: userID},
+		{Key: "enabled", Operator: query.OpEq, Value: true},
+	}
+	ens, err := s.srv.FindAll(ctx, queries)
+	if err != nil {
+		return nil, err
+	}
+	if len(ens) == 0 {
+		return nil, nil
+	}
+	return s.asm.E2DFind(ens[0]), nil
+}
+
+func (s *SysModelService) requireOwner(ctx context.Context, modelID, userID string) (*entity.SysModel, error) {
+	model, err := s.srv.FindById(ctx, modelID)
+	if err != nil {
+		return nil, err
+	}
+	if model == nil || model.Ulid == "" || model.DeletedAt != 0 {
+		return nil, apierror.ErrNotFound.WithMessage("model not found or deleted")
+	}
+	if model.CreatedBy != userID {
+		return nil, apierror.ErrForbidden.WithMessage("只能使用自己绑定的模型")
+	}
+	return model, nil
+}
+
+func (s *SysModelService) CreateModelKey(ctx context.Context, req *dto.CreateModelKeyReq) (*dto.ModelKeyRsp, error) {
+	key := &entity.SysModelKey{UserID: req.UserID, Name: strings.TrimSpace(req.Name), Provider: strings.TrimSpace(req.Provider), APIKey: strings.TrimSpace(req.APIKey), BaseURL: strings.TrimSpace(req.BaseURL), Enabled: true}
+	id, err := s.srv.CreateKey(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	key.Ulid = id
+	return modelKeyResponse(key, 0), nil
+}
+
+func (s *SysModelService) UpdateModelKey(ctx context.Context, req *dto.UpdateModelKeyReq) error {
+	existing, err := s.requireKeyOwner(ctx, req.Ulid, req.UserID)
+	if err != nil {
+		return err
+	}
+	if req.Provider != "" && !strings.EqualFold(req.Provider, existing.Provider) {
+		count, err := s.srv.CountModelsByKey(ctx, req.Ulid, req.UserID)
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			return apierror.ErrBadRequest.WithMessage("该 Key 已被模型使用，不能修改供应商")
+		}
+	}
+	updated := &entity.SysModelKey{Ulid: req.Ulid, UserID: req.UserID, Name: req.Name, Provider: req.Provider, APIKey: req.APIKey, BaseURL: req.BaseURL, Enabled: existing.Enabled}
+	if req.Enabled != nil {
+		updated.Enabled = *req.Enabled
+	}
+	return s.srv.UpdateKey(ctx, updated)
+}
+
+func (s *SysModelService) DeleteModelKey(ctx context.Context, keyID, userID string) error {
+	if _, err := s.requireKeyOwner(ctx, keyID, userID); err != nil {
+		return err
+	}
+	count, err := s.srv.CountModelsByKey(ctx, keyID, userID)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return apierror.ErrBadRequest.WithMessagef("该 Key 正被 %d 个模型使用，请先更换这些模型的 Key", count)
+	}
+	return s.srv.DeleteKey(ctx, keyID, userID)
+}
+
+func (s *SysModelService) FindModelKeys(ctx context.Context, userID string) ([]*dto.ModelKeyRsp, error) {
+	keys, err := s.srv.FindKeysByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*dto.ModelKeyRsp, 0, len(keys))
+	for _, key := range keys {
+		count, err := s.srv.CountModelsByKey(ctx, key.Ulid, userID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, modelKeyResponse(key, count))
+	}
+	return out, nil
+}
+
+func (s *SysModelService) validateModelKey(ctx context.Context, keyID, userID, provider, baseURL string) error {
+	if strings.TrimSpace(keyID) == "" {
+		if entity.RequiresAPIKey(provider, baseURL) {
+			return apierror.ErrBadRequest.WithMessage("该远程模型需要选择一个模型 Key")
+		}
+		return nil
+	}
+	key, err := s.requireKeyOwner(ctx, keyID, userID)
+	if err != nil {
+		return err
+	}
+	if !key.Enabled {
+		return apierror.ErrBadRequest.WithMessage("选择的模型 Key 已停用")
+	}
+	if provider != "" && !strings.EqualFold(key.Provider, provider) {
+		return apierror.ErrBadRequest.WithMessage(fmt.Sprintf("Key 供应商 %s 与模型供应商 %s 不匹配", key.Provider, provider))
+	}
+	return nil
+}
+
+func firstNonEmpty(value, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return value
+	}
+	return fallback
+}
+
+func (s *SysModelService) requireKeyOwner(ctx context.Context, keyID, userID string) (*entity.SysModelKey, error) {
+	key, err := s.srv.FindKeyByID(ctx, keyID)
+	if err != nil {
+		return nil, err
+	}
+	if key == nil || key.Ulid == "" || key.DeletedAt != 0 {
+		return nil, apierror.ErrNotFound.WithMessage("model key not found")
+	}
+	if key.UserID != userID {
+		return nil, apierror.ErrForbidden.WithMessage("只能使用自己的模型 Key")
+	}
+	return key, nil
+}
+
+func (s *SysModelService) enrichKey(ctx context.Context, rsp *dto.FindSysModelRsp) {
+	if rsp == nil || rsp.KeyID == "" {
+		return
+	}
+	if key, err := s.srv.FindKeyByID(ctx, rsp.KeyID); err == nil && key != nil {
+		rsp.KeyName = key.Name
+	}
+}
+
+func modelKeyResponse(key *entity.SysModelKey, count int64) *dto.ModelKeyRsp {
+	return &dto.ModelKeyRsp{Ulid: key.Ulid, CreatedAt: key.CreatedAt, UpdatedAt: key.UpdatedAt, Name: key.Name, Provider: key.Provider, BaseURL: key.BaseURL, KeyMask: maskKey(key.APIKey), HasKey: key.APIKey != "", Enabled: key.Enabled, ModelCount: count}
+}
+
+func maskKey(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "未设置"
+	}
+	if len(value) <= 8 {
+		return "********"
+	}
+	return value[:4] + "..." + value[len(value)-4:]
+}
