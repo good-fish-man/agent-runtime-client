@@ -10,6 +10,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	converter "github.com/good-fish-man/agent-runtime-client/infra/repository/converter/model"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/model"
+	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 )
 
@@ -28,14 +29,14 @@ func NewSysModelRepo(d *data.Data) *SysModelRepo {
 func (r *SysModelRepo) Create(ctx context.Context, en *entity.SysModel) (string, error) {
 	p := converter.E2PAdd(en)
 	if err := r.data.DB(ctx).Create(p).Error; err != nil {
-		return "", err
+		return "", errtrace.Wrap(err, "Repository")
 	}
 	return p.Ulid, nil
 }
 
 func (r *SysModelRepo) Delete(ctx context.Context, en *entity.SysModel) error {
 	patch := converter.E2PDel(en)
-	return r.data.DB(ctx).Model(&po.SysModel{}).Where("ulid = ?", en.Ulid).Updates(patch).Error
+	return errtrace.Wrap(r.data.DB(ctx).Model(&po.SysModel{}).Where("ulid = ?", en.Ulid).Updates(patch).Error, "Repository")
 }
 
 func (r *SysModelRepo) Update(ctx context.Context, en *entity.SysModel) error {
@@ -71,7 +72,7 @@ func (r *SysModelRepo) Update(ctx context.Context, en *entity.SysModel) error {
 	if patch.UpdatedBy != "" {
 		updates["updated_by"] = patch.UpdatedBy
 	}
-	return r.data.DB(ctx).Model(&po.SysModel{}).Where("ulid = ?", en.Ulid).Updates(updates).Error
+	return errtrace.Wrap(r.data.DB(ctx).Model(&po.SysModel{}).Where("ulid = ?", en.Ulid).Updates(updates).Error, "Repository")
 }
 
 func (r *SysModelRepo) UpdateEnabled(ctx context.Context, ulid, updatedBy string, enabled bool) error {
@@ -89,7 +90,7 @@ func (r *SysModelRepo) UpdateRuntimeMode(ctx context.Context, ulid, updatedBy, r
 func (r *SysModelRepo) CreateKey(ctx context.Context, key *entity.SysModelKey) (string, error) {
 	p := &po.SysModelKey{UserID: key.UserID, Name: key.Name, Provider: key.Provider, APIKey: key.APIKey, BaseURL: key.BaseURL, Enabled: true}
 	if err := r.data.DB(ctx).Create(p).Error; err != nil {
-		return "", err
+		return "", errtrace.Wrap(err, "Repository")
 	}
 	return p.Ulid, nil
 }
@@ -109,17 +110,17 @@ func (r *SysModelRepo) UpdateKey(ctx context.Context, key *entity.SysModelKey) e
 		updates["base_url"] = key.BaseURL
 	}
 	updates["enabled"] = key.Enabled
-	return r.data.DB(ctx).Model(&po.SysModelKey{}).Where("ulid = ? AND user_id = ? AND deleted_at = 0", key.Ulid, key.UserID).Updates(updates).Error
+	return errtrace.Wrap(r.data.DB(ctx).Model(&po.SysModelKey{}).Where("ulid = ? AND user_id = ? AND deleted_at = 0", key.Ulid, key.UserID).Updates(updates).Error, "Repository")
 }
 
 func (r *SysModelRepo) DeleteKey(ctx context.Context, keyID, userID string) error {
-	return r.data.DB(ctx).Model(&po.SysModelKey{}).Where("ulid = ? AND user_id = ? AND deleted_at = 0", keyID, userID).Updates(map[string]any{"deleted_at": time.Now().UnixMilli(), "enabled": false}).Error
+	return errtrace.Wrap(r.data.DB(ctx).Model(&po.SysModelKey{}).Where("ulid = ? AND user_id = ? AND deleted_at = 0", keyID, userID).Updates(map[string]any{"deleted_at": time.Now().UnixMilli(), "enabled": false}).Error, "Repository")
 }
 
 func (r *SysModelRepo) FindKeyByID(ctx context.Context, keyID string) (*entity.SysModelKey, error) {
 	var p po.SysModelKey
 	if err := r.data.DB(ctx).Limit(1).Find(&p, "ulid = ?", keyID).Error; err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.KeyP2E(&p), nil
 }
@@ -143,7 +144,7 @@ func (r *SysModelRepo) FindById(ctx context.Context, ulid string, selectColumn .
 		db = db.Select(selectColumn)
 	}
 	if err := db.Limit(1).Find(&p, "ulid = ?", ulid).Error; err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.P2E(&p), nil
 }
@@ -151,7 +152,7 @@ func (r *SysModelRepo) FindById(ctx context.Context, ulid string, selectColumn .
 func (r *SysModelRepo) FindAll(ctx context.Context, queries []*query.Query, selectArgs ...[]string) ([]*entity.SysModel, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	ps := make([]*po.SysModel, 0)
 	db := r.data.DB(ctx).Model(&po.SysModel{}).Select(query.SelectFields(selectArgs...))
@@ -159,7 +160,7 @@ func (r *SysModelRepo) FindAll(ctx context.Context, queries []*query.Query, sele
 		db = db.Where(where, values...)
 	}
 	if err := db.Order("ulid desc").Find(&ps).Error; err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.P2EList(ps), nil
 }
@@ -167,7 +168,7 @@ func (r *SysModelRepo) FindAll(ctx context.Context, queries []*query.Query, sele
 func (r *SysModelRepo) FindPage(ctx context.Context, queries []*query.Query, reqPage *query.PageData, reqSort *query.SortData, selectArgs ...[]string) ([]*entity.SysModel, *query.PageData, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errtrace.Wrap(err, "Repository")
 	}
 	if reqPage == nil {
 		reqPage = &query.PageData{PageNum: 1, PageSize: 10}
@@ -181,7 +182,7 @@ func (r *SysModelRepo) FindPage(ctx context.Context, queries []*query.Query, req
 
 	var total int64
 	if err := db.Count(&total).Error; err != nil {
-		return nil, nil, err
+		return nil, nil, errtrace.Wrap(err, "Repository")
 	}
 	rspPage := &query.PageData{
 		PageNum:     reqPage.PageNum,
@@ -198,7 +199,7 @@ func (r *SysModelRepo) FindPage(ctx context.Context, queries []*query.Query, req
 		Scopes(query.Paginate(reqPage.PageNum, reqPage.PageSize)).
 		Find(&ps).Error
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.P2EList(ps), rspPage, nil
 }
@@ -214,7 +215,7 @@ func (r *SysModelRepo) FindCatalog(ctx context.Context, modelType, provider stri
 		db = db.Where("provider = ?", provider)
 	}
 	if err := db.Order("sort asc, provider asc, model_family asc, model_version asc").Find(&ps).Error; err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.CatalogP2EList(ps), nil
 }

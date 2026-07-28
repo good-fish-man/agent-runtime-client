@@ -8,6 +8,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	converter "github.com/good-fish-man/agent-runtime-client/infra/repository/converter/user"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/user"
+	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 )
 
@@ -26,19 +27,19 @@ func NewSysLogRepo(d *data.Data) *SysLogRepo {
 func (r *SysLogRepo) Create(ctx context.Context, en *entity.SysLog) (string, error) {
 	p := converter.E2PSysLogAdd(en)
 	if err := r.data.DB(ctx).Create(p).Error; err != nil {
-		return "", err
+		return "", errtrace.Wrap(err, "Repository")
 	}
 	return p.Ulid, nil
 }
 
 func (r *SysLogRepo) Delete(ctx context.Context, en *entity.SysLog) error {
 	patch := converter.E2PSysLogDel(en)
-	return r.data.DB(ctx).Model(&po.SysLog{}).Where("ulid = ?", en.Ulid).Updates(patch).Error
+	return errtrace.Wrap(r.data.DB(ctx).Model(&po.SysLog{}).Where("ulid = ?", en.Ulid).Updates(patch).Error, "Repository")
 }
 
 func (r *SysLogRepo) Update(ctx context.Context, en *entity.SysLog) error {
 	patch := converter.E2PSysLogUpdate(en)
-	return r.data.DB(ctx).Model(&po.SysLog{}).Where("ulid = ?", en.Ulid).Updates(patch).Error
+	return errtrace.Wrap(r.data.DB(ctx).Model(&po.SysLog{}).Where("ulid = ?", en.Ulid).Updates(patch).Error, "Repository")
 }
 
 func (r *SysLogRepo) FindById(ctx context.Context, ulid string, selectColumn ...string) (*entity.SysLog, error) {
@@ -48,7 +49,7 @@ func (r *SysLogRepo) FindById(ctx context.Context, ulid string, selectColumn ...
 		db = db.Select(selectColumn)
 	}
 	if err := db.Limit(1).Find(&p, "ulid = ?", ulid).Error; err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.P2ESysLog(&p), nil
 }
@@ -56,7 +57,7 @@ func (r *SysLogRepo) FindById(ctx context.Context, ulid string, selectColumn ...
 func (r *SysLogRepo) FindByQuery(ctx context.Context, queries []*query.Query) (*entity.SysLog, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	var p po.SysLog
 	db := r.data.DB(ctx).Model(&po.SysLog{})
@@ -64,7 +65,7 @@ func (r *SysLogRepo) FindByQuery(ctx context.Context, queries []*query.Query) (*
 		db = db.Where(where, values...)
 	}
 	if err := db.Limit(1).Find(&p).Error; err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.P2ESysLog(&p), nil
 }
@@ -72,7 +73,7 @@ func (r *SysLogRepo) FindByQuery(ctx context.Context, queries []*query.Query) (*
 func (r *SysLogRepo) FindAll(ctx context.Context, queries []*query.Query, selectArgs ...[]string) ([]*entity.SysLog, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	ps := make([]*po.SysLog, 0)
 	db := r.data.DB(ctx).Model(&po.SysLog{}).Select(query.SelectFields(selectArgs...))
@@ -80,7 +81,7 @@ func (r *SysLogRepo) FindAll(ctx context.Context, queries []*query.Query, select
 		db = db.Where(where, values...)
 	}
 	if err := db.Order("ulid desc").Find(&ps).Error; err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.P2ESysLogs(ps), nil
 }
@@ -88,7 +89,7 @@ func (r *SysLogRepo) FindAll(ctx context.Context, queries []*query.Query, select
 func (r *SysLogRepo) FindPage(ctx context.Context, queries []*query.Query, reqPage *query.PageData, reqSort *query.SortData, selectArgs ...[]string) ([]*entity.SysLog, *query.PageData, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errtrace.Wrap(err, "Repository")
 	}
 	if reqPage == nil {
 		reqPage = &query.PageData{PageNum: 1, PageSize: 10}
@@ -102,7 +103,7 @@ func (r *SysLogRepo) FindPage(ctx context.Context, queries []*query.Query, reqPa
 
 	var total int64
 	if err := db.Count(&total).Error; err != nil {
-		return nil, nil, err
+		return nil, nil, errtrace.Wrap(err, "Repository")
 	}
 	rspPage := &query.PageData{
 		PageNum:     reqPage.PageNum,
@@ -119,7 +120,7 @@ func (r *SysLogRepo) FindPage(ctx context.Context, queries []*query.Query, reqPa
 		Scopes(query.Paginate(reqPage.PageNum, reqPage.PageSize)).
 		Find(&ps).Error
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.P2ESysLogs(ps), rspPage, nil
 }

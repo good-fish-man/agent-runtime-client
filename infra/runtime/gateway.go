@@ -11,6 +11,7 @@ import (
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
 	irepo "github.com/good-fish-man/agent-runtime-client/domain/irepository/runtime"
+	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
 )
 
@@ -33,7 +34,7 @@ func (g *Gateway) Run(ctx context.Context, in *entity.RunInput) (*entity.Complet
 	defer cancel()
 	resp, err := g.client.rpc.Run(ctx, toRunRequest(in))
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "RuntimeGateway.Run.rpc")
 	}
 	return fromRunResponse(resp), nil
 }
@@ -42,9 +43,9 @@ func (g *Gateway) Run(ctx context.Context, in *entity.RunInput) (*entity.Complet
 func (g *Gateway) RunStream(ctx context.Context, in *entity.RunInput, emit irepo.StreamFunc) error {
 	stream, err := g.client.rpc.RunStream(g.streamCtx(ctx, in.TraceID), toRunRequest(in))
 	if err != nil {
-		return err
+		return errtrace.Wrap(err, "RuntimeGateway.RunStream.open")
 	}
-	return consumeStream(stream, emit)
+	return errtrace.Wrap(consumeStream(stream, emit), "RuntimeGateway.RunStream.consume")
 }
 
 // RunAgent executes a non-streaming agent run.
@@ -53,7 +54,7 @@ func (g *Gateway) RunAgent(ctx context.Context, in *entity.AgentInput) (*entity.
 	defer cancel()
 	resp, err := g.client.rpc.RunAgent(ctx, toAgentRequest(in))
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "RuntimeGateway.RunAgent.rpc")
 	}
 	return fromAgentResponse(resp), nil
 }
@@ -62,9 +63,9 @@ func (g *Gateway) RunAgent(ctx context.Context, in *entity.AgentInput) (*entity.
 func (g *Gateway) RunAgentStream(ctx context.Context, in *entity.AgentInput, emit irepo.StreamFunc) error {
 	stream, err := g.client.rpc.RunAgentStream(g.streamCtx(ctx, in.TraceID), toAgentRequest(in))
 	if err != nil {
-		return err
+		return errtrace.Wrap(err, "RuntimeGateway.RunAgentStream.open")
 	}
-	return consumeStream(stream, emit)
+	return errtrace.Wrap(consumeStream(stream, emit), "RuntimeGateway.RunAgentStream.consume")
 }
 
 // Resume resumes a checkpointed run.
@@ -73,7 +74,7 @@ func (g *Gateway) Resume(ctx context.Context, in *entity.ResumeInput) (*entity.R
 	defer cancel()
 	resp, err := g.client.rpc.Resume(ctx, toResumeRequest(in))
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "RuntimeGateway.Resume.rpc")
 	}
 	return fromResumeResponse(resp), nil
 }
@@ -84,7 +85,7 @@ func (g *Gateway) Stop(ctx context.Context, in *entity.StopInput) (*entity.StopR
 	defer cancel()
 	resp, err := g.client.rpc.Stop(ctx, toStopRequest(in))
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "RuntimeGateway.Stop.rpc")
 	}
 	return fromStopResponse(resp), nil
 }
@@ -95,7 +96,7 @@ func (g *Gateway) Health(ctx context.Context, in *entity.HealthInput) (*entity.H
 	defer cancel()
 	resp, err := g.client.rpc.HealthCheck(ctx, toHealthRequest(in))
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "RuntimeGateway.Health.rpc")
 	}
 	return fromHealthResponse(resp), nil
 }
@@ -131,10 +132,10 @@ func consumeStream(stream grpc.ServerStreamingClient[runtimev1.StreamEvent], emi
 			return nil
 		}
 		if err != nil {
-			return err
+			return errtrace.Wrap(err, "RuntimeGateway.consumeStream.recv")
 		}
 		if err := emit(fromStreamEvent(ev)); err != nil {
-			return err
+			return errtrace.Wrap(err, "RuntimeGateway.consumeStream.emit")
 		}
 	}
 }

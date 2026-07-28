@@ -5,11 +5,11 @@ package runtime
 
 import (
 	"context"
-	"github.com/good-fish-man/agent-runtime/log"
 	"strings"
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
 	irepo "github.com/good-fish-man/agent-runtime-client/domain/irepository/runtime"
+	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
 )
@@ -29,33 +29,35 @@ func NewRuntimeSvc(gateway irepo.RuntimeGateway, defaultModel *entity.ModelConfi
 // Run validates and executes a non-streaming run.
 func (s *RuntimeSvc) Run(ctx context.Context, in *entity.RunInput) (*entity.Completion, error) {
 	if err := s.prepareRun(in); err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "RuntimeSvc.Run.prepare")
 	}
-	return s.gateway.Run(ctx, in)
+	value, err := s.gateway.Run(ctx, in)
+	return value, errtrace.Wrap(err, "RuntimeSvc.Run.gateway")
 }
 
 // RunStream validates and executes a streaming run.
 func (s *RuntimeSvc) RunStream(ctx context.Context, in *entity.RunInput, emit irepo.StreamFunc) error {
 	if err := s.prepareRun(in); err != nil {
-		return err
+		return errtrace.Wrap(err, "RuntimeSvc.RunStream.prepare")
 	}
-	return s.gateway.RunStream(ctx, in, emit)
+	return errtrace.Wrap(s.gateway.RunStream(ctx, in, emit), "RuntimeSvc.RunStream.gateway")
 }
 
 // RunAgent validates and executes a non-streaming agent run.
 func (s *RuntimeSvc) RunAgent(ctx context.Context, in *entity.AgentInput) (*entity.AgentResult, error) {
 	if err := s.prepareAgent(in); err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "RuntimeSvc.RunAgent.prepare")
 	}
-	return s.gateway.RunAgent(ctx, in)
+	value, err := s.gateway.RunAgent(ctx, in)
+	return value, errtrace.Wrap(err, "RuntimeSvc.RunAgent.gateway")
 }
 
 // RunAgentStream validates and executes a streaming agent run.
 func (s *RuntimeSvc) RunAgentStream(ctx context.Context, in *entity.AgentInput, emit irepo.StreamFunc) error {
 	if err := s.prepareAgent(in); err != nil {
-		return err
+		return errtrace.Wrap(err, "RuntimeSvc.RunAgentStream.prepare")
 	}
-	return s.gateway.RunAgentStream(ctx, in, emit)
+	return errtrace.Wrap(s.gateway.RunAgentStream(ctx, in, emit), "RuntimeSvc.RunAgentStream.gateway")
 }
 
 // Resume validates and resumes a checkpointed run.
@@ -63,7 +65,8 @@ func (s *RuntimeSvc) Resume(ctx context.Context, in *entity.ResumeInput) (*entit
 	if strings.TrimSpace(in.CheckpointID) == "" {
 		return nil, apierror.ErrBadRequest.WithMessage("checkpoint_id is required")
 	}
-	return s.gateway.Resume(ctx, in)
+	value, err := s.gateway.Resume(ctx, in)
+	return value, errtrace.Wrap(err, "RuntimeSvc.Resume.gateway")
 }
 
 // Stop validates and stops a run.
@@ -71,17 +74,18 @@ func (s *RuntimeSvc) Stop(ctx context.Context, in *entity.StopInput) (*entity.St
 	if strings.TrimSpace(in.CheckpointID) == "" && strings.TrimSpace(in.SessionID) == "" {
 		return nil, apierror.ErrBadRequest.WithMessage("checkpoint_id or session_id is required")
 	}
-	return s.gateway.Stop(ctx, in)
+	value, err := s.gateway.Stop(ctx, in)
+	return value, errtrace.Wrap(err, "RuntimeSvc.Stop.gateway")
 }
 
 // Health probes runtime health.
 func (s *RuntimeSvc) Health(ctx context.Context, in *entity.HealthInput) (*entity.HealthStatus, error) {
-	return s.gateway.Health(ctx, in)
+	value, err := s.gateway.Health(ctx, in)
+	return value, errtrace.Wrap(err, "RuntimeSvc.Health.gateway")
 }
 
 func (s *RuntimeSvc) prepareRun(in *entity.RunInput) error {
 	if in == nil {
-		log.Error("empty run input")
 		return apierror.ErrBadRequest.WithMessage("empty request")
 	}
 	if strings.TrimSpace(in.Prompt) == "" && len(in.Messages) == 0 {
@@ -89,7 +93,7 @@ func (s *RuntimeSvc) prepareRun(in *entity.RunInput) error {
 	}
 	models, err := s.applyDefaultModel(in.Models)
 	if err != nil {
-		return err
+		return errtrace.Wrap(err, "RuntimeSvc.prepareRun.defaultModel")
 	}
 	in.Models = models
 	return nil
@@ -97,16 +101,14 @@ func (s *RuntimeSvc) prepareRun(in *entity.RunInput) error {
 
 func (s *RuntimeSvc) prepareAgent(in *entity.AgentInput) error {
 	if in == nil {
-		log.Error("empty agent input")
 		return apierror.ErrBadRequest.WithMessage("empty request")
 	}
 	if strings.TrimSpace(in.Task) == "" {
-		log.Error("task is required")
 		return apierror.ErrBadRequest.WithMessage("task is required")
 	}
 	models, err := s.applyDefaultModel(in.Models)
 	if err != nil {
-		return err
+		return errtrace.Wrap(err, "RuntimeSvc.prepareAgent.defaultModel")
 	}
 	in.Models = models
 	return nil

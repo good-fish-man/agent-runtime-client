@@ -6,6 +6,7 @@ import (
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/model"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	repo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/model"
+	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 )
 
@@ -20,56 +21,65 @@ func NewSysModelSvc(d *data.Data) *SysModelSvc {
 }
 
 func (s *SysModelSvc) Create(ctx context.Context, en *entity.SysModel) (string, error) {
-	return s.repo.Create(ctx, en)
+	value, err := s.repo.Create(ctx, en)
+	return value, errtrace.Wrap(err, "SysModelSvc.Create")
 }
 
 func (s *SysModelSvc) Delete(ctx context.Context, en *entity.SysModel) error {
-	return s.repo.Delete(ctx, en)
+	return errtrace.Wrap(s.repo.Delete(ctx, en), "SysModelSvc.Delete")
 }
 
 func (s *SysModelSvc) Update(ctx context.Context, en *entity.SysModel) error {
-	return s.repo.Update(ctx, en)
+	return errtrace.Wrap(s.repo.Update(ctx, en), "SysModelSvc.Update")
 }
 
 func (s *SysModelSvc) UpdateEnabled(ctx context.Context, ulid, updatedBy string, enabled bool) error {
-	return s.repo.UpdateEnabled(ctx, ulid, updatedBy, enabled)
+	return errtrace.Wrap(s.repo.UpdateEnabled(ctx, ulid, updatedBy, enabled), "SysModelSvc.UpdateEnabled")
 }
 
 func (s *SysModelSvc) UpdateRuntimeMode(ctx context.Context, ulid, updatedBy, runtimeMode string) error {
-	return s.repo.UpdateRuntimeMode(ctx, ulid, updatedBy, runtimeMode)
+	return errtrace.Wrap(s.repo.UpdateRuntimeMode(ctx, ulid, updatedBy, runtimeMode), "SysModelSvc.UpdateRuntimeMode")
 }
 
 func (s *SysModelSvc) FindById(ctx context.Context, ulid string) (*entity.SysModel, error) {
-	return s.repo.FindById(ctx, ulid)
+	value, err := s.repo.FindById(ctx, ulid)
+	return value, errtrace.Wrap(err, "SysModelSvc.FindById")
 }
 
 func (s *SysModelSvc) FindAll(ctx context.Context, queries []*query.Query) ([]*entity.SysModel, error) {
-	return s.repo.FindAll(ctx, queries)
+	value, err := s.repo.FindAll(ctx, queries)
+	return value, errtrace.Wrap(err, "SysModelSvc.FindAll")
 }
 
 func (s *SysModelSvc) FindPage(ctx context.Context, queries []*query.Query, reqPage *query.PageData, reqSort *query.SortData) ([]*entity.SysModel, *query.PageData, error) {
-	return s.repo.FindPage(ctx, queries, reqPage, reqSort)
+	values, page, err := s.repo.FindPage(ctx, queries, reqPage, reqSort)
+	return values, page, errtrace.Wrap(err, "SysModelSvc.FindPage")
 }
 
 func (s *SysModelSvc) FindCatalog(ctx context.Context, modelType, provider string) ([]*entity.ModelCatalog, error) {
-	return s.repo.FindCatalog(ctx, modelType, provider)
+	value, err := s.repo.FindCatalog(ctx, modelType, provider)
+	return value, errtrace.Wrap(err, "SysModelSvc.FindCatalog")
 }
 
 func (s *SysModelSvc) CreateKey(ctx context.Context, key *entity.SysModelKey) (string, error) {
-	return s.repo.CreateKey(ctx, key)
+	value, err := s.repo.CreateKey(ctx, key)
+	return value, errtrace.Wrap(err, "SysModelSvc.CreateKey")
 }
 func (s *SysModelSvc) UpdateKey(ctx context.Context, key *entity.SysModelKey) error {
-	return s.repo.UpdateKey(ctx, key)
+	return errtrace.Wrap(s.repo.UpdateKey(ctx, key), "SysModelSvc.UpdateKey")
 }
 func (s *SysModelSvc) DeleteKey(ctx context.Context, keyID, userID string) error {
-	return s.repo.DeleteKey(ctx, keyID, userID)
+	return errtrace.Wrap(s.repo.DeleteKey(ctx, keyID, userID), "SysModelSvc.DeleteKey")
 }
 func (s *SysModelSvc) FindKeyByID(ctx context.Context, keyID string) (*entity.SysModelKey, error) {
-	return s.repo.FindKeyByID(ctx, keyID)
+	value, err := s.repo.FindKeyByID(ctx, keyID)
+	return value, errtrace.Wrap(err, "SysModelSvc.FindKeyByID")
 }
 func (s *SysModelSvc) FindKeysByUser(ctx context.Context, userID string) ([]*entity.SysModelKey, error) {
-	return s.repo.FindKeysByUser(ctx, userID)
+	value, err := s.repo.FindKeysByUser(ctx, userID)
+	return value, errtrace.Wrap(err, "SysModelSvc.FindKeysByUser")
 }
 func (s *SysModelSvc) CountModelsByKey(ctx context.Context, keyID, userID string) (int64, error) {
-	return s.repo.CountModelsByKey(ctx, keyID, userID)
+	value, err := s.repo.CountModelsByKey(ctx, keyID, userID)
+	return value, errtrace.Wrap(err, "SysModelSvc.CountModelsByKey")
 }

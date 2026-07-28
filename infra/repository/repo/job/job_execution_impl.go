@@ -8,6 +8,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	converter "github.com/good-fish-man/agent-runtime-client/infra/repository/converter/job"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/job"
+	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 )
 
@@ -26,19 +27,19 @@ func NewJobExecutionRepo(d *data.Data) *JobExecutionRepo {
 func (r *JobExecutionRepo) Create(ctx context.Context, en *entity.JobExecution) (string, error) {
 	p := converter.E2PJobExecutionAdd(en)
 	if err := r.data.DB(ctx).Create(p).Error; err != nil {
-		return "", err
+		return "", errtrace.Wrap(err, "Repository")
 	}
 	return p.Ulid, nil
 }
 
 func (r *JobExecutionRepo) Delete(ctx context.Context, en *entity.JobExecution) error {
 	patch := converter.E2PJobExecutionDel(en)
-	return r.data.DB(ctx).Model(&po.JobExecutionPO{}).Where("ulid = ?", en.Ulid).Updates(patch).Error
+	return errtrace.Wrap(r.data.DB(ctx).Model(&po.JobExecutionPO{}).Where("ulid = ?", en.Ulid).Updates(patch).Error, "Repository")
 }
 
 func (r *JobExecutionRepo) Update(ctx context.Context, en *entity.JobExecution) error {
 	patch := converter.E2PJobExecutionUpdate(en)
-	return r.data.DB(ctx).Model(&po.JobExecutionPO{}).Where("ulid = ?", en.Ulid).Updates(patch).Error
+	return errtrace.Wrap(r.data.DB(ctx).Model(&po.JobExecutionPO{}).Where("ulid = ?", en.Ulid).Updates(patch).Error, "Repository")
 }
 
 func (r *JobExecutionRepo) FindById(ctx context.Context, ulid string, selectColumn ...string) (*entity.JobExecution, error) {
@@ -48,7 +49,7 @@ func (r *JobExecutionRepo) FindById(ctx context.Context, ulid string, selectColu
 		db = db.Select(selectColumn)
 	}
 	if err := db.Limit(1).Find(&p, "ulid = ? AND deleted_at = 0", ulid).Error; err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.P2EJobExecution(&p), nil
 }
@@ -56,7 +57,7 @@ func (r *JobExecutionRepo) FindById(ctx context.Context, ulid string, selectColu
 func (r *JobExecutionRepo) FindByQuery(ctx context.Context, queries []*query.Query) (*entity.JobExecution, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	var p po.JobExecutionPO
 	db := r.data.DB(ctx).Model(&po.JobExecutionPO{}).Where("deleted_at = ?", 0)
@@ -64,7 +65,7 @@ func (r *JobExecutionRepo) FindByQuery(ctx context.Context, queries []*query.Que
 		db = db.Where(where, values...)
 	}
 	if err := db.Limit(1).Find(&p).Error; err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.P2EJobExecution(&p), nil
 }
@@ -72,7 +73,7 @@ func (r *JobExecutionRepo) FindByQuery(ctx context.Context, queries []*query.Que
 func (r *JobExecutionRepo) FindAll(ctx context.Context, queries []*query.Query, selectArgs ...[]string) ([]*entity.JobExecution, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	ps := make([]*po.JobExecutionPO, 0)
 	db := r.data.DB(ctx).Model(&po.JobExecutionPO{}).Select(query.SelectFields(selectArgs...)).Where("deleted_at = ?", 0)
@@ -80,7 +81,7 @@ func (r *JobExecutionRepo) FindAll(ctx context.Context, queries []*query.Query, 
 		db = db.Where(where, values...)
 	}
 	if err := db.Order("ulid desc").Find(&ps).Error; err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.P2EJobExecutions(ps), nil
 }
@@ -88,7 +89,7 @@ func (r *JobExecutionRepo) FindAll(ctx context.Context, queries []*query.Query, 
 func (r *JobExecutionRepo) FindPage(ctx context.Context, queries []*query.Query, reqPage *query.PageData, reqSort *query.SortData, selectArgs ...[]string) ([]*entity.JobExecution, *query.PageData, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errtrace.Wrap(err, "Repository")
 	}
 	if reqPage == nil {
 		reqPage = &query.PageData{PageNum: 1, PageSize: 10}
@@ -102,7 +103,7 @@ func (r *JobExecutionRepo) FindPage(ctx context.Context, queries []*query.Query,
 
 	var total int64
 	if err := db.Count(&total).Error; err != nil {
-		return nil, nil, err
+		return nil, nil, errtrace.Wrap(err, "Repository")
 	}
 	rspPage := &query.PageData{
 		PageNum:     reqPage.PageNum,
@@ -119,7 +120,7 @@ func (r *JobExecutionRepo) FindPage(ctx context.Context, queries []*query.Query,
 		Scopes(query.Paginate(reqPage.PageNum, reqPage.PageSize)).
 		Find(&ps).Error
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.P2EJobExecutions(ps), rspPage, nil
 }
@@ -131,7 +132,7 @@ func (r *JobExecutionRepo) FindByAgentId(ctx context.Context, agentId string, li
 		Order("trigger_time DESC").
 		Limit(limit).
 		Find(&ps).Error; err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "Repository")
 	}
 	return converter.P2EJobExecutions(ps), nil
 }
@@ -145,7 +146,7 @@ func (r *JobExecutionRepo) DeleteOldByAgentId(ctx context.Context, agentId strin
 				ORDER BY trigger_time DESC LIMIT ?
 			) t
 		)`
-	return r.data.DB(ctx).Exec(sql, agentId, agentId, keepCount).Error
+	return errtrace.Wrap(r.data.DB(ctx).Exec(sql, agentId, agentId, keepCount).Error, "Repository")
 }
 
 func (r *JobExecutionRepo) CountByAgentId(ctx context.Context, agentId string) (int, error) {

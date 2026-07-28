@@ -18,6 +18,8 @@ import (
 	srv "github.com/good-fish-man/agent-runtime-client/domain/srv/user"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	userpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/user"
+	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
+	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 )
@@ -44,7 +46,7 @@ func (s *SysUserService) CreateSysUser(ctx context.Context, req *dto.CreateSysUs
 	if strings.TrimSpace(req.Password) != "" {
 		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 		if err != nil {
-			return nil, err
+			return nil, errtrace.Wrap(err, "SysUserService.CreateSysUser.hashPassword")
 		}
 		req.Password = string(hash)
 	}
@@ -53,7 +55,7 @@ func (s *SysUserService) CreateSysUser(ctx context.Context, req *dto.CreateSysUs
 	if en.NickName != "" {
 		existing, err := s.userSv.FindSysUserByQuery(ctx, []*query.Query{{Key: "nick_name", Value: en.NickName, Operator: query.OpEq}})
 		if err != nil {
-			return nil, err
+			return nil, errtrace.Wrap(err, "SysUserService.CreateSysUser.findNickname")
 		}
 		if existing != nil && existing.Ulid != "" && existing.DeletedAt == 0 {
 			return nil, apierror.ErrBadRequest.WithMessage(fmt.Sprintf("the nick_name: %s has", en.NickName))
@@ -62,7 +64,7 @@ func (s *SysUserService) CreateSysUser(ctx context.Context, req *dto.CreateSysUs
 
 	ulid, err := s.userSv.CreateSysUser(ctx, en)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysUserService.CreateSysUser.create")
 	}
 	return &dto.CreateSysUserRsp{Ulid: ulid}, nil
 }
@@ -75,14 +77,14 @@ func (s *SysUserService) Register(ctx context.Context, req *dto.RegisterReq) (*d
 	}
 	existing, err := s.userSv.FindSysUserByQuery(ctx, []*query.Query{{Key: "member_code", Value: username, Operator: query.OpEq}})
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysUserService.Register.findExisting")
 	}
 	if existing != nil && existing.Ulid != "" && existing.DeletedAt == 0 {
 		return nil, apierror.ErrBadRequest.WithMessage("用户名已存在")
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysUserService.Register.hashPassword")
 	}
 	nickname := strings.TrimSpace(req.NickName)
 	if nickname == "" {
@@ -91,7 +93,7 @@ func (s *SysUserService) Register(ctx context.Context, req *dto.RegisterReq) (*d
 	user := &entity.SysUser{MemberCode: username, NickName: nickname, Password: string(hash), State: 1}
 	userID, err := s.userSv.CreateSysUser(ctx, user)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysUserService.Register.create")
 	}
 	user.Ulid = userID
 	return s.issueSession(ctx, user)
@@ -104,7 +106,7 @@ func (s *SysUserService) Login(ctx context.Context, req *dto.LoginReq) (*dto.Log
 		{Key: "deleted_at", Value: 0, Operator: query.OpEq},
 	})
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysUserService.Login.findUser")
 	}
 	if user == nil || user.Ulid == "" || user.State != 1 || bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)) != nil {
 		return nil, apierror.ErrUnauthorized.WithMessage("用户名或密码错误")
@@ -115,13 +117,13 @@ func (s *SysUserService) Login(ctx context.Context, req *dto.LoginReq) (*dto.Log
 func (s *SysUserService) issueSession(ctx context.Context, user *entity.SysUser) (*dto.LoginRsp, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysUserService.issueSession.generateToken")
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	expiresAt := time.Now().Add(30 * 24 * time.Hour)
 	session := &userpo.SysUserSession{UserID: user.Ulid, TokenHash: middleware.TokenHash(token), ExpiresAt: expiresAt.UnixMilli()}
 	if err := s.data.DB(ctx).Create(session).Error; err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysUserService.issueSession.createSession")
 	}
 	return &dto.LoginRsp{
 		AccessToken: token,
@@ -133,24 +135,28 @@ func (s *SysUserService) issueSession(ctx context.Context, user *entity.SysUser)
 }
 
 func (s *SysUserService) Logout(ctx context.Context, tokenHash string) error {
-	return s.data.DB(ctx).Model(&userpo.SysUserSession{}).Where("token_hash = ?", tokenHash).Update("revoked_at", time.Now().UnixMilli()).Error
+	return errtrace.Wrap(s.data.DB(ctx).Model(&userpo.SysUserSession{}).Where("token_hash = ?", tokenHash).Update("revoked_at", time.Now().UnixMilli()).Error, "SysUserService.Logout")
 }
 
 func (s *SysUserService) DeleteSysUser(ctx context.Context, req *dto.DelSysUsersReq) error {
 	en := s.asm.D2EDeleteSysUser(req)
 	if err := s.userSv.DeleteSysUser(ctx, en); err != nil {
-		return err
+		return errtrace.Wrap(err, "SysUserService.DeleteSysUser")
 	}
-	_, _ = s.logSvc.CreateSysLog(ctx, &entity.SysLog{CreatedBy: req.DeletedBy, Msg: "SysUser.Delete"})
+	if _, err := s.logSvc.CreateSysLog(ctx, &entity.SysLog{CreatedBy: req.DeletedBy, Msg: "SysUser.Delete"}); err != nil {
+		log.WarnwCtx(ctx, "audit log write failed", "operation", "SysUser.Delete", "error_chain", errtrace.Format(errtrace.Wrap(err, "SysUserService.DeleteSysUser.audit")))
+	}
 	return nil
 }
 
 func (s *SysUserService) UpdateSysUser(ctx context.Context, req *dto.UpdateSysUserReq) error {
 	en := s.asm.D2EUpdateSysUser(req)
 	if err := s.userSv.UpdateSysUser(ctx, en); err != nil {
-		return err
+		return errtrace.Wrap(err, "SysUserService.UpdateSysUser")
 	}
-	_, _ = s.logSvc.CreateSysLog(ctx, &entity.SysLog{CreatedBy: req.UpdatedBy, Msg: "SysUser.Update"})
+	if _, err := s.logSvc.CreateSysLog(ctx, &entity.SysLog{CreatedBy: req.UpdatedBy, Msg: "SysUser.Update"}); err != nil {
+		log.WarnwCtx(ctx, "audit log write failed", "operation", "SysUser.Update", "error_chain", errtrace.Format(errtrace.Wrap(err, "SysUserService.UpdateSysUser.audit")))
+	}
 	return nil
 }
 
@@ -161,7 +167,7 @@ func (s *SysUserService) UpdateAvatar(ctx context.Context, userID, avatarURL str
 		return nil, apierror.ErrBadRequest.WithMessage("用户或头像地址不能为空")
 	}
 	if err := s.userSv.UpdateSysUser(ctx, &entity.SysUser{Ulid: userID, UpdatedBy: userID, AvatarURL: avatarURL}); err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysUserService.UpdateAvatar")
 	}
 	return s.FindSysUserById(ctx, &dto.FindSysUserByIdReq{Ulid: userID})
 }
@@ -169,7 +175,7 @@ func (s *SysUserService) UpdateAvatar(ctx context.Context, userID, avatarURL str
 func (s *SysUserService) FindSysUserById(ctx context.Context, req *dto.FindSysUserByIdReq) (*dto.FindSysUserRsp, error) {
 	en, err := s.userSv.FindSysUserById(ctx, req.Ulid)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysUserService.FindSysUserById")
 	}
 	if en == nil || en.Ulid == "" || en.DeletedAt != 0 {
 		return nil, apierror.ErrNotFound.WithMessage(fmt.Sprintf("user_id: %s, info not found", req.Ulid))
@@ -180,7 +186,7 @@ func (s *SysUserService) FindSysUserById(ctx context.Context, req *dto.FindSysUs
 func (s *SysUserService) FindSysUserByQuery(ctx context.Context, req *dto.FindSysUserByQueryReq) (*dto.FindSysUserRsp, error) {
 	en, err := s.userSv.FindSysUserByQuery(ctx, req.Query)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysUserService.FindSysUserByQuery")
 	}
 	if en == nil || en.Ulid == "" || en.DeletedAt != 0 {
 		return nil, apierror.ErrNotFound.WithMessage("user not found")
@@ -191,7 +197,7 @@ func (s *SysUserService) FindSysUserByQuery(ctx context.Context, req *dto.FindSy
 func (s *SysUserService) FindSysUserAll(ctx context.Context, req *dto.FindSysUserAllReq) ([]*dto.FindSysUserRsp, error) {
 	ens, err := s.userSv.FindSysUserAll(ctx, req.Query)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysUserService.FindSysUserAll")
 	}
 	return s.asm.E2DGetSysUsers(ens), nil
 }
@@ -199,7 +205,7 @@ func (s *SysUserService) FindSysUserAll(ctx context.Context, req *dto.FindSysUse
 func (s *SysUserService) FindSysUserPage(ctx context.Context, req *dto.FindSysUserPageReq) (*dto.FindSysUserPageRsp, error) {
 	ens, pageData, err := s.userSv.FindSysUserPage(ctx, req.Query, req.PageData, req.SortData)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysUserService.FindSysUserPage")
 	}
 	return &dto.FindSysUserPageRsp{Entries: s.asm.E2DGetSysUsers(ens), PageData: pageData}, nil
 }
