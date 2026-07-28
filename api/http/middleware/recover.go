@@ -17,7 +17,7 @@ func Recover() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Errorf("panic recovered: %v\n%s", r, debug.Stack())
+				log.ErrorfCtx(c.Request.Context(), "panic recovered method=%s path=%s err=%v\n%s", c.Request.Method, c.Request.URL.RequestURI(), r, debug.Stack())
 				if !c.Writer.Written() {
 					response.Err(c, apierror.ErrInternal.WithMessagef("%v", r))
 				}

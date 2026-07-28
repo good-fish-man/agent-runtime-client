@@ -77,11 +77,10 @@ func (w *responseLogWriter) isStream() bool {
 }
 
 func (w *responseLogWriter) bodyString() string {
-	body := w.body.String()
 	if w.truncated {
-		return body + "...<truncated>"
+		return "<truncated>"
 	}
-	return body
+	return redactSensitiveBody(w.body.Bytes(), w.Header().Get("Content-Type"))
 }
 
 // ReqBody logs request and response summaries. Streaming responses are not
@@ -90,6 +89,7 @@ func ReqBody() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		requestBody := readRequestBodyForLog(c.Request)
+		requestPath := requestPathForLog(c.Request)
 
 		blw := &responseLogWriter{
 			ResponseWriter: c.Writer,
@@ -100,19 +100,22 @@ func ReqBody() gin.HandlerFunc {
 
 		log.Infof("==== Request ====")
 		log.Infof("Path=%s,Method=%s,Query=%s,Headers=%v,Body=%s",
-			c.Request.URL.Path,
+			requestPath,
 			c.Request.Method,
 			c.Request.URL.RawQuery,
-			c.Request.Header,
+			redactSensitiveHeaders(c.Request.Header),
 			requestBody,
 		)
 
 		c.Next()
 
 		cost := time.Since(start)
+		logRequestError(c, requestPath, cost)
 		log.Infof("==== Response ====")
 		if blw.isStream() {
-			log.Infof("Status=%d,Stream=true,Bytes=%d,Writes=%d,Events=%d,Cost=%v",
+			log.Infof("Path=%s,Method=%s,Status=%d,Stream=true,Bytes=%d,Writes=%d,Events=%d,Cost=%v",
+				requestPath,
+				c.Request.Method,
 				blw.Status(),
 				blw.bytes,
 				blw.writes,
@@ -121,13 +124,59 @@ func ReqBody() gin.HandlerFunc {
 			)
 			return
 		}
-		log.Infof("Status=%d,Body=%s,Bytes=%d,Cost=%v",
+		log.Infof("Path=%s,Method=%s,Status=%d,Body=%s,Bytes=%d,Cost=%v",
+			requestPath,
+			c.Request.Method,
 			blw.Status(),
 			blw.bodyString(),
 			blw.bytes,
 			cost,
 		)
 	}
+}
+
+func requestPathForLog(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return ""
+	}
+	return r.URL.EscapedPath()
+}
+
+func logRequestError(c *gin.Context, path string, cost time.Duration) {
+	status := c.Writer.Status()
+	var requestErr error
+	if len(c.Errors) > 0 {
+		requestErr = c.Errors.Last().Err
+	}
+	if status < http.StatusBadRequest && requestErr == nil {
+		return
+	}
+	kv := []any{
+		"method", c.Request.Method,
+		"path", path,
+		"query", c.Request.URL.RawQuery,
+		"route", c.FullPath(),
+		"status", status,
+		"cost_ms", cost.Milliseconds(),
+	}
+	if requestErr != nil {
+		kv = append(kv, "err", requestErr)
+	}
+	if status >= http.StatusInternalServerError || requestErr != nil && status < http.StatusBadRequest {
+		log.ErrorwCtx(c.Request.Context(), "http request failed", kv...)
+		return
+	}
+	log.WarnwCtx(c.Request.Context(), "http request rejected", kv...)
+}
+
+func redactSensitiveHeaders(headers http.Header) http.Header {
+	redacted := headers.Clone()
+	for _, key := range []string{"Authorization", "Cookie", "Set-Cookie", "X-Api-Key", "Api-Key"} {
+		if redacted.Get(key) != "" {
+			redacted.Set(key, "******")
+		}
+	}
+	return redacted
 }
 
 func readRequestBodyForLog(r *http.Request) string {
