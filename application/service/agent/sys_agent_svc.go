@@ -12,6 +12,7 @@ import (
 	srv "github.com/good-fish-man/agent-runtime-client/domain/srv/agent"
 	modelsrv "github.com/good-fish-man/agent-runtime-client/domain/srv/model"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
+	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 )
@@ -54,18 +55,18 @@ func NewSysAgentService(d *data.Data) *SysAgentService {
 func (s *SysAgentService) CreateSysAgent(ctx context.Context, req *dto.CreateSysAgentReq) (*dto.CreateSysAgentRsp, error) {
 	req.IsSystem = false
 	if err := s.validateModelBinding(ctx, req.CreatedBy, req.Model); err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysAgentService")
 	}
 	if err := s.validateEmbeddingBinding(ctx, req.CreatedBy, req.EmbeddingModel); err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysAgentService")
 	}
 	if err := s.validateImageBinding(ctx, req.CreatedBy, req.ImageModel); err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysAgentService")
 	}
 	en := s.asm.D2ECreate(req)
 	ulid, err := s.srv.Create(ctx, en)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysAgentService")
 	}
 	return &dto.CreateSysAgentRsp{Ulid: ulid}, nil
 }
@@ -73,7 +74,7 @@ func (s *SysAgentService) CreateSysAgent(ctx context.Context, req *dto.CreateSys
 func (s *SysAgentService) DeleteSysAgent(ctx context.Context, req *dto.DelSysAgentReq) error {
 	existing, err := s.srv.FindById(ctx, req.Ulid)
 	if err != nil {
-		return err
+		return errtrace.Wrap(err, "SysAgentService")
 	}
 	if existing == nil || existing.Ulid == "" || existing.DeletedAt != 0 {
 		return apierror.ErrNotFound.WithMessage("agent not found")
@@ -84,30 +85,30 @@ func (s *SysAgentService) DeleteSysAgent(ctx context.Context, req *dto.DelSysAge
 	if existing.CreatedBy != req.UserID {
 		return apierror.ErrForbidden.WithMessage("只能删除自己的 Agent")
 	}
-	return s.srv.Delete(ctx, s.asm.D2EDelete(req))
+	return errtrace.Wrap(s.srv.Delete(ctx, s.asm.D2EDelete(req)), "SysAgentService.DeleteSysAgent")
 }
 
 func (s *SysAgentService) UpdateSysAgent(ctx context.Context, req *dto.UpdateSysAgentReq) error {
 	existing, err := s.srv.FindById(ctx, req.Ulid)
 	if err != nil {
-		return err
+		return errtrace.Wrap(err, "SysAgentService")
 	}
 	if existing == nil || existing.Ulid == "" || existing.DeletedAt != 0 {
 		return apierror.ErrNotFound.WithMessage("agent not found")
 	}
 	if existing.IsSystem {
 		if err := s.validateModelBinding(ctx, req.UserID, req.Model); err != nil {
-			return err
+			return errtrace.Wrap(err, "SysAgentService")
 		}
 		if err := s.validateEmbeddingBinding(ctx, req.UserID, req.EmbeddingModel); err != nil {
-			return err
+			return errtrace.Wrap(err, "SysAgentService")
 		}
 		if err := s.validateImageBinding(ctx, req.UserID, req.ImageModel); err != nil {
-			return err
+			return errtrace.Wrap(err, "SysAgentService")
 		}
-		return s.srv.UpsertUserModel(ctx, &entity.SysAgentUserModel{
+		return errtrace.Wrap(s.srv.UpsertUserModel(ctx, &entity.SysAgentUserModel{
 			UserID: req.UserID, AgentID: existing.Ulid, Model: req.Model, EmbeddingModel: req.EmbeddingModel, ImageModel: req.ImageModel,
-		})
+		}), "SysAgentService.UpdateSysAgent.upsertUserModel")
 	}
 	if existing.CreatedBy != req.UserID {
 		return apierror.ErrForbidden.WithMessage("只能修改自己的 Agent")
@@ -116,18 +117,18 @@ func (s *SysAgentService) UpdateSysAgent(ctx context.Context, req *dto.UpdateSys
 		req.Model = existing.Model
 	}
 	if err := s.validateModelBinding(ctx, req.UserID, req.Model); err != nil {
-		return err
+		return errtrace.Wrap(err, "SysAgentService")
 	}
 	if err := s.validateEmbeddingBinding(ctx, req.UserID, req.EmbeddingModel); err != nil {
-		return err
+		return errtrace.Wrap(err, "SysAgentService")
 	}
 	if err := s.validateImageBinding(ctx, req.UserID, req.ImageModel); err != nil {
-		return err
+		return errtrace.Wrap(err, "SysAgentService")
 	}
 	req.Config = preserveSensitiveConfig(existing.Config, req.Config)
 	req.ConfigJson = preserveSensitiveConfig(existing.ConfigJson, req.ConfigJson)
 	en := s.asm.D2EUpdate(req)
-	return s.srv.Update(ctx, en)
+	return errtrace.Wrap(s.srv.Update(ctx, en), "SysAgentService.UpdateSysAgent")
 }
 
 func preserveSensitiveConfig(existingRaw, incomingRaw string) string {
@@ -209,15 +210,15 @@ func isSensitiveConfigKey(key string) bool {
 
 func (s *SysAgentService) UpdateSysAgentEnabled(ctx context.Context, req *dto.UpdateSysAgentEnabledReq) error {
 	if _, err := s.requireOwner(ctx, req.Ulid, req.UserID); err != nil {
-		return err
+		return errtrace.Wrap(err, "SysAgentService")
 	}
-	return s.srv.UpdateEnabled(ctx, req.Ulid, req.Enabled)
+	return errtrace.Wrap(s.srv.UpdateEnabled(ctx, req.Ulid, req.Enabled), "SysAgentService.UpdateSysAgentEnabled")
 }
 
 func (s *SysAgentService) FindSysAgentById(ctx context.Context, req *dto.FindSysAgentByIdReq) (*dto.FindSysAgentRsp, error) {
 	en, err := s.srv.FindById(ctx, req.Ulid)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysAgentService")
 	}
 	if en == nil || en.Ulid == "" || en.DeletedAt != 0 {
 		return nil, apierror.ErrNotFound.WithMessage("agent not found or deleted")
@@ -227,7 +228,7 @@ func (s *SysAgentService) FindSysAgentById(ctx context.Context, req *dto.FindSys
 	}
 	if en.IsSystem {
 		if err := s.applyUserModel(ctx, req.UserID, en); err != nil {
-			return nil, err
+			return nil, errtrace.Wrap(err, "SysAgentService")
 		}
 	}
 	return s.asm.E2DFind(en), nil
@@ -236,12 +237,12 @@ func (s *SysAgentService) FindSysAgentById(ctx context.Context, req *dto.FindSys
 func (s *SysAgentService) FindSysAgentAll(ctx context.Context, req *dto.FindSysAgentAllReq) ([]*dto.FindSysAgentRsp, error) {
 	ens, err := s.srv.FindVisible(ctx, req.UserID, req.Name, agentSummaryFields)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysAgentService")
 	}
 	for _, agent := range ens {
 		if agent.IsSystem {
 			if err := s.applyUserModel(ctx, req.UserID, agent); err != nil {
-				return nil, err
+				return nil, errtrace.Wrap(err, "SysAgentService")
 			}
 		}
 	}
@@ -252,7 +253,7 @@ func (s *SysAgentService) FindSysAgentPage(ctx context.Context, req *dto.FindSys
 	req.Query = append(req.Query, &query.Query{Key: "deleted_at", Operator: query.OpEq, Value: 0}, &query.Query{Key: "created_by", Operator: query.OpEq, Value: req.UserID})
 	ens, pageData, err := s.srv.FindPage(ctx, req.Query, req.PageData, req.SortData, agentSummaryFields)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysAgentService")
 	}
 	return &dto.FindSysAgentPageRsp{Entries: s.asm.E2DList(ens), PageData: pageData}, nil
 }
@@ -260,7 +261,7 @@ func (s *SysAgentService) FindSysAgentPage(ctx context.Context, req *dto.FindSys
 func (s *SysAgentService) UploadSysAgent(ctx context.Context, req *dto.UploadSysAgentReq) (*dto.CreateSysAgentRsp, error) {
 	existing, err := s.srv.FindAll(ctx, []*query.Query{{Key: "name", Operator: query.OpEq, Value: req.Name}, {Key: "created_by", Operator: query.OpEq, Value: req.CreatedBy}, {Key: "deleted_at", Operator: query.OpEq, Value: 0}})
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysAgentService")
 	}
 	if len(existing) > 0 {
 		return nil, apierror.ErrBadRequest.WithMessage("agent name already exists")
@@ -282,13 +283,14 @@ func (s *SysAgentService) UploadSysAgent(ctx context.Context, req *dto.UploadSys
 		IsPeriodic:     req.IsPeriodic,
 		CronRule:       req.CronRule,
 	}
-	return s.CreateSysAgent(ctx, createReq)
+	response, err := s.CreateSysAgent(ctx, createReq)
+	return response, errtrace.Wrap(err, "SysAgentService.UploadSysAgent")
 }
 
 func (s *SysAgentService) requireOwner(ctx context.Context, agentID, userID string) (*entity.SysAgent, error) {
 	agent, err := s.srv.FindById(ctx, agentID)
 	if err != nil {
-		return nil, err
+		return nil, errtrace.Wrap(err, "SysAgentService")
 	}
 	if agent == nil || agent.Ulid == "" || agent.DeletedAt != 0 {
 		return nil, apierror.ErrNotFound.WithMessage("agent not found or deleted")
@@ -306,7 +308,7 @@ func (s *SysAgentService) validateModelBinding(ctx context.Context, userID, mode
 	}
 	model, err := s.modelSrv.FindById(ctx, modelID)
 	if err != nil {
-		return err
+		return errtrace.Wrap(err, "SysAgentService")
 	}
 	if model == nil || model.Ulid == "" || model.DeletedAt != 0 {
 		return apierror.ErrModelBindingRequired.WithMessage("Agent 绑定的模型不存在")
@@ -327,7 +329,7 @@ func (s *SysAgentService) validateEmbeddingBinding(ctx context.Context, userID, 
 	}
 	model, err := s.modelSrv.FindById(ctx, modelID)
 	if err != nil {
-		return err
+		return errtrace.Wrap(err, "SysAgentService")
 	}
 	if model == nil || model.Ulid == "" || model.DeletedAt != 0 {
 		return apierror.ErrBadRequest.WithMessage("Agent 绑定的 Embedding 模型不存在")
@@ -348,7 +350,7 @@ func (s *SysAgentService) validateImageBinding(ctx context.Context, userID, mode
 	}
 	model, err := s.modelSrv.FindById(ctx, modelID)
 	if err != nil {
-		return err
+		return errtrace.Wrap(err, "SysAgentService")
 	}
 	if model == nil || model.Ulid == "" || model.DeletedAt != 0 {
 		return apierror.ErrBadRequest.WithMessage("Agent 绑定的图片模型不存在")
@@ -365,7 +367,7 @@ func (s *SysAgentService) validateImageBinding(ctx context.Context, userID, mode
 func (s *SysAgentService) applyUserModel(ctx context.Context, userID string, agent *entity.SysAgent) error {
 	binding, err := s.srv.FindUserModel(ctx, userID, agent.Ulid)
 	if err != nil {
-		return err
+		return errtrace.Wrap(err, "SysAgentService")
 	}
 	if binding == nil {
 		agent.Model = ""
@@ -389,5 +391,6 @@ func modelBindingConfig(modelID, embeddingModelID, imageModelID string) string {
 
 // FindPeriodicAgents finds all periodic agents for callers that synchronize jobs.
 func (s *SysAgentService) FindPeriodicAgents(ctx context.Context) ([]*entity.SysAgent, error) {
-	return s.srv.FindPeriodicEnabled(ctx)
+	values, err := s.srv.FindPeriodicEnabled(ctx)
+	return values, errtrace.Wrap(err, "SysAgentService.FindPeriodicAgents")
 }
