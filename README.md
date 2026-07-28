@@ -94,6 +94,7 @@ password: athena
 ```
 
 Change this password before exposing the service outside a trusted local environment.
+The account is seeded only when it is absent; restarting the service does not recreate it or reset a changed password.
 
 For an automated local installation with managed PostgreSQL, use [`athena-launcher`](https://github.com/good-fish-man/athena-launcher).
 
