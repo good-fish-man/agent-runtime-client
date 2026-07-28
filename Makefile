@@ -16,7 +16,7 @@ build:
 	CGO_ENABLED=0 go build -ldflags="-s -w" -o deploy/bin/$(APP) .
 
 run:
-	go run . --env debug
+	go run . --config manifest/config/config.yaml
 
 test:
 	go test -cover ./...
