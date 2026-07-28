@@ -12,7 +12,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	converter "github.com/good-fish-man/agent-runtime-client/infra/repository/converter/agent"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/agent"
-	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
+	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 )
 
@@ -31,24 +31,24 @@ func NewSysAgentRepo(d *data.Data) *SysAgentRepo {
 func (r *SysAgentRepo) Create(ctx context.Context, en *entity.SysAgent) (string, error) {
 	p := converter.E2PAdd(en)
 	if err := r.data.DB(ctx).Create(p).Error; err != nil {
-		return "", errtrace.Wrap(err, "Repository")
+		return "", log.WrapError(err, "Repository")
 	}
 	return p.Ulid, nil
 }
 
 func (r *SysAgentRepo) Delete(ctx context.Context, en *entity.SysAgent) error {
 	patch := converter.E2PDel(en)
-	return errtrace.Wrap(r.data.DB(ctx).Model(&po.SysAgent{}).Where("ulid = ?", en.Ulid).Updates(patch).Error, "Repository")
+	return log.WrapError(r.data.DB(ctx).Model(&po.SysAgent{}).Where("ulid = ?", en.Ulid).Updates(patch).Error, "Repository")
 }
 
 func (r *SysAgentRepo) Update(ctx context.Context, en *entity.SysAgent) error {
 	patch := converter.E2PUpdate(en)
 	db := r.data.DB(ctx).Model(&po.SysAgent{}).Where("ulid = ?", en.Ulid)
 	if err := db.Updates(patch).Error; err != nil {
-		return errtrace.Wrap(err, "Repository")
+		return log.WrapError(err, "Repository")
 	}
 	// GORM skips empty struct fields; update separately so users can remove a binding.
-	return errtrace.Wrap(db.Updates(map[string]any{"embedding_model": en.EmbeddingModel, "image_model": en.ImageModel}).Error, "Repository")
+	return log.WrapError(db.Updates(map[string]any{"embedding_model": en.EmbeddingModel, "image_model": en.ImageModel}).Error, "Repository")
 }
 
 // UpdateEnabled updates only the enabled flag and updated_at timestamp.
@@ -66,7 +66,7 @@ func (r *SysAgentRepo) FindById(ctx context.Context, ulid string, selectColumn .
 		db = db.Select(selectColumn)
 	}
 	if err := db.Limit(1).Find(&p, "ulid = ?", ulid).Error; err != nil {
-		return nil, errtrace.Wrap(err, "Repository")
+		return nil, log.WrapError(err, "Repository")
 	}
 	return converter.P2E(&p), nil
 }
@@ -74,7 +74,7 @@ func (r *SysAgentRepo) FindById(ctx context.Context, ulid string, selectColumn .
 func (r *SysAgentRepo) FindAll(ctx context.Context, queries []*query.Query, selectArgs ...[]string) ([]*entity.SysAgent, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, errtrace.Wrap(err, "Repository")
+		return nil, log.WrapError(err, "Repository")
 	}
 	ps := make([]*po.SysAgent, 0)
 	db := r.data.DB(ctx).Model(&po.SysAgent{}).Select(query.SelectFields(selectArgs...))
@@ -82,7 +82,7 @@ func (r *SysAgentRepo) FindAll(ctx context.Context, queries []*query.Query, sele
 		db = db.Where(where, values...)
 	}
 	if err := db.Order("ulid desc").Find(&ps).Error; err != nil {
-		return nil, errtrace.Wrap(err, "Repository")
+		return nil, log.WrapError(err, "Repository")
 	}
 	return converter.P2EList(ps), nil
 }
@@ -97,7 +97,7 @@ func (r *SysAgentRepo) FindVisible(ctx context.Context, userID, name string, sel
 		db = db.Where("name LIKE ?", "%"+name+"%")
 	}
 	if err := db.Order("is_system desc, ulid desc").Find(&ps).Error; err != nil {
-		return nil, errtrace.Wrap(err, "Repository")
+		return nil, log.WrapError(err, "Repository")
 	}
 	return converter.P2EList(ps), nil
 }
@@ -105,7 +105,7 @@ func (r *SysAgentRepo) FindVisible(ctx context.Context, userID, name string, sel
 func (r *SysAgentRepo) FindPage(ctx context.Context, queries []*query.Query, reqPage *query.PageData, reqSort *query.SortData, selectArgs ...[]string) ([]*entity.SysAgent, *query.PageData, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, nil, errtrace.Wrap(err, "Repository")
+		return nil, nil, log.WrapError(err, "Repository")
 	}
 	if reqPage == nil {
 		reqPage = &query.PageData{PageNum: 1, PageSize: 10}
@@ -119,7 +119,7 @@ func (r *SysAgentRepo) FindPage(ctx context.Context, queries []*query.Query, req
 
 	var total int64
 	if err := db.Count(&total).Error; err != nil {
-		return nil, nil, errtrace.Wrap(err, "Repository")
+		return nil, nil, log.WrapError(err, "Repository")
 	}
 	rspPage := &query.PageData{
 		PageNum:     reqPage.PageNum,
@@ -136,7 +136,7 @@ func (r *SysAgentRepo) FindPage(ctx context.Context, queries []*query.Query, req
 		Scopes(query.Paginate(reqPage.PageNum, reqPage.PageSize)).
 		Find(&ps).Error
 	if err != nil {
-		return nil, nil, errtrace.Wrap(err, "Repository")
+		return nil, nil, log.WrapError(err, "Repository")
 	}
 	return converter.P2EList(ps), rspPage, nil
 }
@@ -147,7 +147,7 @@ func (r *SysAgentRepo) FindByName(ctx context.Context, name string) (*entity.Sys
 		if err == gorm.ErrRecordNotFound {
 			return nil, nil
 		}
-		return nil, errtrace.Wrap(err, "Repository")
+		return nil, log.WrapError(err, "Repository")
 	}
 	return converter.P2E(&p), nil
 }
@@ -155,7 +155,7 @@ func (r *SysAgentRepo) FindByName(ctx context.Context, name string) (*entity.Sys
 func (r *SysAgentRepo) FindUserModel(ctx context.Context, userID, agentID string) (*entity.SysAgentUserModel, error) {
 	var value po.SysAgentUserModel
 	if err := r.data.DB(ctx).Where("user_id = ? AND agent_id = ?", userID, agentID).Limit(1).Find(&value).Error; err != nil {
-		return nil, errtrace.Wrap(err, "Repository")
+		return nil, log.WrapError(err, "Repository")
 	}
 	if value.Ulid == "" {
 		return nil, nil

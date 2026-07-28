@@ -10,7 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
 	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 )
 
@@ -161,7 +160,7 @@ func logRequestError(c *gin.Context, path string, cost time.Duration) {
 		"cost_ms", cost.Milliseconds(),
 	}
 	if requestErr != nil {
-		kv = append(kv, "error_chain", errtrace.Format(requestErr))
+		kv = append(kv, "error_chain", log.FormatError(requestErr))
 	}
 	if status >= http.StatusInternalServerError || requestErr != nil && status < http.StatusBadRequest {
 		log.ErrorwCtx(c.Request.Context(), "http request failed", kv...)

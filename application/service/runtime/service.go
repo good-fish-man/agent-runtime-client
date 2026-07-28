@@ -19,7 +19,6 @@ import (
 	modelsrv "github.com/good-fish-man/agent-runtime-client/domain/srv/model"
 	dsrv "github.com/good-fish-man/agent-runtime-client/domain/srv/runtime"
 	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
-	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
 	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
@@ -51,19 +50,19 @@ func (s *RuntimeService) Run(ctx context.Context, req *dto.RunReq) (*entity.Comp
 	in := assembler.ToRunInput(req)
 	in.TraceID = traceID(ctx)
 	if err := s.hydrateAgentConfig(ctx, in); err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService")
 	}
 	if err := s.injectMemories(ctx, in.Context); err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService")
 	}
 	if err := s.ensureUserModel(ctx, &in.Models); err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService")
 	}
 	if err := s.hydrateModels(ctx, in.Models); err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService")
 	}
 	if err := s.hydrateSubAgentModels(ctx, in.SubAgents); err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService")
 	}
 	result, err := s.svc.Run(ctx, in)
 	if err == nil {
@@ -78,21 +77,21 @@ func (s *RuntimeService) RunStream(ctx context.Context, req *dto.RunReq, emit St
 	in.TraceID = traceID(ctx)
 	in.Options = withStream(in.Options)
 	if err := s.hydrateAgentConfig(ctx, in); err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
 	if err := s.injectMemories(ctx, in.Context); err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
 	if err := s.ensureUserModel(ctx, &in.Models); err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
 	if err := s.hydrateModels(ctx, in.Models); err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
 	if err := s.hydrateSubAgentModels(ctx, in.SubAgents); err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
-	return errtrace.Wrap(s.svc.RunStream(ctx, in, s.memoryAwareEmitter(ctx, in.Context, emit)), "RuntimeService.RunStream")
+	return log.WrapError(s.svc.RunStream(ctx, in, s.memoryAwareEmitter(ctx, in.Context, emit)), "RuntimeService.RunStream")
 }
 
 // RunAgent executes a non-streaming agent run.
@@ -100,19 +99,19 @@ func (s *RuntimeService) RunAgent(ctx context.Context, req *dto.AgentReq) (*enti
 	in := assembler.ToAgentInput(req)
 	in.TraceID = traceID(ctx)
 	if err := s.hydrateAgentModels(ctx, in.Context, &in.Models); err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService")
 	}
 	if err := s.injectMemories(ctx, in.Context); err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService")
 	}
 	if err := s.ensureUserModel(ctx, &in.Models); err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService")
 	}
 	if err := s.hydrateModels(ctx, in.Models); err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService")
 	}
 	value, err := s.svc.RunAgent(ctx, in)
-	return value, errtrace.Wrap(err, "RuntimeService.RunAgent")
+	return value, log.WrapError(err, "RuntimeService.RunAgent")
 }
 
 // RunAgentStream executes a streaming agent run.
@@ -121,18 +120,18 @@ func (s *RuntimeService) RunAgentStream(ctx context.Context, req *dto.AgentReq, 
 	in.TraceID = traceID(ctx)
 	in.Stream = true
 	if err := s.hydrateAgentModels(ctx, in.Context, &in.Models); err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
 	if err := s.injectMemories(ctx, in.Context); err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
 	if err := s.ensureUserModel(ctx, &in.Models); err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
 	if err := s.hydrateModels(ctx, in.Models); err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
-	return errtrace.Wrap(s.svc.RunAgentStream(ctx, in, s.memoryAwareEmitter(ctx, in.Context, emit)), "RuntimeService.RunAgentStream")
+	return log.WrapError(s.svc.RunAgentStream(ctx, in, s.memoryAwareEmitter(ctx, in.Context, emit)), "RuntimeService.RunAgentStream")
 }
 
 // Resume resumes a checkpointed run.
@@ -140,7 +139,7 @@ func (s *RuntimeService) Resume(ctx context.Context, req *dto.ResumeReq) (*entit
 	in := assembler.ToResumeInput(req)
 	in.TraceID = traceID(ctx)
 	value, err := s.svc.Resume(ctx, in)
-	return value, errtrace.Wrap(err, "RuntimeService.Resume")
+	return value, log.WrapError(err, "RuntimeService.Resume")
 }
 
 // Stop stops a run.
@@ -148,13 +147,13 @@ func (s *RuntimeService) Stop(ctx context.Context, req *dto.StopReq) (*entity.St
 	in := assembler.ToStopInput(req)
 	in.TraceID = traceID(ctx)
 	value, err := s.svc.Stop(ctx, in)
-	return value, errtrace.Wrap(err, "RuntimeService.Stop")
+	return value, log.WrapError(err, "RuntimeService.Stop")
 }
 
 // Health probes runtime health.
 func (s *RuntimeService) Health(ctx context.Context) (*entity.HealthStatus, error) {
 	value, err := s.svc.Health(ctx, &entity.HealthInput{Service: "agent-runtime", TraceID: traceID(ctx)})
-	return value, errtrace.Wrap(err, "RuntimeService.Health")
+	return value, log.WrapError(err, "RuntimeService.Health")
 }
 
 func withStream(o *entity.RunOptions) *entity.RunOptions {
@@ -205,7 +204,7 @@ func (s *RuntimeService) hydrateAgentConfig(ctx context.Context, in *entity.RunI
 	}
 	agent, err := s.agentSvc.FindById(ctx, agentID)
 	if err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
 	if agent == nil || agent.Ulid == "" || agent.DeletedAt != 0 || !agent.Enabled {
 		return apierror.ErrNotFound.WithMessage("agent not found or disabled")
@@ -325,7 +324,7 @@ func (s *RuntimeService) hydrateModels(ctx context.Context, models map[string]en
 		cfg.APIKey = ""
 		model, err := s.resolveModel(ctx, cfg, modelTypeForRole(role))
 		if err != nil {
-			return errtrace.Wrap(err, "RuntimeService")
+			return log.WrapError(err, "RuntimeService")
 		}
 		if model == nil {
 			return apierror.ErrModelBindingRequired
@@ -352,7 +351,7 @@ func (s *RuntimeService) hydrateSubAgentModels(ctx context.Context, subAgents []
 		cfg.APIKey = ""
 		model, err := s.resolveModel(ctx, cfg, "llm")
 		if err != nil {
-			return errtrace.Wrap(err, "RuntimeService")
+			return log.WrapError(err, "RuntimeService")
 		}
 		if model == nil {
 			return apierror.ErrModelBindingRequired.WithMessage("子 Agent 绑定的模型不存在")
@@ -375,14 +374,14 @@ func (s *RuntimeService) resolveModel(ctx context.Context, cfg entity.ModelConfi
 	if id := modelID(cfg); id != "" {
 		m, err := s.modelSvc.FindById(ctx, id)
 		if err != nil {
-			return nil, errtrace.Wrap(err, "RuntimeService")
+			return nil, log.WrapError(err, "RuntimeService")
 		}
 		if m != nil && m.DeletedAt == 0 && m.CreatedBy == userID {
 			if !m.Enabled {
 				return nil, apierror.ErrForbidden.WithMessage("当前模型已被管理员停用")
 			}
 			if err := validateRuntimeModelType(m.ModelType, expectedType); err != nil {
-				return nil, errtrace.Wrap(err, "RuntimeService")
+				return nil, log.WrapError(err, "RuntimeService")
 			}
 			return s.resolveStoredModel(ctx, m, userID)
 		}
@@ -404,14 +403,14 @@ func (s *RuntimeService) resolveModel(ctx context.Context, cfg entity.ModelConfi
 	}
 	ens, err := s.modelSvc.FindAll(ctx, queries)
 	if err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService")
 	}
 	if len(ens) == 0 {
 		return nil, nil
 	}
 	m := ens[0]
 	if err := validateRuntimeModelType(m.ModelType, expectedType); err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService")
 	}
 	return s.resolveStoredModel(ctx, m, userID)
 }
@@ -454,7 +453,7 @@ func (s *RuntimeService) resolveStoredModel(ctx context.Context, model *modelent
 	baseURL := model.BaseUrl
 	key, err := s.modelSvc.FindKeyByID(ctx, model.KeyID)
 	if err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService")
 	}
 	if key == nil || key.Ulid == "" || key.DeletedAt != 0 || !key.Enabled {
 		return nil, apierror.ErrModelBindingRequired.WithMessage("模型绑定的 Key 不存在或已停用")
@@ -513,12 +512,12 @@ func (s *RuntimeService) ensureUserModel(ctx context.Context, models *map[string
 	}
 	items, err := s.modelSvc.FindAll(ctx, append(append([]*query.Query{}, queries...), &query.Query{Key: "category", Operator: query.OpEq, Value: "default"}))
 	if err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
 	if len(items) == 0 {
 		items, err = s.modelSvc.FindAll(ctx, queries)
 		if err != nil {
-			return errtrace.Wrap(err, "RuntimeService")
+			return log.WrapError(err, "RuntimeService")
 		}
 	}
 	if len(items) == 0 {
@@ -546,7 +545,7 @@ func (s *RuntimeService) hydrateAgentModels(ctx context.Context, values map[stri
 	}
 	agent, err := s.agentSvc.FindById(ctx, id)
 	if err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
 	if agent == nil || agent.Ulid == "" || agent.DeletedAt != 0 || !agent.Enabled {
 		return apierror.ErrNotFound.WithMessage("agent not found or disabled")
@@ -614,7 +613,7 @@ func (s *RuntimeService) injectMemories(ctx context.Context, values map[string]a
 	}
 	text, err := s.memorySvc.ContextText(ctx, authctx.UserID(ctx), agentIDFromContext(values), 20)
 	if err != nil {
-		return errtrace.Wrap(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService")
 	}
 	if text != "" {
 		values["long_term_memories"] = text

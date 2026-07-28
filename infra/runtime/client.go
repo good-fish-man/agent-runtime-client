@@ -12,7 +12,6 @@ import (
 	runtimev1 "github.com/good-fish-man/agent-runtime/gen/agent/runtime/v1"
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
-	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
 	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 )
 
@@ -29,7 +28,7 @@ type Client struct {
 func NewClient(grpcAddr string, reqTimeout time.Duration) (*Client, error) {
 	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeClient.New")
+		return nil, log.WrapError(err, "RuntimeClient.New")
 	}
 	log.Infof("runtime gRPC client configured for %s (request timeout %s)", grpcAddr, reqTimeout)
 	return &Client{
@@ -49,7 +48,7 @@ func (c *Client) Ping(ctx context.Context, dialTimeout time.Duration) (*entity.H
 	}
 	resp, err := c.rpc.HealthCheck(ctx, &runtimev1.HealthCheckRequest{Service: "agent-runtime"})
 	if err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeClient.Ping")
+		return nil, log.WrapError(err, "RuntimeClient.Ping")
 	}
 	return fromHealthResponse(resp), nil
 }
