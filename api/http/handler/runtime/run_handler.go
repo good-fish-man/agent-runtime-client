@@ -125,8 +125,11 @@ func (h *Handler) stream(c *gin.Context, run func(emit service.StreamFunc) error
 	}
 
 	if err := run(emit); err != nil {
+		_ = c.Error(err)
 		apiErr := apierror.FromError(err)
-		_ = writeSSE(c.Writer, consts.SSEEventError, gin.H{"code": apiErr.Code, "message": apiErr.Message})
+		if writeErr := writeSSE(c.Writer, consts.SSEEventError, gin.H{"code": apiErr.Code, "message": apiErr.Message, "trace_id": c.GetString(consts.CtxKeyTraceID)}); writeErr != nil {
+			_ = c.Error(fmt.Errorf("write stream error event: %w", writeErr))
+		}
 		flusher.Flush()
 	}
 }
