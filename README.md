@@ -203,4 +203,4 @@ The binary is written to `deploy/bin/agent-runtime-client` by `make build`.
 
 ## License
 
-Add a repository license before public redistribution.
+Athena Agent Runtime Client is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and dependency information.

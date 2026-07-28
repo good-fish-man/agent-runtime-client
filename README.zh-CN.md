@@ -203,4 +203,4 @@ make build
 
 ## 许可证
 
-公开分发前请为仓库补充许可证。
+Athena Agent Runtime Client 使用 [Apache License 2.0](LICENSE)。版权和依赖说明参见 [NOTICE](NOTICE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
