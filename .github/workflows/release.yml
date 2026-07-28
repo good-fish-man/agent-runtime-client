@@ -53,7 +53,7 @@ jobs:
           extension=""
           if [ "$GOOS" = "windows" ]; then extension=".exe"; fi
           go build -trimpath -ldflags "-s -w" -o "package/$name/agent-runtime-client$extension" .
-          cp README.md "package/$name/"
+          cp README.md README.zh-CN.md LICENSE NOTICE THIRD_PARTY_NOTICES.md "package/$name/"
           cp -R manifest "package/$name/manifest"
           if [ "$GOOS" = "windows" ]; then
             (cd package && zip -qr "../dist/$name.zip" "$name")
