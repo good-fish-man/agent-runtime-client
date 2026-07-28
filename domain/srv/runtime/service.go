@@ -9,7 +9,7 @@ import (
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
 	irepo "github.com/good-fish-man/agent-runtime-client/domain/irepository/runtime"
-	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
+	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
 )
@@ -29,35 +29,35 @@ func NewRuntimeSvc(gateway irepo.RuntimeGateway, defaultModel *entity.ModelConfi
 // Run validates and executes a non-streaming run.
 func (s *RuntimeSvc) Run(ctx context.Context, in *entity.RunInput) (*entity.Completion, error) {
 	if err := s.prepareRun(in); err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeSvc.Run.prepare")
+		return nil, log.WrapError(err, "RuntimeSvc.Run.prepare")
 	}
 	value, err := s.gateway.Run(ctx, in)
-	return value, errtrace.Wrap(err, "RuntimeSvc.Run.gateway")
+	return value, log.WrapError(err, "RuntimeSvc.Run.gateway")
 }
 
 // RunStream validates and executes a streaming run.
 func (s *RuntimeSvc) RunStream(ctx context.Context, in *entity.RunInput, emit irepo.StreamFunc) error {
 	if err := s.prepareRun(in); err != nil {
-		return errtrace.Wrap(err, "RuntimeSvc.RunStream.prepare")
+		return log.WrapError(err, "RuntimeSvc.RunStream.prepare")
 	}
-	return errtrace.Wrap(s.gateway.RunStream(ctx, in, emit), "RuntimeSvc.RunStream.gateway")
+	return log.WrapError(s.gateway.RunStream(ctx, in, emit), "RuntimeSvc.RunStream.gateway")
 }
 
 // RunAgent validates and executes a non-streaming agent run.
 func (s *RuntimeSvc) RunAgent(ctx context.Context, in *entity.AgentInput) (*entity.AgentResult, error) {
 	if err := s.prepareAgent(in); err != nil {
-		return nil, errtrace.Wrap(err, "RuntimeSvc.RunAgent.prepare")
+		return nil, log.WrapError(err, "RuntimeSvc.RunAgent.prepare")
 	}
 	value, err := s.gateway.RunAgent(ctx, in)
-	return value, errtrace.Wrap(err, "RuntimeSvc.RunAgent.gateway")
+	return value, log.WrapError(err, "RuntimeSvc.RunAgent.gateway")
 }
 
 // RunAgentStream validates and executes a streaming agent run.
 func (s *RuntimeSvc) RunAgentStream(ctx context.Context, in *entity.AgentInput, emit irepo.StreamFunc) error {
 	if err := s.prepareAgent(in); err != nil {
-		return errtrace.Wrap(err, "RuntimeSvc.RunAgentStream.prepare")
+		return log.WrapError(err, "RuntimeSvc.RunAgentStream.prepare")
 	}
-	return errtrace.Wrap(s.gateway.RunAgentStream(ctx, in, emit), "RuntimeSvc.RunAgentStream.gateway")
+	return log.WrapError(s.gateway.RunAgentStream(ctx, in, emit), "RuntimeSvc.RunAgentStream.gateway")
 }
 
 // Resume validates and resumes a checkpointed run.
@@ -66,7 +66,7 @@ func (s *RuntimeSvc) Resume(ctx context.Context, in *entity.ResumeInput) (*entit
 		return nil, apierror.ErrBadRequest.WithMessage("checkpoint_id is required")
 	}
 	value, err := s.gateway.Resume(ctx, in)
-	return value, errtrace.Wrap(err, "RuntimeSvc.Resume.gateway")
+	return value, log.WrapError(err, "RuntimeSvc.Resume.gateway")
 }
 
 // Stop validates and stops a run.
@@ -75,13 +75,13 @@ func (s *RuntimeSvc) Stop(ctx context.Context, in *entity.StopInput) (*entity.St
 		return nil, apierror.ErrBadRequest.WithMessage("checkpoint_id or session_id is required")
 	}
 	value, err := s.gateway.Stop(ctx, in)
-	return value, errtrace.Wrap(err, "RuntimeSvc.Stop.gateway")
+	return value, log.WrapError(err, "RuntimeSvc.Stop.gateway")
 }
 
 // Health probes runtime health.
 func (s *RuntimeSvc) Health(ctx context.Context, in *entity.HealthInput) (*entity.HealthStatus, error) {
 	value, err := s.gateway.Health(ctx, in)
-	return value, errtrace.Wrap(err, "RuntimeSvc.Health.gateway")
+	return value, log.WrapError(err, "RuntimeSvc.Health.gateway")
 }
 
 func (s *RuntimeSvc) prepareRun(in *entity.RunInput) error {
@@ -93,7 +93,7 @@ func (s *RuntimeSvc) prepareRun(in *entity.RunInput) error {
 	}
 	models, err := s.applyDefaultModel(in.Models)
 	if err != nil {
-		return errtrace.Wrap(err, "RuntimeSvc.prepareRun.defaultModel")
+		return log.WrapError(err, "RuntimeSvc.prepareRun.defaultModel")
 	}
 	in.Models = models
 	return nil
@@ -108,7 +108,7 @@ func (s *RuntimeSvc) prepareAgent(in *entity.AgentInput) error {
 	}
 	models, err := s.applyDefaultModel(in.Models)
 	if err != nil {
-		return errtrace.Wrap(err, "RuntimeSvc.prepareAgent.defaultModel")
+		return log.WrapError(err, "RuntimeSvc.prepareAgent.defaultModel")
 	}
 	in.Models = models
 	return nil

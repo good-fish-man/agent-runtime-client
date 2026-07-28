@@ -8,7 +8,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	converter "github.com/good-fish-man/agent-runtime-client/infra/repository/converter/user"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/user"
-	"github.com/good-fish-man/agent-runtime-client/pkg/errtrace"
+	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 )
 
@@ -27,19 +27,19 @@ func NewSysUserRepo(d *data.Data) *SysUserRepo {
 func (r *SysUserRepo) Create(ctx context.Context, en *entity.SysUser) (string, error) {
 	p := converter.E2PSysUserAdd(en)
 	if err := r.data.DB(ctx).Create(p).Error; err != nil {
-		return "", errtrace.Wrap(err, "SysUserRepo.Create")
+		return "", log.WrapError(err, "SysUserRepo.Create")
 	}
 	return p.Ulid, nil
 }
 
 func (r *SysUserRepo) Delete(ctx context.Context, en *entity.SysUser) error {
 	patch := converter.E2PSysUserDel(en)
-	return errtrace.Wrap(r.data.DB(ctx).Model(&po.SysUser{}).Where("ulid = ?", en.Ulid).Updates(patch).Error, "SysUserRepo.Delete")
+	return log.WrapError(r.data.DB(ctx).Model(&po.SysUser{}).Where("ulid = ?", en.Ulid).Updates(patch).Error, "SysUserRepo.Delete")
 }
 
 func (r *SysUserRepo) Update(ctx context.Context, en *entity.SysUser) error {
 	patch := converter.E2PSysUserUpdate(en)
-	return errtrace.Wrap(r.data.DB(ctx).Model(&po.SysUser{}).Where("ulid = ?", en.Ulid).Updates(patch).Error, "SysUserRepo.Update")
+	return log.WrapError(r.data.DB(ctx).Model(&po.SysUser{}).Where("ulid = ?", en.Ulid).Updates(patch).Error, "SysUserRepo.Update")
 }
 
 func (r *SysUserRepo) FindById(ctx context.Context, ulid string, selectColumn ...string) (*entity.SysUser, error) {
@@ -49,7 +49,7 @@ func (r *SysUserRepo) FindById(ctx context.Context, ulid string, selectColumn ..
 		db = db.Select(selectColumn)
 	}
 	if err := db.Limit(1).Find(&p, "ulid = ?", ulid).Error; err != nil {
-		return nil, errtrace.Wrap(err, "SysUserRepo.FindById")
+		return nil, log.WrapError(err, "SysUserRepo.FindById")
 	}
 	return converter.P2ESysUser(&p), nil
 }
@@ -57,7 +57,7 @@ func (r *SysUserRepo) FindById(ctx context.Context, ulid string, selectColumn ..
 func (r *SysUserRepo) FindByQuery(ctx context.Context, queries []*query.Query) (*entity.SysUser, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, errtrace.Wrap(err, "SysUserRepo.FindByQuery.buildQuery")
+		return nil, log.WrapError(err, "SysUserRepo.FindByQuery.buildQuery")
 	}
 	var p po.SysUser
 	db := r.data.DB(ctx).Model(&po.SysUser{})
@@ -65,7 +65,7 @@ func (r *SysUserRepo) FindByQuery(ctx context.Context, queries []*query.Query) (
 		db = db.Where(where, values...)
 	}
 	if err := db.Limit(1).Find(&p).Error; err != nil {
-		return nil, errtrace.Wrap(err, "SysUserRepo.FindByQuery.query")
+		return nil, log.WrapError(err, "SysUserRepo.FindByQuery.query")
 	}
 	return converter.P2ESysUser(&p), nil
 }
@@ -73,7 +73,7 @@ func (r *SysUserRepo) FindByQuery(ctx context.Context, queries []*query.Query) (
 func (r *SysUserRepo) FindAll(ctx context.Context, queries []*query.Query, selectArgs ...[]string) ([]*entity.SysUser, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, errtrace.Wrap(err, "SysUserRepo.FindAll.buildQuery")
+		return nil, log.WrapError(err, "SysUserRepo.FindAll.buildQuery")
 	}
 	ps := make([]*po.SysUser, 0)
 	db := r.data.DB(ctx).Model(&po.SysUser{}).Select(query.SelectFields(selectArgs...))
@@ -81,7 +81,7 @@ func (r *SysUserRepo) FindAll(ctx context.Context, queries []*query.Query, selec
 		db = db.Where(where, values...)
 	}
 	if err := db.Order("ulid desc").Find(&ps).Error; err != nil {
-		return nil, errtrace.Wrap(err, "SysUserRepo.FindAll.query")
+		return nil, log.WrapError(err, "SysUserRepo.FindAll.query")
 	}
 	return converter.P2ESysUsers(ps), nil
 }
@@ -89,7 +89,7 @@ func (r *SysUserRepo) FindAll(ctx context.Context, queries []*query.Query, selec
 func (r *SysUserRepo) FindPage(ctx context.Context, queries []*query.Query, reqPage *query.PageData, reqSort *query.SortData, selectArgs ...[]string) ([]*entity.SysUser, *query.PageData, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {
-		return nil, nil, errtrace.Wrap(err, "SysUserRepo.FindPage.buildQuery")
+		return nil, nil, log.WrapError(err, "SysUserRepo.FindPage.buildQuery")
 	}
 	if reqPage == nil {
 		reqPage = &query.PageData{PageNum: 1, PageSize: 10}
@@ -103,7 +103,7 @@ func (r *SysUserRepo) FindPage(ctx context.Context, queries []*query.Query, reqP
 
 	var total int64
 	if err := db.Count(&total).Error; err != nil {
-		return nil, nil, errtrace.Wrap(err, "SysUserRepo.FindPage.count")
+		return nil, nil, log.WrapError(err, "SysUserRepo.FindPage.count")
 	}
 	rspPage := &query.PageData{
 		PageNum:     reqPage.PageNum,
@@ -120,7 +120,7 @@ func (r *SysUserRepo) FindPage(ctx context.Context, queries []*query.Query, reqP
 		Scopes(query.Paginate(reqPage.PageNum, reqPage.PageSize)).
 		Find(&ps).Error
 	if err != nil {
-		return nil, nil, errtrace.Wrap(err, "SysUserRepo.FindPage.query")
+		return nil, nil, log.WrapError(err, "SysUserRepo.FindPage.query")
 	}
 	return converter.P2ESysUsers(ps), rspPage, nil
 }
