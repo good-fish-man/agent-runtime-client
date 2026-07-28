@@ -94,6 +94,7 @@ make run
 ```
 
 如果服务不只在可信本机环境中使用，请立即修改默认密码。
+该账号仅在不存在时初始化；重启服务不会重复创建账号，也不会把已修改的密码重置为默认值。
 
 需要自动安装并管理 PostgreSQL 时，请使用 [`athena-launcher`](https://github.com/good-fish-man/athena-launcher)。
 
