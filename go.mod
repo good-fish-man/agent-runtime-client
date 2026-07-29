@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-playground/validator/v10 v10.30.3
-	github.com/good-fish-man/agent-runtime v0.1.0
+	github.com/good-fish-man/agent-runtime v0.1.1
 	github.com/jinzhu/copier v0.4.0
 	github.com/petermattis/goid v0.0.0-20260713124913-97594f28f5ca
 	golang.org/x/crypto v0.52.0
