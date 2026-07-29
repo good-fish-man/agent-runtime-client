@@ -12,6 +12,7 @@ type (
 		Model          string `json:"model"`
 		EmbeddingModel string `json:"embedding_model"`
 		ImageModel     string `json:"image_model"`
+		VideoModel     string `json:"video_model"`
 		Config         string `json:"config"`
 		ConfigJson     string `json:"config_json"`
 		Enabled        bool   `json:"enabled"`
@@ -35,6 +36,7 @@ type (
 		Model          string `json:"model"`
 		EmbeddingModel string `json:"embedding_model"`
 		ImageModel     string `json:"image_model"`
+		VideoModel     string `json:"video_model"`
 		Config         string `json:"config"`
 		ConfigJson     string `json:"config_json"`
 		Enabled        *bool  `json:"enabled"`
@@ -75,6 +77,7 @@ type (
 		Model          string `json:"model"`
 		EmbeddingModel string `json:"embedding_model"`
 		ImageModel     string `json:"image_model"`
+		VideoModel     string `json:"video_model"`
 		Config         string `json:"config"`
 		ConfigJson     string `json:"config_json"`
 		Enabled        bool   `json:"enabled"`
@@ -102,6 +105,7 @@ type (
 		Model          string `json:"model"`
 		EmbeddingModel string `json:"embedding_model"`
 		ImageModel     string `json:"image_model"`
+		VideoModel     string `json:"video_model"`
 		Config         string `json:"config,omitempty"`
 		ConfigJson     string `json:"config_json,omitempty"`
 		IsSystem       bool   `json:"is_system"`

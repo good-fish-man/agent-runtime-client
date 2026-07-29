@@ -48,6 +48,18 @@ func toAgentRequest(in *entity.AgentInput) *runtimev1.AgentRequest {
 	}
 }
 
+func toMediaGenerationRequest(in *entity.MediaGenerationInput) *runtimev1.MediaGenerationRequest {
+	if in == nil {
+		return &runtimev1.MediaGenerationRequest{}
+	}
+	return &runtimev1.MediaGenerationRequest{
+		Model: toModelConfig(&in.Model), MediaType: in.MediaType, Operation: in.Operation,
+		Prompt: in.Prompt, NegativePrompt: in.NegativePrompt, SourceUrl: in.SourceURL,
+		Size: in.Size, Quality: in.Quality, DurationSeconds: int32(in.DurationSeconds),
+		RequestId: in.RequestID, TraceId: in.TraceID,
+	}
+}
+
 func toResumeRequest(in *entity.ResumeInput) *runtimev1.ResumeRequest {
 	if in == nil {
 		return &runtimev1.ResumeRequest{}

@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
 	dto "github.com/good-fish-man/agent-runtime-client/application/dto/runtime"
 	service "github.com/good-fish-man/agent-runtime-client/application/service/runtime"
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
+	"github.com/good-fish-man/agent-runtime-client/pkg/validate"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
 	"github.com/good-fish-man/agent-runtime-client/types/response"
@@ -67,6 +69,71 @@ func (h *Handler) AgentStream(c *gin.Context) {
 	h.stream(c, func(emit service.StreamFunc) error {
 		return h.svc.RunAgentStream(c.Request.Context(), &req, emit)
 	})
+}
+
+// GenerateMedia handles POST /v1/media/generate.
+func (h *Handler) GenerateMedia(c *gin.Context) {
+	var req dto.MediaGenerationReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
+		return
+	}
+	if err := validate.Struct(&req); err != nil {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
+		return
+	}
+	result, err := h.svc.GenerateMedia(c.Request.Context(), &req)
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, result)
+}
+
+// CreateMediaJob queues a durable image or video generation.
+func (h *Handler) CreateMediaJob(c *gin.Context) {
+	var req dto.MediaGenerationReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
+		return
+	}
+	if err := validate.Struct(&req); err != nil {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
+		return
+	}
+	job, err := h.svc.CreateMediaJob(c.Request.Context(), &req)
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.OkStatus(c, http.StatusAccepted, job)
+}
+
+func (h *Handler) ListMediaJobs(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	jobs, err := h.svc.ListMediaJobs(c.Request.Context(), c.Query("mediaType"), limit)
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, jobs)
+}
+
+func (h *Handler) FindMediaJob(c *gin.Context) {
+	job, err := h.svc.FindMediaJob(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, job)
+}
+
+func (h *Handler) DeleteMediaJob(c *gin.Context) {
+	if err := h.svc.DeleteMediaJob(c.Request.Context(), c.Param("id")); err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, gin.H{"deleted": true})
 }
 
 // Resume handles POST /v1/resume.

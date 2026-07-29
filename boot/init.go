@@ -24,6 +24,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	"github.com/good-fish-man/agent-runtime-client/infra/db"
 	"github.com/good-fish-man/agent-runtime-client/infra/repository/migration"
+	runtimerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/runtime"
 	inruntime "github.com/good-fish-man/agent-runtime-client/infra/runtime"
 	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 
@@ -39,6 +40,7 @@ import (
 	modelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
 	skillhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/skill"
 	userhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/user"
+	voiceavatarhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/voiceavatar"
 	weixinhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/weixin"
 	workspacehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/workspace"
 
@@ -103,6 +105,9 @@ func Init(cfgPath string) (*App, error) {
 		runtimeMemorySvc = memorysvc.NewService(store)
 	}
 	appService := appsvc.NewRuntimeService(domainSvc, runtimeAgentSvc, runtimeModelSvc, runtimeMemorySvc)
+	if store != nil {
+		appService = appsvc.NewRuntimeService(domainSvc, runtimeAgentSvc, runtimeModelSvc, runtimeMemorySvc, runtimerepo.NewMediaJobRepo(store))
+	}
 	h := handler.NewHandler(appService)
 
 	restart := make(chan struct{}, 1)
@@ -131,8 +136,11 @@ func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *a
 		modelService := modelsvc.NewSysModelService(store)
 		if err := migration.InitTables(context.Background(), store); err != nil {
 			log.Warnf("init database tables failed: %v", err)
+		} else if err := runtimeService.FailInterruptedMediaJobs(context.Background()); err != nil {
+			log.Warnf("recover interrupted media jobs failed: %v", err)
 		}
 		pub.User = userhandler.NewHandler(usersvc.NewSysUserService(store)).WithAvatarStorage(paths.UploadsDir, cfg.Server.PublicPrefix)
+		pub.VoiceAvatar = voiceavatarhandler.NewHandler(paths.UploadsDir, cfg.Server.PublicPrefix)
 		pub.Auth = middleware.Auth(store)
 		pub.Model = modelhandler.NewHandler(modelService).WithRuntime(cfg.Runtime.HTTPAddr).WithTraining(store, runtimeService, paths.UploadsDir)
 		pub.Memory = memoryhandler.NewHandler(memorysvc.NewService(store))

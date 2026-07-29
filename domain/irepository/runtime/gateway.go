@@ -20,6 +20,7 @@ type RuntimeGateway interface {
 	RunStream(ctx context.Context, in *entity.RunInput, emit StreamFunc) error
 	RunAgent(ctx context.Context, in *entity.AgentInput) (*entity.AgentResult, error)
 	RunAgentStream(ctx context.Context, in *entity.AgentInput, emit StreamFunc) error
+	GenerateMedia(ctx context.Context, in *entity.MediaGenerationInput) (*entity.MediaGenerationResult, error)
 	Resume(ctx context.Context, in *entity.ResumeInput) (*entity.ResumeResult, error)
 	Stop(ctx context.Context, in *entity.StopInput) (*entity.StopResult, error)
 	Health(ctx context.Context, in *entity.HealthInput) (*entity.HealthStatus, error)

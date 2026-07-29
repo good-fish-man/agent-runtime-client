@@ -23,6 +23,11 @@ func Register(engine *gin.Engine, h *handler.Handler, auth gin.HandlerFunc) {
 		v1.POST("/run/stream", h.RunStream)
 		v1.POST("/agent", h.Agent)
 		v1.POST("/agent/stream", h.AgentStream)
+		v1.POST("/media/generate", h.GenerateMedia)
+		v1.POST("/media/jobs", h.CreateMediaJob)
+		v1.GET("/media/jobs", h.ListMediaJobs)
+		v1.GET("/media/jobs/:id", h.FindMediaJob)
+		v1.DELETE("/media/jobs/:id", h.DeleteMediaJob)
 		v1.POST("/resume", h.Resume)
 		v1.POST("/stop", h.Stop)
 	}

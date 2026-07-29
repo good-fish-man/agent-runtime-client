@@ -68,6 +68,20 @@ func (g *Gateway) RunAgentStream(ctx context.Context, in *entity.AgentInput, emi
 	return log.WrapError(consumeStream(stream, emit), "RuntimeGateway.RunAgentStream.consume")
 }
 
+func (g *Gateway) GenerateMedia(ctx context.Context, in *entity.MediaGenerationInput) (*entity.MediaGenerationResult, error) {
+	// Image and especially video generation can legitimately outlive the normal
+	// unary RPC timeout. The incoming HTTP context still cancels disconnected requests.
+	ctx = g.streamCtx(ctx, in.TraceID)
+	response, err := g.client.rpc.GenerateMedia(ctx, toMediaGenerationRequest(in))
+	if err != nil {
+		return nil, log.WrapError(err, "RuntimeGateway.GenerateMedia.rpc")
+	}
+	return &entity.MediaGenerationResult{
+		MediaURL: response.GetMediaUrl(), MediaType: response.GetMediaType(), MimeType: response.GetMimeType(),
+		ProviderJobID: response.GetProviderJobId(), TraceID: response.GetTraceId(),
+	}, nil
+}
+
 // Resume resumes a checkpointed run.
 func (g *Gateway) Resume(ctx context.Context, in *entity.ResumeInput) (*entity.ResumeResult, error) {
 	ctx, cancel := g.unaryCtx(ctx, in.TraceID)

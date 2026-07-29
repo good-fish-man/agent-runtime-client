@@ -16,6 +16,7 @@ import (
 	kbpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/knowledge_base"
 	memorypo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/memory"
 	modelpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/model"
+	runtimepo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/runtime"
 	skillpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/skill"
 	userpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/user"
 )
@@ -52,6 +53,7 @@ func InitTables(ctx context.Context, d *data.Data) error {
 		&chatpo.ChatTokenStats{},
 		&memorypo.AgentMemory{},
 		&jobpo.JobExecutionPO{},
+		&runtimepo.MediaGenerationJob{},
 	); err != nil {
 		return err
 	}
@@ -168,5 +170,8 @@ func defaultModelCatalog() []*modelpo.ModelCatalog {
 		{Provider: "Stability AI", ModelType: "image", ModelFamily: "Stable Image", ModelVersion: "stable-image-core", DisplayName: "Stable Image Core", DefaultBaseUrl: "https://api.stability.ai/v2beta/stable-image/generate/core", ContextWindow: "", Capabilities: "text-to-image", Description: "Fast cloud image generation from Stability AI", Enabled: true, Sort: 210},
 		{Provider: modelentity.ProviderDiffusersDisplay, ModelType: modelentity.ModelTypeImage, ModelFamily: "Stable Diffusion XL", ModelVersion: "stabilityai/stable-diffusion-xl-base-1.0", DisplayName: "Stable Diffusion XL 1.0", DefaultBaseUrl: "diffusers://stabilityai/stable-diffusion-xl-base-1.0", ContextWindow: "", IsFree: true, Installable: true, Runtime: modelentity.ProviderDiffusers, DownloadSize: "7GB", MinMemoryGB: 12, Capabilities: "text-to-image,image-to-image,local", Description: "Open-weight local image generation model", Enabled: true, Sort: 220},
 		{Provider: modelentity.ProviderDiffusersDisplay, ModelType: modelentity.ModelTypeImage, ModelFamily: "FLUX.1", ModelVersion: "black-forest-labs/FLUX.1-schnell", DisplayName: "FLUX.1 Schnell", DefaultBaseUrl: "diffusers://black-forest-labs/FLUX.1-schnell", ContextWindow: "", IsFree: true, Installable: true, Runtime: modelentity.ProviderDiffusers, DownloadSize: "24GB", MinMemoryGB: 24, Capabilities: "text-to-image,local", Description: "High quality open-weight local image generation model", Enabled: true, Sort: 221},
+		{Provider: modelentity.ProviderDiffusersDisplay, ModelType: modelentity.ModelTypeVideo, ModelFamily: "Zeroscope", ModelVersion: "cerspense/zeroscope_v2_576w", DisplayName: "Zeroscope v2 576w", DefaultBaseUrl: "diffusers://cerspense/zeroscope_v2_576w", ContextWindow: "N/A", IsFree: true, Installable: true, Runtime: modelentity.ProviderDiffusers, DownloadSize: "8.5GB", MinMemoryGB: 12, Capabilities: "text-to-video,local,non-commercial", Description: "Local 576x320 text-to-video model. Free for non-commercial use under CC BY-NC 4.0.", Enabled: true, Sort: 225},
+		{Provider: "OpenAI", ModelType: modelentity.ModelTypeVideo, ModelFamily: "Sora", ModelVersion: "sora-2", DisplayName: "Sora 2", DefaultBaseUrl: "https://api.openai.com/v1", Capabilities: "text-to-video,image-to-video,async", Description: "OpenAI video generation model", Enabled: true, Sort: 230},
+		{Provider: "OpenAI", ModelType: modelentity.ModelTypeVideo, ModelFamily: "Sora", ModelVersion: "sora-2-pro", DisplayName: "Sora 2 Pro", DefaultBaseUrl: "https://api.openai.com/v1", Capabilities: "text-to-video,image-to-video,async", Description: "Higher quality OpenAI video generation model", Enabled: true, Sort: 231},
 	}
 }

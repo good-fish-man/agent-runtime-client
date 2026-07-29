@@ -20,6 +20,7 @@ type SysAgent struct {
 	Model          string `gorm:"column:model;type:varchar(100);comment:默认模型;" json:"model"`
 	EmbeddingModel string `gorm:"column:embedding_model;type:varchar(128);comment:Embedding模型;" json:"embedding_model"`
 	ImageModel     string `gorm:"column:image_model;type:varchar(128);comment:图片生成模型;" json:"image_model"`
+	VideoModel     string `gorm:"column:video_model;type:varchar(128);comment:视频生成模型;" json:"video_model"`
 	Config         string `gorm:"column:config;type:text;comment:完整JSON配置;" json:"config"`
 	ConfigJson     string `gorm:"column:config_json;type:text;comment:可运行JSON配置;" json:"config_json"`
 	IsSystem       bool   `gorm:"column:is_system;type:boolean;default:false;comment:是否系统内置;" json:"is_system"`
@@ -50,6 +51,7 @@ type SysAgentUserModel struct {
 	Model          string `gorm:"column:model;type:varchar(128);not null" json:"model"`
 	EmbeddingModel string `gorm:"column:embedding_model;type:varchar(128)" json:"embedding_model"`
 	ImageModel     string `gorm:"column:image_model;type:varchar(128)" json:"image_model"`
+	VideoModel     string `gorm:"column:video_model;type:varchar(128)" json:"video_model"`
 }
 
 func (po *SysAgentUserModel) BeforeCreate(tx *gorm.DB) error {

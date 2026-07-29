@@ -22,6 +22,7 @@ import (
 	modelh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
 	skillh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/skill"
 	userh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/user"
+	voiceavatarh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/voiceavatar"
 	weixinh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/weixin"
 	workspaceh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/workspace"
 )
@@ -29,21 +30,22 @@ import (
 // Handlers aggregates the public resource handlers wired by the composition
 // root. DB-backed handlers may be nil when the database is not configured.
 type Handlers struct {
-	Auth      gin.HandlerFunc
-	User      *userh.Handler
-	Config    *confighh.Handler
-	Model     *modelh.Handler
-	Memory    *memoryh.Handler
-	KB        *kbh.Handler
-	Skill     *skillh.Handler
-	Agent     *agenth.Handler
-	Channel   *channelh.Handler
-	Command   *commandh.Handler
-	Callback  *callbackh.Handler
-	Dashboard *dashboardh.Handler
-	Weixin    *weixinh.Handler
-	Job       *jobh.Handler
-	Workspace *workspaceh.Handler
+	Auth        gin.HandlerFunc
+	User        *userh.Handler
+	Config      *confighh.Handler
+	Model       *modelh.Handler
+	Memory      *memoryh.Handler
+	KB          *kbh.Handler
+	Skill       *skillh.Handler
+	Agent       *agenth.Handler
+	Channel     *channelh.Handler
+	Command     *commandh.Handler
+	Callback    *callbackh.Handler
+	Dashboard   *dashboardh.Handler
+	Weixin      *weixinh.Handler
+	Job         *jobh.Handler
+	Workspace   *workspaceh.Handler
+	VoiceAvatar *voiceavatarh.Handler
 }
 
 // Register mounts all available resource routes under the given group.
@@ -57,6 +59,9 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		auth.POST("/login", h.User.Login)
 		auth.GET("/avatar/:filename", h.User.Avatar)
 	}
+	if h.VoiceAvatar != nil {
+		g.GET("/auth/voice-avatar/:filename", h.VoiceAvatar.Serve)
+	}
 	if h.Auth != nil {
 		g.Use(h.Auth)
 	}
@@ -64,6 +69,11 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		g.GET("/auth/me", h.User.Me)
 		g.POST("/auth/logout", h.User.Logout)
 		g.PUT("/auth/me/avatar", h.User.UpdateAvatar)
+	}
+	if h.VoiceAvatar != nil {
+		g.GET("/auth/me/voice-avatars", h.VoiceAvatar.List)
+		g.POST("/auth/me/voice-avatars", h.VoiceAvatar.Upload)
+		g.DELETE("/auth/me/voice-avatars/:id", h.VoiceAvatar.Delete)
 	}
 
 	if h.User != nil {

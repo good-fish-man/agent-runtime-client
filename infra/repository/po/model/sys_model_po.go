@@ -18,11 +18,12 @@ type SysModel struct {
 	Provider      string `gorm:"column:provider;type:varchar(50);comment:提供商;" json:"provider"`
 	BaseUrl       string `gorm:"column:base_url;type:varchar(255);comment:API地址;" json:"base_url"`
 	KeyID         string `gorm:"column:key_id;type:varchar(128);index;comment:用户模型Key ID;" json:"key_id"`
-	ModelType     string `gorm:"column:model_type;type:varchar(20);comment:llm/embedding;" json:"model_type"`
+	ModelType     string `gorm:"column:model_type;type:varchar(20);comment:llm/embedding/image/video;" json:"model_type"`
 	Category      string `gorm:"column:category;type:varchar(20);comment:default/rewrite/skill/summarize;" json:"category"`
 	Status        string `gorm:"column:status;type:varchar(20);comment:active/configured/error;" json:"status"`
 	Latency       string `gorm:"column:latency;type:varchar(20);comment:平均延迟;" json:"latency"`
 	ContextWindow string `gorm:"column:context_window;type:varchar(20);comment:上下文窗口;" json:"context_window"`
+	Capabilities  string `gorm:"column:capabilities;type:varchar(255);comment:模型能力;" json:"capabilities"`
 	Usage         int    `gorm:"column:usage;type:int;default:0;comment:使用次数;" json:"usage"`
 	Enabled       bool   `gorm:"column:enabled;type:boolean;not null;default:true;index;comment:管理员是否启用;" json:"enabled"`
 	RuntimeMode   string `gorm:"column:runtime_mode;type:varchar(20);not null;default:on_demand;index;comment:本地模型运行模式;" json:"runtime_mode"`

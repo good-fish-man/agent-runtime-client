@@ -14,6 +14,7 @@ type SysAgent struct {
 	Model          string `json:"model"`
 	EmbeddingModel string `json:"embedding_model"`
 	ImageModel     string `json:"image_model"`
+	VideoModel     string `json:"video_model"`
 	Config         string `json:"config"`
 	ConfigJson     string `json:"config_json"`
 	IsSystem       bool   `json:"is_system"`
@@ -33,4 +34,5 @@ type SysAgentUserModel struct {
 	Model          string `json:"model"`
 	EmbeddingModel string `json:"embedding_model"`
 	ImageModel     string `json:"image_model"`
+	VideoModel     string `json:"video_model"`
 }

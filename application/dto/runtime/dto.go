@@ -34,6 +34,20 @@ type AgentReq struct {
 	RequestID string                        `json:"request_id"`
 }
 
+// MediaGenerationReq is the authenticated direct-media request. Model secrets
+// are resolved server-side from ModelID and are never accepted from browsers.
+type MediaGenerationReq struct {
+	ModelID         string `json:"modelId" validate:"required"`
+	MediaType       string `json:"mediaType" validate:"required,oneof=image video"`
+	Operation       string `json:"operation"`
+	Prompt          string `json:"prompt" validate:"required"`
+	NegativePrompt  string `json:"negativePrompt"`
+	SourceURL       string `json:"sourceUrl"`
+	Size            string `json:"size"`
+	Quality         string `json:"quality"`
+	DurationSeconds int    `json:"durationSeconds"`
+}
+
 // ResumeReq is the POST /v1/resume body.
 type ResumeReq struct {
 	CheckpointID string                  `json:"checkpoint_id"`

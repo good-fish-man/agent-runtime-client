@@ -13,6 +13,7 @@ const (
 	ModelTypeLLM       = "llm"
 	ModelTypeEmbedding = "embedding"
 	ModelTypeImage     = "image"
+	ModelTypeVideo     = "video"
 
 	RuntimeModeAlwaysOn = "always_on"
 	RuntimeModeOnDemand = "on_demand"
