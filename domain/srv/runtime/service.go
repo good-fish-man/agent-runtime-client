@@ -60,6 +60,14 @@ func (s *RuntimeSvc) RunAgentStream(ctx context.Context, in *entity.AgentInput, 
 	return log.WrapError(s.gateway.RunAgentStream(ctx, in, emit), "RuntimeSvc.RunAgentStream.gateway")
 }
 
+func (s *RuntimeSvc) GenerateMedia(ctx context.Context, in *entity.MediaGenerationInput) (*entity.MediaGenerationResult, error) {
+	if in == nil || strings.TrimSpace(in.Prompt) == "" || strings.TrimSpace(in.Model.Name) == "" {
+		return nil, apierror.ErrBadRequest.WithMessage("model and prompt are required")
+	}
+	value, err := s.gateway.GenerateMedia(ctx, in)
+	return value, log.WrapError(err, "RuntimeSvc.GenerateMedia.gateway")
+}
+
 // Resume validates and resumes a checkpointed run.
 func (s *RuntimeSvc) Resume(ctx context.Context, in *entity.ResumeInput) (*entity.ResumeResult, error) {
 	if strings.TrimSpace(in.CheckpointID) == "" {

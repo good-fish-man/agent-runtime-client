@@ -69,6 +69,9 @@ func (r *SysModelRepo) Update(ctx context.Context, en *entity.SysModel) error {
 	if patch.ContextWindow != "" {
 		updates["context_window"] = patch.ContextWindow
 	}
+	if patch.Capabilities != "" {
+		updates["capabilities"] = patch.Capabilities
+	}
 	if patch.UpdatedBy != "" {
 		updates["updated_by"] = patch.UpdatedBy
 	}

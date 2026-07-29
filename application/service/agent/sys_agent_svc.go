@@ -36,6 +36,7 @@ var agentSummaryFields = []string{
 	"model",
 	"embedding_model",
 	"image_model",
+	"video_model",
 	"is_system",
 	"enabled",
 	"channels",
@@ -61,6 +62,9 @@ func (s *SysAgentService) CreateSysAgent(ctx context.Context, req *dto.CreateSys
 		return nil, log.WrapError(err, "SysAgentService")
 	}
 	if err := s.validateImageBinding(ctx, req.CreatedBy, req.ImageModel); err != nil {
+		return nil, log.WrapError(err, "SysAgentService")
+	}
+	if err := s.validateVideoBinding(ctx, req.CreatedBy, req.VideoModel); err != nil {
 		return nil, log.WrapError(err, "SysAgentService")
 	}
 	en := s.asm.D2ECreate(req)
@@ -106,8 +110,11 @@ func (s *SysAgentService) UpdateSysAgent(ctx context.Context, req *dto.UpdateSys
 		if err := s.validateImageBinding(ctx, req.UserID, req.ImageModel); err != nil {
 			return log.WrapError(err, "SysAgentService")
 		}
+		if err := s.validateVideoBinding(ctx, req.UserID, req.VideoModel); err != nil {
+			return log.WrapError(err, "SysAgentService")
+		}
 		return log.WrapError(s.srv.UpsertUserModel(ctx, &entity.SysAgentUserModel{
-			UserID: req.UserID, AgentID: existing.Ulid, Model: req.Model, EmbeddingModel: req.EmbeddingModel, ImageModel: req.ImageModel,
+			UserID: req.UserID, AgentID: existing.Ulid, Model: req.Model, EmbeddingModel: req.EmbeddingModel, ImageModel: req.ImageModel, VideoModel: req.VideoModel,
 		}), "SysAgentService.UpdateSysAgent.upsertUserModel")
 	}
 	if existing.CreatedBy != req.UserID {
@@ -123,6 +130,9 @@ func (s *SysAgentService) UpdateSysAgent(ctx context.Context, req *dto.UpdateSys
 		return log.WrapError(err, "SysAgentService")
 	}
 	if err := s.validateImageBinding(ctx, req.UserID, req.ImageModel); err != nil {
+		return log.WrapError(err, "SysAgentService")
+	}
+	if err := s.validateVideoBinding(ctx, req.UserID, req.VideoModel); err != nil {
 		return log.WrapError(err, "SysAgentService")
 	}
 	req.Config = preserveSensitiveConfig(existing.Config, req.Config)
@@ -275,6 +285,7 @@ func (s *SysAgentService) UploadSysAgent(ctx context.Context, req *dto.UploadSys
 		Model:          req.Model,
 		EmbeddingModel: req.EmbeddingModel,
 		ImageModel:     req.ImageModel,
+		VideoModel:     req.VideoModel,
 		Config:         req.Config,
 		ConfigJson:     req.ConfigJson,
 		Enabled:        req.Enabled,
@@ -358,10 +369,42 @@ func (s *SysAgentService) validateImageBinding(ctx context.Context, userID, mode
 	if model.CreatedBy != userID {
 		return apierror.ErrForbidden.WithMessage("Agent 只能绑定自己的图片模型")
 	}
-	if !strings.EqualFold(model.ModelType, "image") {
+	if !strings.EqualFold(model.ModelType, "image") && !hasCapability(model.Capabilities, "text-to-image", "image-output") {
 		return apierror.ErrBadRequest.WithMessage("请选择 Image 类型的模型")
 	}
 	return nil
+}
+
+func (s *SysAgentService) validateVideoBinding(ctx context.Context, userID, modelID string) error {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil
+	}
+	model, err := s.modelSrv.FindById(ctx, modelID)
+	if err != nil {
+		return log.WrapError(err, "SysAgentService")
+	}
+	if model == nil || model.Ulid == "" || model.DeletedAt != 0 {
+		return apierror.ErrBadRequest.WithMessage("Agent 绑定的视频模型不存在")
+	}
+	if model.CreatedBy != userID {
+		return apierror.ErrForbidden.WithMessage("Agent 只能绑定自己的视频模型")
+	}
+	if !strings.EqualFold(model.ModelType, "video") && !hasCapability(model.Capabilities, "text-to-video", "video-output") {
+		return apierror.ErrBadRequest.WithMessage("请选择 Video 类型的模型")
+	}
+	return nil
+}
+
+func hasCapability(value string, expected ...string) bool {
+	for _, item := range strings.Split(value, ",") {
+		for _, candidate := range expected {
+			if strings.EqualFold(strings.TrimSpace(item), candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *SysAgentService) applyUserModel(ctx context.Context, userID string, agent *entity.SysAgent) error {
@@ -373,18 +416,20 @@ func (s *SysAgentService) applyUserModel(ctx context.Context, userID string, age
 		agent.Model = ""
 		agent.EmbeddingModel = ""
 		agent.ImageModel = ""
+		agent.VideoModel = ""
 		return nil
 	}
 	agent.Model = binding.Model
 	agent.EmbeddingModel = binding.EmbeddingModel
 	agent.ImageModel = binding.ImageModel
-	agent.Config = modelBindingConfig(binding.Model, binding.EmbeddingModel, binding.ImageModel)
+	agent.VideoModel = binding.VideoModel
+	agent.Config = modelBindingConfig(binding.Model, binding.EmbeddingModel, binding.ImageModel, binding.VideoModel)
 	return nil
 }
 
-func modelBindingConfig(modelID, embeddingModelID, imageModelID string) string {
+func modelBindingConfig(modelID, embeddingModelID, imageModelID, videoModelID string) string {
 	models := map[string]string{"default": modelID, "rewrite": modelID, "skill": modelID, "summarize": modelID}
-	value := map[string]any{"models": models, "embeddingModel": embeddingModelID, "imageModel": imageModelID}
+	value := map[string]any{"models": models, "embeddingModel": embeddingModelID, "imageModel": imageModelID, "videoModel": videoModelID}
 	encoded, _ := json.Marshal(value)
 	return string(encoded)
 }

@@ -30,8 +30,9 @@ func TestModelBindingConfigIncludesEmbeddingModel(t *testing.T) {
 		Models         map[string]string `json:"models"`
 		EmbeddingModel string            `json:"embeddingModel"`
 		ImageModel     string            `json:"imageModel"`
+		VideoModel     string            `json:"videoModel"`
 	}
-	if err := json.Unmarshal([]byte(modelBindingConfig("chat-model", "embedding-model", "image-model")), &got); err != nil {
+	if err := json.Unmarshal([]byte(modelBindingConfig("chat-model", "embedding-model", "image-model", "video-model")), &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Models["default"] != "chat-model" || got.Models["summarize"] != "chat-model" {
@@ -42,5 +43,8 @@ func TestModelBindingConfigIncludesEmbeddingModel(t *testing.T) {
 	}
 	if got.ImageModel != "image-model" {
 		t.Fatalf("imageModel = %q, want image-model", got.ImageModel)
+	}
+	if got.VideoModel != "video-model" {
+		t.Fatalf("videoModel = %q, want video-model", got.VideoModel)
 	}
 }

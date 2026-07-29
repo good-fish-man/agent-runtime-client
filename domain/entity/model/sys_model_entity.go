@@ -18,6 +18,7 @@ type SysModel struct {
 	Status        string `json:"status"`
 	Latency       string `json:"latency"`
 	ContextWindow string `json:"context_window"`
+	Capabilities  string `json:"capabilities"`
 	Usage         int    `json:"usage"`
 	Enabled       bool   `json:"enabled"`
 	RuntimeMode   string `json:"runtime_mode"`

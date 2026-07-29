@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	assembler "github.com/good-fish-man/agent-runtime-client/application/assembler/runtime"
 	dto "github.com/good-fish-man/agent-runtime-client/application/dto/runtime"
@@ -34,14 +35,18 @@ type RuntimeService struct {
 	agentSvc  *agentsrv.SysAgentSvc
 	modelSvc  *modelsrv.SysModelSvc
 	memorySvc *memorysvc.Service
+	mediaRepo irepo.MediaJobRepository
 }
 
 // NewRuntimeService builds the application service.
-func NewRuntimeService(svc *dsrv.RuntimeSvc, agentSvc *agentsrv.SysAgentSvc, modelSvc *modelsrv.SysModelSvc, memorySvc *memorysvc.Service) *RuntimeService {
+func NewRuntimeService(svc *dsrv.RuntimeSvc, agentSvc *agentsrv.SysAgentSvc, modelSvc *modelsrv.SysModelSvc, memorySvc *memorysvc.Service, mediaRepos ...irepo.MediaJobRepository) *RuntimeService {
 	out := &RuntimeService{svc: svc}
 	out.agentSvc = agentSvc
 	out.modelSvc = modelSvc
 	out.memorySvc = memorySvc
+	if len(mediaRepos) > 0 {
+		out.mediaRepo = mediaRepos[0]
+	}
 	return out
 }
 
@@ -134,6 +139,147 @@ func (s *RuntimeService) RunAgentStream(ctx context.Context, req *dto.AgentReq, 
 	return log.WrapError(s.svc.RunAgentStream(ctx, in, s.memoryAwareEmitter(ctx, in.Context, emit)), "RuntimeService.RunAgentStream")
 }
 
+// GenerateMedia invokes one of the authenticated user's media models directly.
+func (s *RuntimeService) GenerateMedia(ctx context.Context, req *dto.MediaGenerationReq) (*entity.MediaGenerationResult, error) {
+	input, _, err := s.prepareMediaGeneration(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.svc.GenerateMedia(ctx, input)
+	return result, log.WrapError(err, "RuntimeService.GenerateMedia")
+}
+
+// CreateMediaJob persists a generation before executing it in the background.
+func (s *RuntimeService) CreateMediaJob(ctx context.Context, req *dto.MediaGenerationReq) (*entity.MediaGenerationJob, error) {
+	if s.mediaRepo == nil {
+		return nil, apierror.ErrRuntimeUnavailable.WithMessage("媒体任务存储未启用")
+	}
+	input, modelName, err := s.prepareMediaGeneration(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	job := &entity.MediaGenerationJob{
+		UserID: authctx.UserID(ctx), ModelID: req.ModelID, ModelName: modelName,
+		MediaType: input.MediaType, Prompt: input.Prompt, NegativePrompt: input.NegativePrompt,
+		SourceURL: input.SourceURL, Size: input.Size, Quality: input.Quality, DurationSeconds: input.DurationSeconds,
+		Status: entity.MediaJobStatusQueued, Progress: 0, TraceID: input.TraceID,
+	}
+	if err := s.mediaRepo.CreateMediaJob(ctx, job); err != nil {
+		return nil, log.WrapError(err, "RuntimeService.CreateMediaJob.create")
+	}
+	jobCopy, inputCopy := *job, *input
+	go s.runMediaJob(&jobCopy, &inputCopy)
+	return job, nil
+}
+
+func (s *RuntimeService) runMediaJob(job *entity.MediaGenerationJob, input *entity.MediaGenerationInput) {
+	ctx := log.WithReqID(context.Background(), job.TraceID)
+	release := log.BindCtx(ctx)
+	defer release()
+	job.Status, job.Progress, job.StartedAt = entity.MediaJobStatusRunning, 10, time.Now().UnixMilli()
+	if err := s.mediaRepo.UpdateMediaJob(ctx, job); err != nil {
+		log.Errorf("update media job %s to running: %v", job.Ulid, err)
+	}
+	result, err := s.svc.GenerateMedia(ctx, input)
+	job.FinishedAt, job.Progress = time.Now().UnixMilli(), 100
+	if err != nil {
+		job.Status, job.ErrorMessage = entity.MediaJobStatusFailed, err.Error()
+	} else {
+		job.Status, job.MediaURL, job.MimeType = entity.MediaJobStatusCompleted, result.MediaURL, result.MimeType
+		job.ProviderJobID = result.ProviderJobID
+	}
+	if updateErr := s.mediaRepo.UpdateMediaJob(ctx, job); updateErr != nil {
+		log.Errorf("finish media job %s: %v", job.Ulid, updateErr)
+	}
+}
+
+func (s *RuntimeService) ListMediaJobs(ctx context.Context, mediaType string, limit int) ([]*entity.MediaGenerationJob, error) {
+	if s.mediaRepo == nil {
+		return nil, apierror.ErrRuntimeUnavailable.WithMessage("媒体任务存储未启用")
+	}
+	return s.mediaRepo.ListMediaJobs(ctx, authctx.UserID(ctx), strings.ToLower(strings.TrimSpace(mediaType)), limit)
+}
+
+func (s *RuntimeService) FindMediaJob(ctx context.Context, id string) (*entity.MediaGenerationJob, error) {
+	if s.mediaRepo == nil {
+		return nil, apierror.ErrRuntimeUnavailable.WithMessage("媒体任务存储未启用")
+	}
+	job, err := s.mediaRepo.FindMediaJob(ctx, strings.TrimSpace(id), authctx.UserID(ctx))
+	if err != nil {
+		return nil, err
+	}
+	if job == nil || job.Ulid == "" {
+		return nil, apierror.ErrNotFound.WithMessage("媒体任务不存在")
+	}
+	return job, nil
+}
+
+func (s *RuntimeService) DeleteMediaJob(ctx context.Context, id string) error {
+	if _, err := s.FindMediaJob(ctx, id); err != nil {
+		return err
+	}
+	return s.mediaRepo.DeleteMediaJob(ctx, strings.TrimSpace(id), authctx.UserID(ctx))
+}
+
+func (s *RuntimeService) FailInterruptedMediaJobs(ctx context.Context) error {
+	if s.mediaRepo == nil {
+		return nil
+	}
+	return s.mediaRepo.FailInterruptedMediaJobs(ctx)
+}
+
+func (s *RuntimeService) prepareMediaGeneration(ctx context.Context, req *dto.MediaGenerationReq) (*entity.MediaGenerationInput, string, error) {
+	if s.modelSvc == nil {
+		return nil, "", apierror.ErrModelBindingRequired
+	}
+	model, err := s.modelSvc.FindById(ctx, strings.TrimSpace(req.ModelID))
+	if err != nil {
+		return nil, "", log.WrapError(err, "RuntimeService.GenerateMedia.findModel")
+	}
+	userID := authctx.UserID(ctx)
+	if model == nil || model.Ulid == "" || model.DeletedAt != 0 || model.CreatedBy != userID {
+		return nil, "", apierror.ErrForbidden.WithMessage("只能使用自己的媒体模型")
+	}
+	if !model.Enabled {
+		return nil, "", apierror.ErrForbidden.WithMessage("当前模型已被管理员停用")
+	}
+	mediaType := strings.ToLower(strings.TrimSpace(req.MediaType))
+	if !supportsMediaCapability(model.Capabilities, mediaType, req.SourceURL != "") {
+		return nil, "", apierror.ErrBadRequest.WithMessage("所选模型不支持当前生成能力")
+	}
+	resolved, err := s.resolveStoredModel(ctx, model, userID)
+	if err != nil {
+		return nil, "", log.WrapError(err, "RuntimeService.GenerateMedia.resolveModel")
+	}
+	input := &entity.MediaGenerationInput{
+		Model: entity.ModelConfig{
+			Provider: resolved.Provider, Name: resolved.Name, APIKey: resolved.ApiKey, APIBase: resolved.BaseUrl,
+			ExtraFields: map[string]any{"runtime_mode": resolved.RuntimeMode, "capabilities": model.Capabilities},
+		},
+		MediaType: mediaType, Operation: firstNonEmpty(req.Operation, "generate"), Prompt: req.Prompt,
+		NegativePrompt: req.NegativePrompt, SourceURL: req.SourceURL, Size: req.Size, Quality: req.Quality,
+		DurationSeconds: req.DurationSeconds, TraceID: traceID(ctx),
+	}
+	return input, resolved.Name, nil
+}
+
+func supportsMediaCapability(capabilities, mediaType string, hasSource bool) bool {
+	if strings.TrimSpace(capabilities) == "" {
+		return !hasSource && (mediaType == modelentity.ModelTypeImage || mediaType == modelentity.ModelTypeVideo)
+	}
+	wanted := "text-to-" + mediaType
+	if hasSource {
+		wanted = "image-to-" + mediaType
+	}
+	for _, capability := range strings.Split(capabilities, ",") {
+		if strings.EqualFold(strings.TrimSpace(capability), wanted) ||
+			(mediaType == modelentity.ModelTypeImage && hasSource && strings.EqualFold(strings.TrimSpace(capability), "image-edit")) {
+			return true
+		}
+	}
+	return false
+}
+
 // Resume resumes a checkpointed run.
 func (s *RuntimeService) Resume(ctx context.Context, req *dto.ResumeReq) (*entity.ResumeResult, error) {
 	in := assembler.ToResumeInput(req)
@@ -221,6 +367,7 @@ func (s *RuntimeService) hydrateAgentConfig(ctx context.Context, in *entity.RunI
 			agent.Model = binding.Model
 			agent.EmbeddingModel = binding.EmbeddingModel
 			agent.ImageModel = binding.ImageModel
+			agent.VideoModel = binding.VideoModel
 		}
 	}
 	cfg, ok := parseStoredAgentConfig(agent.ConfigJson)
@@ -337,6 +484,7 @@ func (s *RuntimeService) hydrateModels(ctx context.Context, models map[string]en
 			cfg.ExtraFields = make(map[string]any)
 		}
 		cfg.ExtraFields["runtime_mode"] = model.RuntimeMode
+		cfg.ExtraFields["capabilities"] = model.Capabilities
 		models[role] = cfg
 	}
 	return nil
@@ -380,7 +528,7 @@ func (s *RuntimeService) resolveModel(ctx context.Context, cfg entity.ModelConfi
 			if !m.Enabled {
 				return nil, apierror.ErrForbidden.WithMessage("当前模型已被管理员停用")
 			}
-			if err := validateRuntimeModelType(m.ModelType, expectedType); err != nil {
+			if err := validateRuntimeModelType(m.ModelType, expectedType, m.Capabilities); err != nil {
 				return nil, log.WrapError(err, "RuntimeService")
 			}
 			return s.resolveStoredModel(ctx, m, userID)
@@ -409,7 +557,7 @@ func (s *RuntimeService) resolveModel(ctx context.Context, cfg entity.ModelConfi
 		return nil, nil
 	}
 	m := ens[0]
-	if err := validateRuntimeModelType(m.ModelType, expectedType); err != nil {
+	if err := validateRuntimeModelType(m.ModelType, expectedType, m.Capabilities); err != nil {
 		return nil, log.WrapError(err, "RuntimeService")
 	}
 	return s.resolveStoredModel(ctx, m, userID)
@@ -422,11 +570,17 @@ func modelTypeForRole(role string) string {
 	if strings.EqualFold(strings.TrimSpace(role), "image") {
 		return "image"
 	}
+	if strings.EqualFold(strings.TrimSpace(role), "video") {
+		return "video"
+	}
 	return "llm"
 }
 
-func validateRuntimeModelType(actual, expected string) error {
+func validateRuntimeModelType(actual, expected string, capabilities ...string) error {
 	if strings.EqualFold(actual, expected) {
+		return nil
+	}
+	if len(capabilities) > 0 && (strings.EqualFold(expected, "image") || strings.EqualFold(expected, "video")) && supportsMediaCapability(capabilities[0], expected, false) {
 		return nil
 	}
 	if strings.EqualFold(expected, "embedding") {
@@ -434,6 +588,9 @@ func validateRuntimeModelType(actual, expected string) error {
 	}
 	if strings.EqualFold(expected, "image") {
 		return apierror.ErrBadRequest.WithMessage("Agent 的图片生成角色只能使用 Image 模型")
+	}
+	if strings.EqualFold(expected, "video") {
+		return apierror.ErrBadRequest.WithMessage("Agent 的视频生成角色只能使用 Video 模型")
 	}
 	return apierror.ErrBadRequest.WithMessage("Agent 只能使用 LLM 模型")
 }
@@ -447,7 +604,7 @@ func (s *RuntimeService) resolveStoredModel(ctx context.Context, model *modelent
 		if modelentity.RequiresAPIKey(model.Provider, model.BaseUrl) {
 			return nil, apierror.ErrModelBindingRequired.WithMessage("远程模型尚未绑定 Key")
 		}
-		return &modelEntity{Provider: model.Provider, Name: model.Name, BaseUrl: model.BaseUrl, RuntimeMode: runtimeMode}, nil
+		return &modelEntity{Provider: model.Provider, Name: model.Name, BaseUrl: model.BaseUrl, RuntimeMode: runtimeMode, Capabilities: model.Capabilities}, nil
 	}
 	apiKey := ""
 	baseURL := model.BaseUrl
@@ -466,15 +623,16 @@ func (s *RuntimeService) resolveStoredModel(ctx context.Context, model *modelent
 	if strings.TrimSpace(apiKey) == "" && modelentity.RequiresAPIKey(model.Provider, baseURL) {
 		return nil, apierror.ErrModelBindingRequired.WithMessage("模型 Key 尚未设置")
 	}
-	return &modelEntity{Provider: model.Provider, Name: model.Name, BaseUrl: baseURL, ApiKey: apiKey, RuntimeMode: runtimeMode}, nil
+	return &modelEntity{Provider: model.Provider, Name: model.Name, BaseUrl: baseURL, ApiKey: apiKey, RuntimeMode: runtimeMode, Capabilities: model.Capabilities}, nil
 }
 
 type modelEntity struct {
-	Provider    string
-	Name        string
-	BaseUrl     string
-	ApiKey      string
-	RuntimeMode string
+	Provider     string
+	Name         string
+	BaseUrl      string
+	ApiKey       string
+	RuntimeMode  string
+	Capabilities string
 }
 
 func modelID(cfg entity.ModelConfig) string {
@@ -562,6 +720,7 @@ func (s *RuntimeService) hydrateAgentModels(ctx context.Context, values map[stri
 			agent.Model = binding.Model
 			agent.EmbeddingModel = binding.EmbeddingModel
 			agent.ImageModel = binding.ImageModel
+			agent.VideoModel = binding.VideoModel
 		}
 	}
 	cfg, ok := parseStoredAgentConfig(agent.ConfigJson)
@@ -602,6 +761,11 @@ func bindStoredAgentModels(agent *agententity.SysAgent, configured map[string]en
 		bound["image"] = entity.ModelConfig{ExtraFields: map[string]any{"model_id": imageModelID}}
 	} else {
 		delete(bound, "image")
+	}
+	if videoModelID := strings.TrimSpace(agent.VideoModel); videoModelID != "" {
+		bound["video"] = entity.ModelConfig{ExtraFields: map[string]any{"model_id": videoModelID}}
+	} else {
+		delete(bound, "video")
 	}
 	*target = bound
 	return nil

@@ -33,6 +33,20 @@ type AgentInput struct {
 	TraceID   string                 `json:"trace_id"`
 }
 
+type MediaGenerationInput struct {
+	Model           ModelConfig `json:"model"`
+	MediaType       string      `json:"media_type"`
+	Operation       string      `json:"operation"`
+	Prompt          string      `json:"prompt"`
+	NegativePrompt  string      `json:"negative_prompt,omitempty"`
+	SourceURL       string      `json:"source_url,omitempty"`
+	Size            string      `json:"size,omitempty"`
+	Quality         string      `json:"quality,omitempty"`
+	DurationSeconds int         `json:"duration_seconds,omitempty"`
+	RequestID       string      `json:"request_id"`
+	TraceID         string      `json:"trace_id"`
+}
+
 // ResumeApproval is a single approval decision for a pending interrupt.
 type ResumeApproval struct {
 	InterruptID      string  `json:"interrupt_id"`
@@ -148,6 +162,47 @@ type AgentResult struct {
 	Metadata     *ResponseMetadata `json:"metadata,omitempty"`
 	Error        string            `json:"error,omitempty"`
 	TraceID      string            `json:"trace_id,omitempty"`
+}
+
+type MediaGenerationResult struct {
+	MediaURL      string `json:"mediaUrl"`
+	MediaType     string `json:"mediaType"`
+	MimeType      string `json:"mimeType"`
+	ProviderJobID string `json:"providerJobId,omitempty"`
+	TraceID       string `json:"traceId,omitempty"`
+}
+
+const (
+	MediaJobStatusQueued    = "queued"
+	MediaJobStatusRunning   = "running"
+	MediaJobStatusCompleted = "completed"
+	MediaJobStatusFailed    = "failed"
+)
+
+// MediaGenerationJob is a persisted, user-owned image or video generation.
+type MediaGenerationJob struct {
+	Ulid            string `json:"ulid"`
+	CreatedAt       int64  `json:"createdAt"`
+	UpdatedAt       int64  `json:"updatedAt"`
+	UserID          string `json:"-"`
+	ModelID         string `json:"modelId"`
+	ModelName       string `json:"modelName"`
+	MediaType       string `json:"mediaType"`
+	Prompt          string `json:"prompt"`
+	NegativePrompt  string `json:"negativePrompt,omitempty"`
+	SourceURL       string `json:"sourceUrl,omitempty"`
+	Size            string `json:"size,omitempty"`
+	Quality         string `json:"quality,omitempty"`
+	DurationSeconds int    `json:"durationSeconds,omitempty"`
+	Status          string `json:"status"`
+	Progress        int    `json:"progress"`
+	MediaURL        string `json:"mediaUrl,omitempty"`
+	MimeType        string `json:"mimeType,omitempty"`
+	ProviderJobID   string `json:"providerJobId,omitempty"`
+	ErrorMessage    string `json:"errorMessage,omitempty"`
+	TraceID         string `json:"traceId,omitempty"`
+	StartedAt       int64  `json:"startedAt,omitempty"`
+	FinishedAt      int64  `json:"finishedAt,omitempty"`
 }
 
 // ResumeResult is the result of a Resume.

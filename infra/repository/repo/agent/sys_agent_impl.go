@@ -48,7 +48,7 @@ func (r *SysAgentRepo) Update(ctx context.Context, en *entity.SysAgent) error {
 		return log.WrapError(err, "Repository")
 	}
 	// GORM skips empty struct fields; update separately so users can remove a binding.
-	return log.WrapError(db.Updates(map[string]any{"embedding_model": en.EmbeddingModel, "image_model": en.ImageModel}).Error, "Repository")
+	return log.WrapError(db.Updates(map[string]any{"embedding_model": en.EmbeddingModel, "image_model": en.ImageModel, "video_model": en.VideoModel}).Error, "Repository")
 }
 
 // UpdateEnabled updates only the enabled flag and updated_at timestamp.
@@ -163,16 +163,17 @@ func (r *SysAgentRepo) FindUserModel(ctx context.Context, userID, agentID string
 	return &entity.SysAgentUserModel{
 		Ulid: value.Ulid, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 		UserID: value.UserID, AgentID: value.AgentID, Model: value.Model, EmbeddingModel: value.EmbeddingModel,
+		ImageModel: value.ImageModel, VideoModel: value.VideoModel,
 	}, nil
 }
 
 func (r *SysAgentRepo) UpsertUserModel(ctx context.Context, en *entity.SysAgentUserModel) error {
 	value := &po.SysAgentUserModel{
 		Ulid: en.Ulid, UserID: en.UserID, AgentID: en.AgentID,
-		Model: en.Model, EmbeddingModel: en.EmbeddingModel, ImageModel: en.ImageModel,
+		Model: en.Model, EmbeddingModel: en.EmbeddingModel, ImageModel: en.ImageModel, VideoModel: en.VideoModel,
 	}
 	return r.data.DB(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_id"}, {Name: "agent_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"model", "embedding_model", "image_model", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"model", "embedding_model", "image_model", "video_model", "updated_at"}),
 	}).Create(value).Error
 }

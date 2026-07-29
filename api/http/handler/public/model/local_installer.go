@@ -278,6 +278,15 @@ func (i *localModelInstaller) runDiffusers(jobID string, catalog *dto.FindModelC
 			return
 		}
 	}
+	if strings.EqualFold(catalog.ModelType, modelentity.ModelTypeVideo) {
+		i.update(jobID, func(job *localModelInstallJob) {
+			job.Stage, job.Progress, job.Message = "runtime", 12, "正在检查本地视频生成依赖"
+		})
+		if err := installDiffusersVideoRuntime(); err != nil {
+			fail(err)
+			return
+		}
+	}
 	modelDir := diffusersModelPath(catalog.ModelVersion)
 	if diffusersModelInstalled(catalog.ModelVersion) {
 		i.update(jobID, func(job *localModelInstallJob) {
@@ -351,7 +360,7 @@ open(sys.argv[2] + "/.athena_complete", "w").write("ok")`
 				return
 			}
 			i.update(jobID, func(job *localModelInstallJob) {
-				job.Status, job.Stage, job.Progress, job.Message = "completed", "complete", 100, "图片模型已安装，可以创建并绑定到 Agent"
+				job.Status, job.Stage, job.Progress, job.Message = "completed", "complete", 100, "媒体模型已安装，可以直接生成或绑定到 Agent"
 			})
 			return
 		case <-ticker.C:
@@ -527,9 +536,17 @@ func installDiffusersRuntime(python string) error {
 	if output, err := exec.Command(python, "-m", "venv", venvDir).CombinedOutput(); err != nil {
 		return fmt.Errorf("创建 Python 隔离环境失败: %s", strings.TrimSpace(string(output)))
 	}
-	args := []string{"-m", "pip", "install", "--upgrade", "pip", "torch", "torchvision", "diffusers", "transformers", "accelerate", "safetensors", "huggingface_hub", "sentencepiece", "protobuf"}
+	args := []string{"-m", "pip", "install", "--upgrade", "pip", "torch", "torchvision", "diffusers", "transformers", "accelerate", "safetensors", "huggingface_hub", "sentencepiece", "protobuf", "imageio", "imageio-ffmpeg"}
 	if output, err := exec.Command(diffusersVenvPython(), args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("安装 Diffusers 依赖失败: %s", strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func installDiffusersVideoRuntime() error {
+	args := []string{"-m", "pip", "install", "--upgrade", "diffusers", "imageio", "imageio-ffmpeg"}
+	if output, err := exec.Command(diffusersVenvPython(), args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("安装视频生成依赖失败: %s", strings.TrimSpace(string(output)))
 	}
 	return nil
 }

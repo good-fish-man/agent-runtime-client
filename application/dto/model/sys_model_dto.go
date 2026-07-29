@@ -13,6 +13,7 @@ type (
 		ModelType     string `json:"modelType" validate:"required"`
 		Category      string `json:"category"`
 		ContextWindow string `json:"contextWindow"`
+		Capabilities  string `json:"capabilities"`
 	}
 
 	DelSysModelReq struct {
@@ -32,6 +33,7 @@ type (
 		Status        string  `json:"status"`
 		Latency       string  `json:"latency"`
 		ContextWindow string  `json:"contextWindow"`
+		Capabilities  string  `json:"capabilities"`
 		UserID        string  `json:"-"`
 	}
 
@@ -90,6 +92,7 @@ type (
 		Status        string `json:"status"`
 		Latency       string `json:"latency"`
 		ContextWindow string `json:"contextWindow"`
+		Capabilities  string `json:"capabilities"`
 		Usage         int    `json:"usage"`
 		Enabled       bool   `json:"enabled"`
 		RuntimeMode   string `json:"runtimeMode"`
