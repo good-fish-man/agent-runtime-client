@@ -10,6 +10,7 @@ import (
 
 type ChatApproval struct {
 	Ulid       string `gorm:"column:ulid;primaryKey;type:varchar(128);comment:ulid;" json:"ulid"`
+	UserId     string `gorm:"column:user_id;type:varchar(128);index:idx_approval_owner_status" json:"user_id"`
 	MessageId  string `gorm:"column:message_id;type:varchar(128);comment:消息ID;index:idx_message;" json:"message_id"`
 	AgentId    string `gorm:"column:agent_id;type:varchar(128);comment:智能体ID;" json:"agent_id"`
 	ToolName   string `gorm:"column:tool_name;type:varchar(128);comment:工具名称;" json:"tool_name"`

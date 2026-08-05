@@ -10,8 +10,8 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	converter "github.com/good-fish-man/agent-runtime-client/infra/repository/converter/skill"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/skill"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
+	log "github.com/good-fish-man/logx"
 )
 
 var _ irepo.ISysSkillRepo = (*SysSkillRepo)(nil)

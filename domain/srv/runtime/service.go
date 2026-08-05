@@ -9,9 +9,9 @@ import (
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
 	irepo "github.com/good-fish-man/agent-runtime-client/domain/irepository/runtime"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
+	log "github.com/good-fish-man/logx"
 )
 
 // RuntimeSvc orchestrates validation/defaults over the gateway port.
@@ -58,6 +58,11 @@ func (s *RuntimeSvc) RunAgentStream(ctx context.Context, in *entity.AgentInput, 
 		return log.WrapError(err, "RuntimeSvc.RunAgentStream.prepare")
 	}
 	return log.WrapError(s.gateway.RunAgentStream(ctx, in, emit), "RuntimeSvc.RunAgentStream.gateway")
+}
+
+func (s *RuntimeSvc) ListCapabilities(ctx context.Context, traceID string) ([]entity.CapabilityDefinition, error) {
+	result, err := s.gateway.ListCapabilities(ctx, traceID)
+	return result, log.WrapError(err, "RuntimeSvc.ListCapabilities.gateway")
 }
 
 func (s *RuntimeSvc) GenerateMedia(ctx context.Context, in *entity.MediaGenerationInput) (*entity.MediaGenerationResult, error) {

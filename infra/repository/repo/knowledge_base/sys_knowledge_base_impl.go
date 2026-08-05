@@ -8,8 +8,8 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	converter "github.com/good-fish-man/agent-runtime-client/infra/repository/converter/knowledge_base"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/knowledge_base"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
+	log "github.com/good-fish-man/logx"
 )
 
 var _ irepo.ISysKnowledgeBaseRepo = (*SysKnowledgeBaseRepo)(nil)

@@ -10,7 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
+	log "github.com/good-fish-man/logx"
 )
 
 const (

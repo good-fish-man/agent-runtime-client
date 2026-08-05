@@ -23,7 +23,7 @@ func toRunRequest(in *entity.RunInput) *runtimev1.RunRequest {
 		Mcps:           toMCPs(in.MCPs),
 		Clis:           toCLIs(in.CLIs),
 		A2A:            toA2A(in.A2A),
-		Tools:          toTools(in.Tools),
+		Capabilities:   toCapabilities(in.Capabilities),
 		InternalAgents: toInternalAgents(in.InternalAgents),
 		SubAgents:      toSubAgents(in.SubAgents),
 		Options:        toRunOptions(in.Options),
@@ -39,12 +39,13 @@ func toAgentRequest(in *entity.AgentInput) *runtimev1.AgentRequest {
 		return &runtimev1.AgentRequest{}
 	}
 	return &runtimev1.AgentRequest{
-		Task:      in.Task,
-		Context:   infrapkg.ToStruct(in.Context),
-		Models:    toModels(in.Models),
-		Stream:    in.Stream,
-		RequestId: in.RequestID,
-		TraceId:   in.TraceID,
+		Task:         in.Task,
+		Context:      infrapkg.ToStruct(in.Context),
+		Models:       toModels(in.Models),
+		Capabilities: toCapabilities(in.Capabilities),
+		Stream:       in.Stream,
+		RequestId:    in.RequestID,
+		TraceId:      in.TraceID,
 	}
 }
 
@@ -285,30 +286,18 @@ func toCLIs(clis []entity.CLIConfig) []*runtimev1.CLIConfig {
 	return out
 }
 
-func toTools(tools []entity.ToolConfig) []*runtimev1.ToolConfig {
-	if len(tools) == 0 {
+func toCapabilities(values []entity.CapabilityConfig) []*runtimev1.CapabilityConfig {
+	if len(values) == 0 {
 		return nil
 	}
-	out := make([]*runtimev1.ToolConfig, 0, len(tools))
-	for i := range tools {
-		out = append(out, toTool(&tools[i]))
+	result := make([]*runtimev1.CapabilityConfig, 0, len(values))
+	for _, value := range values {
+		if value.ID == "" {
+			continue
+		}
+		result = append(result, &runtimev1.CapabilityConfig{Id: value.ID, Config: infrapkg.ToStruct(value.Config)})
 	}
-	return out
-}
-
-func toTool(t *entity.ToolConfig) *runtimev1.ToolConfig {
-	if t == nil {
-		return nil
-	}
-	return &runtimev1.ToolConfig{
-		Type:        t.Type,
-		Name:        t.Name,
-		Description: t.Description,
-		Endpoint:    t.Endpoint,
-		Method:      t.Method,
-		Headers:     t.Headers,
-		RiskLevel:   infrapkg.RiskLevelToProto(t.RiskLevel),
-	}
+	return result
 }
 
 func toA2A(list []entity.A2AAgentConfig) []*runtimev1.A2AAgentConfig {
@@ -357,7 +346,7 @@ func toSubAgents(list []entity.SubAgentConfig) []*runtimev1.SubAgentConfig {
 			Description:   a.Description,
 			Prompt:        a.Prompt,
 			Model:         toModelConfig(a.Model),
-			Tools:         toTools(a.Tools),
+			Capabilities:  toCapabilities(a.Capabilities),
 			Skills:        toSkills(a.Skills),
 			MaxIterations: a.MaxIterations,
 			TimeoutMs:     a.TimeoutMs,

@@ -13,7 +13,7 @@ type RunInput struct {
 	MCPs           []MCPConfig            `json:"mcps,omitempty"`
 	CLIs           []CLIConfig            `json:"clis,omitempty"`
 	A2A            []A2AAgentConfig       `json:"a2a,omitempty"`
-	Tools          []ToolConfig           `json:"tools,omitempty"`
+	Capabilities   []CapabilityConfig     `json:"capabilities,omitempty"`
 	InternalAgents []InternalAgentConfig  `json:"internal_agents,omitempty"`
 	SubAgents      []SubAgentConfig       `json:"sub_agents,omitempty"`
 	Options        *RunOptions            `json:"options,omitempty"`
@@ -25,12 +25,25 @@ type RunInput struct {
 
 // AgentInput is a domain request to run the built-in agent loop.
 type AgentInput struct {
-	Task      string                 `json:"task"`
-	Context   map[string]any         `json:"context,omitempty"`
-	Models    map[string]ModelConfig `json:"models,omitempty"`
-	Stream    bool                   `json:"stream"`
-	RequestID string                 `json:"request_id"`
-	TraceID   string                 `json:"trace_id"`
+	Task         string                 `json:"task"`
+	Context      map[string]any         `json:"context,omitempty"`
+	Models       map[string]ModelConfig `json:"models,omitempty"`
+	Capabilities []CapabilityConfig     `json:"capabilities,omitempty"`
+	Stream       bool                   `json:"stream"`
+	RequestID    string                 `json:"request_id"`
+	TraceID      string                 `json:"trace_id"`
+}
+
+type CapabilityDefinition struct {
+	ID          string            `json:"id"`
+	Description string            `json:"description"`
+	Input       map[string]string `json:"input,omitempty"`
+	Output      string            `json:"output,omitempty"`
+	ReadOnly    bool              `json:"read_only"`
+	Risk        string            `json:"risk"`
+	Status      string            `json:"status"`
+	Provider    string            `json:"provider,omitempty"`
+	Reason      string            `json:"reason,omitempty"`
 }
 
 type MediaGenerationInput struct {

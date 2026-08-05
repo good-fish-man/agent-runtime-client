@@ -16,22 +16,25 @@ type RunReq struct {
 	MCPs           []entity.MCPConfig            `json:"mcps"`
 	CLIs           []entity.CLIConfig            `json:"clis"`
 	A2A            []entity.A2AAgentConfig       `json:"a2a"`
-	Tools          []entity.ToolConfig           `json:"tools"`
+	Capabilities   []entity.CapabilityConfig     `json:"capabilities"`
 	InternalAgents []entity.InternalAgentConfig  `json:"internal_agents"`
 	SubAgents      []entity.SubAgentConfig       `json:"sub_agents"`
 	Options        *entity.RunOptions            `json:"options"`
 	Sandbox        *entity.SandboxConfig         `json:"sandbox"`
 	Files          []entity.FileConfig           `json:"files"`
 	RequestID      string                        `json:"request_id"`
+	DeviceID       string                        `json:"device_id"`
 }
 
 // AgentReq is the POST /v1/agent(/stream) body.
 type AgentReq struct {
-	Task      string                        `json:"task"`
-	Context   map[string]any                `json:"context"`
-	Models    map[string]entity.ModelConfig `json:"models"`
-	Stream    bool                          `json:"stream"`
-	RequestID string                        `json:"request_id"`
+	Task         string                        `json:"task"`
+	Context      map[string]any                `json:"context"`
+	Models       map[string]entity.ModelConfig `json:"models"`
+	Capabilities []entity.CapabilityConfig     `json:"capabilities"`
+	Stream       bool                          `json:"stream"`
+	RequestID    string                        `json:"request_id"`
+	DeviceID     string                        `json:"device_id"`
 }
 
 // MediaGenerationReq is the authenticated direct-media request. Model secrets

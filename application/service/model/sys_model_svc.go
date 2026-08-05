@@ -11,9 +11,9 @@ import (
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/model"
 	srv "github.com/good-fish-man/agent-runtime-client/domain/srv/model"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
+	log "github.com/good-fish-man/logx"
 )
 
 // SysModelService is the application service for model-provider configuration.

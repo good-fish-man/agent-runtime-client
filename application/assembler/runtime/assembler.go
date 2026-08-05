@@ -22,7 +22,7 @@ func ToRunInput(r *dto.RunReq) *entity.RunInput {
 		MCPs:           r.MCPs,
 		CLIs:           r.CLIs,
 		A2A:            r.A2A,
-		Tools:          r.Tools,
+		Capabilities:   r.Capabilities,
 		InternalAgents: r.InternalAgents,
 		SubAgents:      r.SubAgents,
 		Options:        r.Options,
@@ -38,11 +38,12 @@ func ToAgentInput(r *dto.AgentReq) *entity.AgentInput {
 		return &entity.AgentInput{}
 	}
 	return &entity.AgentInput{
-		Task:      r.Task,
-		Context:   r.Context,
-		Models:    r.Models,
-		Stream:    r.Stream,
-		RequestID: r.RequestID,
+		Task:         r.Task,
+		Context:      r.Context,
+		Models:       r.Models,
+		Capabilities: r.Capabilities,
+		Stream:       r.Stream,
+		RequestID:    r.RequestID,
 	}
 }
 

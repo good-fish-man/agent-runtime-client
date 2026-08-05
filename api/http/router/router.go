@@ -19,6 +19,7 @@ func Register(engine *gin.Engine, h *handler.Handler, auth gin.HandlerFunc) {
 		v1.Use(auth)
 	}
 	{
+		v1.GET("/capabilities", h.ListCapabilities)
 		v1.POST("/run", h.Run)
 		v1.POST("/run/stream", h.RunStream)
 		v1.POST("/agent", h.Agent)

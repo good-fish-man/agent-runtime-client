@@ -10,13 +10,16 @@ import (
 	modelentity "github.com/good-fish-man/agent-runtime-client/domain/entity/model"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	agentpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/agent"
+	browserpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/browser"
 	channelpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/channel"
 	chatpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/chat"
+	controlpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/control"
 	jobpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/job"
 	kbpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/knowledge_base"
 	memorypo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/memory"
 	modelpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/model"
 	runtimepo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/runtime"
+	scheduledtaskpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/scheduledtask"
 	skillpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/skill"
 	userpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/user"
 )
@@ -38,6 +41,7 @@ func InitTables(ctx context.Context, d *data.Data) error {
 		&userpo.SysUser{},
 		&userpo.SysUserSession{},
 		&userpo.SysLog{},
+		&browserpo.SiteCredential{},
 		&modelpo.SysModelKey{},
 		&modelpo.SysModel{},
 		&modelpo.ModelCatalog{},
@@ -51,9 +55,14 @@ func InitTables(ctx context.Context, d *data.Data) error {
 		&chatpo.ChatMessage{},
 		&chatpo.ChatApproval{},
 		&chatpo.ChatTokenStats{},
+		&controlpo.Device{},
+		&controlpo.Task{},
+		&controlpo.Action{},
+		&controlpo.Observation{},
 		&memorypo.AgentMemory{},
 		&jobpo.JobExecutionPO{},
 		&runtimepo.MediaGenerationJob{},
+		&scheduledtaskpo.ScheduledTask{},
 	); err != nil {
 		return err
 	}

@@ -31,6 +31,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/pkg/ulid"
 	"github.com/good-fish-man/agent-runtime-client/pkg/validate"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
+	"github.com/good-fish-man/agent-runtime-client/types/consts"
 	"github.com/good-fish-man/agent-runtime-client/types/response"
 )
 
@@ -54,12 +55,12 @@ func newModelTrainingManager(store *data.Data, runtimeSvc *runtimesvc.RuntimeSer
 	root := strings.TrimSpace(configuredRoot)
 	if root == "" {
 		if cache, err := os.UserCacheDir(); err == nil {
-			root = filepath.Join(cache, "athena", "model-training")
+			root = filepath.Join(cache, consts.DefaultAthenaTempDirName, consts.DirModelTraining)
 		} else {
-			root = filepath.Join(os.TempDir(), "athena-model-training")
+			root = filepath.Join(os.TempDir(), consts.DefaultModelTrainingTempDirName)
 		}
 	} else {
-		root = filepath.Join(root, "model-training")
+		root = filepath.Join(root, consts.DirModelTraining)
 	}
 	_ = os.MkdirAll(root, 0o700)
 	manager := &modelTrainingManager{data: store, runtimeSvc: runtimeSvc, root: root, cancels: make(map[string]context.CancelFunc)}

@@ -12,7 +12,7 @@ import (
 	runtimev1 "github.com/good-fish-man/agent-runtime/gen/agent/runtime/v1"
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
+	log "github.com/good-fish-man/logx"
 )
 
 // Client wraps a gRPC connection to agent-runtime.

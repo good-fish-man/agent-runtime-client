@@ -19,6 +19,7 @@ Agent Runtime Client 是 Athena 的控制面和公共 HTTP API。它负责用户
 - 启动时自动迁移数据库，并初始化公共目录与 Agent 数据。
 - Dashboard、记忆、渠道、回调、命令执行、服务配置与重启接口。
 - 带源码位置的错误链，并只在 HTTP 边界集中输出一次。
+- 面向桌面设备的 WebSocket Action/Observation 控制面与能力协商（[协议文档](docs/action-observation-protocol.md)）。
 
 ## 系统架构
 
@@ -51,7 +52,7 @@ api -> application -> domain <- infra
 | `infra/` | GORM Repository、数据库迁移、gRPC Runtime Gateway |
 | `boot/` | 依赖装配和进程启动 |
 | `config/` | YAML 与环境变量配置 |
-| `pkg/log/` | 结构化日志、请求 ID 与错误链 |
+| `github.com/good-fish-man/logx` | 共享结构化日志、请求 ID 与错误链 |
 
 ## 环境要求
 
@@ -115,6 +116,7 @@ Runtime 执行接口位于根路径：
 | --- | --- | --- |
 | `GET` | `/healthz` | 服务健康检查 |
 | `GET` | `/health/ready` | Runtime 连接检查 |
+| `GET` | `/v1/capabilities` | Runtime 能力注册目录 |
 | `POST` | `/v1/run` | 完整执行 |
 | `POST` | `/v1/run/stream` | SSE 流式执行 |
 | `POST` | `/v1/agent` | Agent 执行 |
@@ -129,6 +131,8 @@ Runtime 执行接口位于根路径：
 | `/auth`、`/user` | 登录、注册、资料/头像和用户管理 |
 | `/agent` | Agent CRUD、上传、启停、用户模型绑定 |
 | `/model`、`/model-key` | 模型目录、凭据、本地安装、生命周期和训练 |
+| `/site-credential` | 当前用户的网站账号元数据与 Auth Vault 辅助登录 |
+| `/scheduled-task` | 用户隔离的持久化监控任务、执行记录与结果复核 |
 | `/memory` | 用户/Agent 长期记忆 |
 | `/skill` | 内置/自定义 Skill 管理与 ZIP 上传 |
 | `/knowledge_base` | 检索配置与召回测试 |
@@ -174,6 +178,9 @@ paths:
 | `ARC_RUNTIME_GRPC_ADDR`、`ARC_RUNTIME_HTTP_ADDR` | Runtime 地址 |
 | `ARC_DB_TYPE`、`ARC_DB_HOST`、`ARC_DB_PORT` | 数据库连接 |
 | `ARC_DB_USER`、`ARC_DB_PASSWORD`、`ARC_DB_NAME` | 数据库凭据 |
+| `ARC_SCHEDULED_TASK_SCAN_INTERVAL_SEC` | 定时任务扫描数据库的间隔，默认 `60` 秒 |
+| `ATHENA_INTERNAL_SERVICE_TOKEN` | 内部定时任务接口校验的本机共享令牌 |
+| `ATHENA_DEVICE_TOKEN` | 桌面 Action/Observation WebSocket 使用的 Bearer Token |
 
 `db_host` 和 `db_name` 都不为空时启用数据库。模型供应商密钥应保存到模型 Key 表，不应提交到源码或在公共 API 中返回。
 

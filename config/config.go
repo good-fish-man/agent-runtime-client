@@ -17,12 +17,22 @@ import (
 
 // Config is the root configuration.
 type Config struct {
-	Server  ServerConfig  `yaml:"server"`
-	Runtime RuntimeConfig `yaml:"runtime"`
-	Log     LogConfig     `yaml:"log"`
-	Model   ModelConfig   `yaml:"model"`
-	DB      DBConfig      `yaml:"db"`
-	Paths   PathsConfig   `yaml:"paths"`
+	Server        ServerConfig        `yaml:"server"`
+	Runtime       RuntimeConfig       `yaml:"runtime"`
+	Log           LogConfig           `yaml:"log"`
+	Model         ModelConfig         `yaml:"model"`
+	DB            DBConfig            `yaml:"db"`
+	Paths         PathsConfig         `yaml:"paths"`
+	Control       ControlConfig       `yaml:"control"`
+	ScheduledTask ScheduledTaskConfig `yaml:"scheduled_task"`
+}
+
+type ControlConfig struct {
+	DeviceToken string `yaml:"device_token"`
+}
+
+type ScheduledTaskConfig struct {
+	ScanIntervalSec int `yaml:"scan_interval_sec"`
 }
 
 // DBConfig configures the shared relational database. Field names mirror
@@ -109,6 +119,7 @@ func Default() *Config {
 			SlowThreshold:   10,
 			Charset:         "utf8mb4",
 		},
+		ScheduledTask: ScheduledTaskConfig{ScanIntervalSec: consts.DefaultScheduledTaskScanIntervalSec},
 	}
 }
 
@@ -148,6 +159,9 @@ func ResolvePath(path string) string {
 }
 
 func applyEnvOverrides(cfg *Config) {
+	if v := os.Getenv("ATHENA_DEVICE_TOKEN"); v != "" {
+		cfg.Control.DeviceToken = v
+	}
 	if v := os.Getenv(consts.EnvHTTPAddr); v != "" {
 		cfg.Server.HTTPAddr = v
 	}
@@ -174,6 +188,11 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv(consts.EnvDefaultAPIBase); v != "" {
 		cfg.Model.APIBase = v
+	}
+	if v := os.Getenv(consts.EnvScheduledTaskScanIntervalSec); v != "" {
+		if sec, err := strconv.Atoi(v); err == nil {
+			cfg.ScheduledTask.ScanIntervalSec = sec
+		}
 	}
 
 	// Database overrides (shared with agent-frame).
@@ -216,5 +235,8 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if cfg.Runtime.HTTPAddr == "" {
 		cfg.Runtime.HTTPAddr = consts.DefaultRuntimeHTTPAddr
+	}
+	if cfg.ScheduledTask.ScanIntervalSec <= 0 {
+		cfg.ScheduledTask.ScanIntervalSec = consts.DefaultScheduledTaskScanIntervalSec
 	}
 }

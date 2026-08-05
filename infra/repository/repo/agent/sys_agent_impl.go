@@ -12,8 +12,8 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	converter "github.com/good-fish-man/agent-runtime-client/infra/repository/converter/agent"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/agent"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
+	log "github.com/good-fish-man/logx"
 )
 
 var _ irepo.ISysAgentRepo = (*SysAgentRepo)(nil)

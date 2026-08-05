@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
+	log "github.com/good-fish-man/logx"
 )
 
 func TestUnit_Trace_UsesIncomingRequestID(t *testing.T) {

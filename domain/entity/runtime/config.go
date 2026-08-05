@@ -114,15 +114,10 @@ type CLIConfig struct {
 	AuthType  string `json:"auth_type"`
 }
 
-// ToolConfig configures an HTTP/function tool.
-type ToolConfig struct {
-	Type        string            `json:"type"`
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Endpoint    string            `json:"endpoint"`
-	Method      string            `json:"method"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	RiskLevel   string            `json:"risk_level"`
+// CapabilityConfig selects a provider-independent Runtime ability.
+type CapabilityConfig struct {
+	ID     string         `json:"id"`
+	Config map[string]any `json:"config,omitempty"`
 }
 
 // A2AAgentConfig configures an agent-to-agent endpoint.
@@ -143,16 +138,16 @@ type InternalAgentConfig struct {
 
 // SubAgentConfig configures a delegated sub-agent.
 type SubAgentConfig struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	Description   string         `json:"description"`
-	Prompt        string         `json:"prompt"`
-	Model         *ModelConfig   `json:"model,omitempty"`
-	Tools         []ToolConfig   `json:"tools,omitempty"`
-	Skills        []Skill        `json:"skills,omitempty"`
-	MaxIterations int32          `json:"max_iterations"`
-	TimeoutMs     int32          `json:"timeout_ms"`
-	Extra         map[string]any `json:"extra,omitempty"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	Description   string             `json:"description"`
+	Prompt        string             `json:"prompt"`
+	Model         *ModelConfig       `json:"model,omitempty"`
+	Capabilities  []CapabilityConfig `json:"capabilities,omitempty"`
+	Skills        []Skill            `json:"skills,omitempty"`
+	MaxIterations int32              `json:"max_iterations"`
+	TimeoutMs     int32              `json:"timeout_ms"`
+	Extra         map[string]any     `json:"extra,omitempty"`
 }
 
 // KnowledgeBaseConfig configures a retrievable knowledge base.

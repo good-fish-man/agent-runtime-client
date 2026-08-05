@@ -3,7 +3,7 @@ package apierror
 import (
 	"testing"
 
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
+	log "github.com/good-fish-man/logx"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

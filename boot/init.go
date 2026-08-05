@@ -12,9 +12,11 @@ import (
 	"github.com/gin-gonic/gin"
 
 	httpapi "github.com/good-fish-man/agent-runtime-client/api/http"
+	controlhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/control"
 	handler "github.com/good-fish-man/agent-runtime-client/api/http/handler/runtime"
 	"github.com/good-fish-man/agent-runtime-client/api/http/middleware"
 	"github.com/good-fish-man/agent-runtime-client/api/http/router/public"
+	controlsvc "github.com/good-fish-man/agent-runtime-client/application/service/control"
 	appsvc "github.com/good-fish-man/agent-runtime-client/application/service/runtime"
 	"github.com/good-fish-man/agent-runtime-client/config"
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
@@ -24,11 +26,13 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	"github.com/good-fish-man/agent-runtime-client/infra/db"
 	"github.com/good-fish-man/agent-runtime-client/infra/repository/migration"
+	controlrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/control"
 	runtimerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/runtime"
 	inruntime "github.com/good-fish-man/agent-runtime-client/infra/runtime"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
+	log "github.com/good-fish-man/logx"
 
 	agenthandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/agent"
+	browsercredentialhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/browsercredential"
 	callbackhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/callback"
 	channelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/channel"
 	commandhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/command"
@@ -38,6 +42,7 @@ import (
 	kbhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
 	memoryhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/memory"
 	modelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
+	scheduledtaskhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/scheduledtask"
 	skillhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/skill"
 	userhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/user"
 	voiceavatarhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/voiceavatar"
@@ -45,11 +50,13 @@ import (
 	workspacehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/workspace"
 
 	agentsvc "github.com/good-fish-man/agent-runtime-client/application/service/agent"
+	browsercredentialsvc "github.com/good-fish-man/agent-runtime-client/application/service/browsercredential"
 	channelsvc "github.com/good-fish-man/agent-runtime-client/application/service/channel"
 	jobsvc "github.com/good-fish-man/agent-runtime-client/application/service/job"
 	kbsvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge_base"
 	memorysvc "github.com/good-fish-man/agent-runtime-client/application/service/memory"
 	modelsvc "github.com/good-fish-man/agent-runtime-client/application/service/model"
+	scheduledtasksvc "github.com/good-fish-man/agent-runtime-client/application/service/scheduledtask"
 	skillsvc "github.com/good-fish-man/agent-runtime-client/application/service/skill"
 	usersvc "github.com/good-fish-man/agent-runtime-client/application/service/user"
 )
@@ -60,8 +67,9 @@ type App struct {
 	Engine  *gin.Engine
 	Restart <-chan struct{}
 
-	client *inruntime.Client
-	data   *data.Data
+	client  *inruntime.Client
+	data    *data.Data
+	Control *controlsvc.Hub
 }
 
 // Init builds the App from the config at cfgPath (empty uses defaults+env).
@@ -82,6 +90,9 @@ func Init(cfgPath string) (*App, error) {
 			return nil, err
 		}
 		store = data.New(gdb)
+		if err := migration.InitTables(context.Background(), store); err != nil {
+			return nil, err
+		}
 	}
 
 	client, err := inruntime.NewClient(
@@ -106,7 +117,7 @@ func Init(cfgPath string) (*App, error) {
 	}
 	appService := appsvc.NewRuntimeService(domainSvc, runtimeAgentSvc, runtimeModelSvc, runtimeMemorySvc)
 	if store != nil {
-		appService = appsvc.NewRuntimeService(domainSvc, runtimeAgentSvc, runtimeModelSvc, runtimeMemorySvc, runtimerepo.NewMediaJobRepo(store))
+		appService = appsvc.NewRuntimeService(domainSvc, runtimeAgentSvc, runtimeModelSvc, runtimeMemorySvc, runtimerepo.NewMediaJobRepo(store)).WithChatRecorder(store)
 	}
 	h := handler.NewHandler(appService)
 
@@ -117,8 +128,20 @@ func Init(cfgPath string) (*App, error) {
 	}
 	pub := buildPublicHandlers(cfg, store, appService, paths, restart)
 	engine := httpapi.NewEngine(h, pub, cfg.Server.PublicPrefix, cfg.Server.Mode)
+	var controlHub *controlsvc.Hub
+	if store != nil {
+		controlStore := controlrepo.NewStore(store)
+		if err := controlStore.MarkAllDevicesOffline(context.Background(), time.Now().UTC()); err != nil {
+			return nil, err
+		}
+		controlHub = controlsvc.NewHub(controlStore)
+	} else {
+		controlHub = controlsvc.NewHub()
+	}
+	appService.SetControlHub(controlHub)
+	controlhandler.NewHandler(controlHub, cfg.Control.DeviceToken).Register(engine, pub.Auth, cfg.Server.PublicPrefix)
 
-	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store}, nil
+	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store, Control: controlHub}, nil
 }
 
 // buildPublicHandlers wires the agent-frame-compatible resource handlers. The
@@ -134,9 +157,7 @@ func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *a
 
 	if store != nil {
 		modelService := modelsvc.NewSysModelService(store)
-		if err := migration.InitTables(context.Background(), store); err != nil {
-			log.Warnf("init database tables failed: %v", err)
-		} else if err := runtimeService.FailInterruptedMediaJobs(context.Background()); err != nil {
+		if err := runtimeService.FailInterruptedMediaJobs(context.Background()); err != nil {
 			log.Warnf("recover interrupted media jobs failed: %v", err)
 		}
 		pub.User = userhandler.NewHandler(usersvc.NewSysUserService(store)).WithAvatarStorage(paths.UploadsDir, cfg.Server.PublicPrefix)
@@ -144,6 +165,10 @@ func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *a
 		pub.Auth = middleware.Auth(store)
 		pub.Model = modelhandler.NewHandler(modelService).WithRuntime(cfg.Runtime.HTTPAddr).WithTraining(store, runtimeService, paths.UploadsDir)
 		pub.Memory = memoryhandler.NewHandler(memorysvc.NewService(store))
+		pub.BrowserCredential = browsercredentialhandler.NewHandler(browsercredentialsvc.NewService(store))
+		scheduledService := scheduledtasksvc.NewService(store, runtimeService, time.Duration(cfg.ScheduledTask.ScanIntervalSec)*time.Second)
+		scheduledService.Start(context.Background())
+		pub.ScheduledTask = scheduledtaskhandler.NewHandler(scheduledService)
 		pub.KB = kbhandler.NewHandler(kbsvc.NewSysKnowledgeBaseService(store))
 		pub.Skill = skillhandler.NewHandler(skillsvc.NewSysSkillService(store))
 		agentService := agentsvc.NewSysAgentService(store)

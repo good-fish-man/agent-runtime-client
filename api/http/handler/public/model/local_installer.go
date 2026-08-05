@@ -23,6 +23,7 @@ import (
 	modelentity "github.com/good-fish-man/agent-runtime-client/domain/entity/model"
 	"github.com/good-fish-man/agent-runtime-client/pkg/ulid"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
+	"github.com/good-fish-man/agent-runtime-client/types/consts"
 	"github.com/good-fish-man/agent-runtime-client/types/response"
 )
 
@@ -36,6 +37,11 @@ type localModelInstaller struct {
 	jobs       map[string]*localModelInstallJob
 	modelLocks map[string]*sync.Mutex
 }
+
+const (
+	ollamaStartupProbeAttempts = 40
+	ollamaStartupProbeInterval = 500 * time.Millisecond
+)
 
 func newLocalModelInstaller() *localModelInstaller {
 	return &localModelInstaller{
@@ -327,10 +333,10 @@ snapshot_download(
     max_workers=4,
     ignore_patterns=ignore_patterns,
 )
-open(sys.argv[2] + "/.athena_complete", "w").write("ok")`
+open(sys.argv[2] + "/` + consts.DiffusersCompleteFileName + `", "w").write("ok")`
 	command := exec.Command(venvPython, "-c", script, catalog.ModelVersion, modelDir)
-	command.Env = append(os.Environ(), "HF_HOME="+filepath.Join(athenaHome(), "huggingface"))
-	logPath := filepath.Join(athenaHome(), "logs", "model-install-"+jobID+".log")
+	command.Env = append(os.Environ(), consts.EnvHFHome+"="+filepath.Join(athenaHome(), consts.DirHuggingFace))
+	logPath := filepath.Join(athenaHome(), consts.DirLogs, "model-install-"+jobID+".log")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		fail(err)
 		return
@@ -499,27 +505,29 @@ func findPythonBinary() (string, error) {
 func athenaHome() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(os.TempDir(), "athena")
+		return filepath.Join(os.TempDir(), consts.DefaultAthenaTempDirName)
 	}
-	return filepath.Join(home, ".athena")
+	return filepath.Join(home, consts.DefaultAthenaHomeDirName)
 }
 
-func diffusersModelsPath() string { return filepath.Join(athenaHome(), "models", "diffusers") }
+func diffusersModelsPath() string {
+	return filepath.Join(athenaHome(), consts.DirModels, consts.DirDiffusers)
+}
 
 func diffusersModelPath(model string) string {
 	return filepath.Join(diffusersModelsPath(), strings.ReplaceAll(model, "/", "--"))
 }
 
 func diffusersModelInstalled(model string) bool {
-	_, err := os.Stat(filepath.Join(diffusersModelPath(model), ".athena_complete"))
+	_, err := os.Stat(filepath.Join(diffusersModelPath(model), consts.DiffusersCompleteFileName))
 	return err == nil
 }
 
 func diffusersVenvPython() string {
 	if runtime.GOOS == "windows" {
-		return filepath.Join(athenaHome(), "image-runtime", "venv", "Scripts", "python.exe")
+		return filepath.Join(athenaHome(), consts.DirImageRuntime, consts.DirVenv, "Scripts", "python.exe")
 	}
-	return filepath.Join(athenaHome(), "image-runtime", "venv", "bin", "python")
+	return filepath.Join(athenaHome(), consts.DirImageRuntime, consts.DirVenv, "bin", "python")
 }
 
 func diffusersRuntimeInstalled() bool {
@@ -528,7 +536,7 @@ func diffusersRuntimeInstalled() bool {
 }
 
 func installDiffusersRuntime(python string) error {
-	runtimeDir := filepath.Join(athenaHome(), "image-runtime")
+	runtimeDir := filepath.Join(athenaHome(), consts.DirImageRuntime)
 	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
 		return err
 	}
@@ -643,7 +651,7 @@ func installOllamaRuntime() (string, error) {
 }
 
 func startOllama(binary string) error {
-	logPath := filepath.Join(os.TempDir(), "athena-ollama.log")
+	logPath := filepath.Join(os.TempDir(), consts.OllamaStartupLogFileName)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -656,13 +664,13 @@ func startOllama(binary string) error {
 		return fmt.Errorf("启动 Ollama 失败: %w", err)
 	}
 	_ = logFile.Close()
-	for attempt := 0; attempt < 40; attempt++ {
+	for attempt := 0; attempt < ollamaStartupProbeAttempts; attempt++ {
 		if ollamaRunning(context.Background()) {
 			return nil
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(ollamaStartupProbeInterval)
 	}
-	return fmt.Errorf("Ollama 未在 20 秒内启动，请检查 %s", logPath)
+	return fmt.Errorf("Ollama 未在 %s 内启动，请检查 %s", ollamaStartupProbeAttempts*ollamaStartupProbeInterval, logPath)
 }
 
 func ollamaRunning(ctx context.Context) bool {
@@ -844,7 +852,7 @@ func windowsMemoryBytes() (uint64, uint64) {
 }
 
 func ollamaModelsPath() string {
-	if path := strings.TrimSpace(os.Getenv("OLLAMA_MODELS")); path != "" {
+	if path := strings.TrimSpace(os.Getenv(consts.EnvOllamaModels)); path != "" {
 		return path
 	}
 	home, err := os.UserHomeDir()
@@ -854,7 +862,7 @@ func ollamaModelsPath() string {
 		}
 		return "."
 	}
-	return filepath.Join(home, ".ollama", "models")
+	return filepath.Join(home, consts.DefaultOllamaHomeDirName, consts.DirModels)
 }
 
 func existingStoragePath(path string) string {

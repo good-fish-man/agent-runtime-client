@@ -45,12 +45,13 @@ const (
 	ContextKeyAgentID   = "agent_id"
 
 	// ---- Defaults ----
-	DefaultHTTPAddr          = ":8090"
-	DefaultRuntimeGRPCAddr   = "localhost:18080"
-	DefaultRuntimeHTTPAddr   = "http://127.0.0.1:18081"
-	DefaultRequestTimeoutSec = 60
-	DefaultDialTimeoutSec    = 5
-	DefaultGinMode           = "debug"
+	DefaultHTTPAddr                     = ":8090"
+	DefaultRuntimeGRPCAddr              = "localhost:18080"
+	DefaultRuntimeHTTPAddr              = "http://127.0.0.1:18081"
+	DefaultRequestTimeoutSec            = 60
+	DefaultDialTimeoutSec               = 5
+	DefaultScheduledTaskScanIntervalSec = 60
+	DefaultGinMode                      = "debug"
 
 	// DefaultPublicPrefix mounts the agent-frame-compatible resource routes so
 	// existing agent-frame clients can target this service without changes.
@@ -66,16 +67,38 @@ const (
 	SSEEventDone        = "done"
 
 	// ---- Environment overrides ----
-	EnvConfigPath      = "ARC_CONFIG_PATH"
-	EnvHTTPAddr        = "ARC_HTTP_ADDR"
-	EnvRuntimeGRPCAddr = "ARC_RUNTIME_GRPC_ADDR"
-	EnvRuntimeHTTPAddr = "ARC_RUNTIME_HTTP_ADDR"
-	EnvGinMode         = "ARC_GIN_MODE"
-	EnvPublicPrefix    = "ARC_PUBLIC_PREFIX"
-	EnvDefaultModel    = "ARC_DEFAULT_MODEL"
-	EnvDefaultAPIKey   = "ARC_DEFAULT_API_KEY"
-	EnvDefaultAPIBase  = "ARC_DEFAULT_API_BASE"
-	EnvDefaultProvider = "ARC_DEFAULT_PROVIDER"
+	EnvConfigPath                   = "ARC_CONFIG_PATH"
+	EnvHTTPAddr                     = "ARC_HTTP_ADDR"
+	EnvRuntimeGRPCAddr              = "ARC_RUNTIME_GRPC_ADDR"
+	EnvRuntimeHTTPAddr              = "ARC_RUNTIME_HTTP_ADDR"
+	EnvGinMode                      = "ARC_GIN_MODE"
+	EnvPublicPrefix                 = "ARC_PUBLIC_PREFIX"
+	EnvDefaultModel                 = "ARC_DEFAULT_MODEL"
+	EnvDefaultAPIKey                = "ARC_DEFAULT_API_KEY"
+	EnvDefaultAPIBase               = "ARC_DEFAULT_API_BASE"
+	EnvDefaultProvider              = "ARC_DEFAULT_PROVIDER"
+	EnvScheduledTaskScanIntervalSec = "ARC_SCHEDULED_TASK_SCAN_INTERVAL_SEC"
+	EnvInternalServiceToken         = "ATHENA_INTERNAL_SERVICE_TOKEN"
+	EnvHFHome                       = "HF_HOME"
+	EnvOllamaModels                 = "OLLAMA_MODELS"
+
+	// ---- Internal headers ----
+	HeaderAthenaInternalToken = "X-Athena-Internal-Token"
+
+	// ---- Local Athena filesystem layout ----
+	DefaultAthenaHomeDirName        = ".athena"
+	DefaultAthenaTempDirName        = "athena"
+	DirModels                       = "models"
+	DirDiffusers                    = "diffusers"
+	DirImageRuntime                 = "image-runtime"
+	DirVenv                         = "venv"
+	DirLogs                         = "logs"
+	DirHuggingFace                  = "huggingface"
+	DirModelTraining                = "model-training"
+	DiffusersCompleteFileName       = ".athena_complete"
+	OllamaStartupLogFileName        = "athena-ollama.log"
+	DefaultModelTrainingTempDirName = "athena-model-training"
+	DefaultOllamaHomeDirName        = ".ollama"
 
 	// ---- Database overrides ----
 	EnvDBType     = "ARC_DB_TYPE"

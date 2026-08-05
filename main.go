@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/good-fish-man/agent-runtime-client/boot"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
+	log "github.com/good-fish-man/logx"
 )
 
 const defaultConfigPath = "manifest/config/config.yaml"

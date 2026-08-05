@@ -12,9 +12,9 @@ import (
 	srv "github.com/good-fish-man/agent-runtime-client/domain/srv/agent"
 	modelsrv "github.com/good-fish-man/agent-runtime-client/domain/srv/model"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
+	log "github.com/good-fish-man/logx"
 )
 
 // SysAgentService is the application service for agent configuration.

@@ -13,7 +13,7 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 
 	"github.com/good-fish-man/agent-runtime-client/config"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
+	log "github.com/good-fish-man/logx"
 )
 
 // New opens a *gorm.DB for the given configuration and applies connection-pool
@@ -54,7 +54,14 @@ func New(cfg config.DBConfig) (*gorm.DB, error) {
 func dialector(cfg config.DBConfig) (gorm.Dialector, error) {
 	switch cfg.DBType {
 	case "", "postgres", "postgresql":
-		return postgres.Open(postgresDSN(cfg)), nil
+		// AutoMigrate can change the result shape of SELECT * statements while the
+		// service is running. pgx's implicit statement cache may then reuse a stale
+		// plan and PostgreSQL rejects it with SQLSTATE 0A000. Simple protocol keeps
+		// long-lived connections safe across startup schema migrations.
+		return postgres.New(postgres.Config{
+			DSN:                  postgresDSN(cfg),
+			PreferSimpleProtocol: true,
+		}), nil
 	case "mysql":
 		return mysql.Open(mysqlDSN(cfg)), nil
 	default:

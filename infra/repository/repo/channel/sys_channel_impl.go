@@ -8,8 +8,8 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	converter "github.com/good-fish-man/agent-runtime-client/infra/repository/converter/channel"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/channel"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
+	log "github.com/good-fish-man/logx"
 )
 
 var _ irepo.ISysChannelRepo = (*SysChannelRepo)(nil)

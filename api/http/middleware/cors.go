@@ -13,7 +13,7 @@ func Cors() gin.HandlerFunc {
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers",
 			"Origin, Content-Type, Accept, Authorization, "+traceAllowedHeaders())
-		c.Header("Access-Control-Expose-Headers", traceExposedHeaders())
+		c.Header("Access-Control-Expose-Headers", traceExposedHeaders()+", X-Athena-Task-ID")
 
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)

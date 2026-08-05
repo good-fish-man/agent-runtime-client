@@ -5,9 +5,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 	"github.com/good-fish-man/agent-runtime-client/types/response"
+	log "github.com/good-fish-man/logx"
 )
 
 // Recover catches panics and renders any handler-pushed errors (c.Error) via the

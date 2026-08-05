@@ -18,9 +18,9 @@ import (
 	srv "github.com/good-fish-man/agent-runtime-client/domain/srv/user"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	userpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/user"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
+	log "github.com/good-fish-man/logx"
 )
 
 // SysUserService is the application service for users.

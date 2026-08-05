@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	agenth "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/agent"
+	browsercredentialh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/browsercredential"
 	callbackh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/callback"
 	channelh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/channel"
 	commandh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/command"
@@ -20,6 +21,7 @@ import (
 	kbh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
 	memoryh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/memory"
 	modelh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
+	scheduledtaskh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/scheduledtask"
 	skillh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/skill"
 	userh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/user"
 	voiceavatarh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/voiceavatar"
@@ -30,22 +32,24 @@ import (
 // Handlers aggregates the public resource handlers wired by the composition
 // root. DB-backed handlers may be nil when the database is not configured.
 type Handlers struct {
-	Auth        gin.HandlerFunc
-	User        *userh.Handler
-	Config      *confighh.Handler
-	Model       *modelh.Handler
-	Memory      *memoryh.Handler
-	KB          *kbh.Handler
-	Skill       *skillh.Handler
-	Agent       *agenth.Handler
-	Channel     *channelh.Handler
-	Command     *commandh.Handler
-	Callback    *callbackh.Handler
-	Dashboard   *dashboardh.Handler
-	Weixin      *weixinh.Handler
-	Job         *jobh.Handler
-	Workspace   *workspaceh.Handler
-	VoiceAvatar *voiceavatarh.Handler
+	Auth              gin.HandlerFunc
+	User              *userh.Handler
+	Config            *confighh.Handler
+	Model             *modelh.Handler
+	Memory            *memoryh.Handler
+	KB                *kbh.Handler
+	Skill             *skillh.Handler
+	Agent             *agenth.Handler
+	BrowserCredential *browsercredentialh.Handler
+	ScheduledTask     *scheduledtaskh.Handler
+	Channel           *channelh.Handler
+	Command           *commandh.Handler
+	Callback          *callbackh.Handler
+	Dashboard         *dashboardh.Handler
+	Weixin            *weixinh.Handler
+	Job               *jobh.Handler
+	Workspace         *workspaceh.Handler
+	VoiceAvatar       *voiceavatarh.Handler
 }
 
 // Register mounts all available resource routes under the given group.
@@ -61,6 +65,9 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 	}
 	if h.VoiceAvatar != nil {
 		g.GET("/auth/voice-avatar/:filename", h.VoiceAvatar.Serve)
+	}
+	if h.ScheduledTask != nil {
+		g.POST("/internal/scheduled-task", h.ScheduledTask.CreateInternal)
 	}
 	if h.Auth != nil {
 		g.Use(h.Auth)
@@ -139,6 +146,24 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		r.POST("", h.Memory.Create)
 		r.POST("/all", h.Memory.List)
 		r.DELETE("/:ulid", h.Memory.Delete)
+	}
+
+	if h.BrowserCredential != nil {
+		r := g.Group("/site-credential")
+		r.POST("", h.BrowserCredential.Create)
+		r.GET("/all", h.BrowserCredential.List)
+		r.PUT("/:ulid", h.BrowserCredential.Update)
+		r.DELETE("/:ulid", h.BrowserCredential.Delete)
+		r.POST("/:ulid/login", h.BrowserCredential.Login)
+	}
+
+	if h.ScheduledTask != nil {
+		r := g.Group("/scheduled-task")
+		r.GET("/all", h.ScheduledTask.List)
+		r.PUT("/:ulid", h.ScheduledTask.Update)
+		r.DELETE("/:ulid", h.ScheduledTask.Delete)
+		r.GET("/approvals", h.ScheduledTask.ListApprovals)
+		r.POST("/approvals/:ulid", h.ScheduledTask.DecideApproval)
 	}
 
 	if h.KB != nil {

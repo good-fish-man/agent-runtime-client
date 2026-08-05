@@ -8,7 +8,7 @@ import (
 	irepo "github.com/good-fish-man/agent-runtime-client/domain/irepository/runtime"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/runtime"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
+	log "github.com/good-fish-man/logx"
 )
 
 type MediaJobRepo struct{ data *data.Data }

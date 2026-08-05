@@ -9,7 +9,7 @@ import (
 	"time"
 
 	service "github.com/good-fish-man/agent-runtime-client/application/service/model"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
+	log "github.com/good-fish-man/logx"
 )
 
 // Handler groups the SysModel HTTP handlers.

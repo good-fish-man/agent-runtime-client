@@ -6,8 +6,8 @@ import (
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/user"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	repo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/user"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
+	log "github.com/good-fish-man/logx"
 )
 
 // SysUserSvc is the SysUser domain service.

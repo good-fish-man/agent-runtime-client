@@ -19,6 +19,7 @@ Despite its historical name, this is a server application rather than an SDK. Br
 - Automatic database migration and initial shared catalog/agent data.
 - Dashboard, memory, channels, callbacks, command execution, service configuration, and restart APIs.
 - Source-aware error chains logged once at the HTTP boundary.
+- WebSocket Action/Observation control plane for capability-aware desktop devices ([protocol](docs/action-observation-protocol.md)).
 
 ## System Architecture
 
@@ -51,7 +52,7 @@ api -> application -> domain <- infra
 | `infra/` | GORM repositories, migrations, gRPC runtime gateway |
 | `boot/` | Dependency assembly and process startup |
 | `config/` | YAML and environment configuration |
-| `pkg/log/` | Structured logging, request IDs, and error chains |
+| `github.com/good-fish-man/logx` | Shared structured logging, request IDs, and error chains |
 
 ## Requirements
 
@@ -115,6 +116,7 @@ Runtime execution routes are mounted at the root:
 | --- | --- | --- |
 | `GET` | `/healthz` | Service health |
 | `GET` | `/health/ready` | Runtime connectivity |
+| `GET` | `/v1/capabilities` | Runtime capability catalog |
 | `POST` | `/v1/run` | Rich completion |
 | `POST` | `/v1/run/stream` | Rich SSE execution |
 | `POST` | `/v1/agent` | Agent execution |
@@ -129,6 +131,8 @@ Management routes are mounted under `server.public_prefix`:
 | `/auth`, `/user` | Login, registration, profile/avatar, administration |
 | `/agent` | Agent CRUD, upload, enable/disable, user model assignment |
 | `/model`, `/model-key` | Catalog, credentials, local install, lifecycle, training |
+| `/site-credential` | User-owned website account metadata and Auth Vault assisted sign-in |
+| `/scheduled-task` | Durable user-owned monitoring tasks, execution history, and result review |
 | `/memory` | User/agent long-term memory |
 | `/skill` | Built-in/custom skill management and ZIP upload |
 | `/knowledge_base` | Retrieval configuration and recall testing |
@@ -174,6 +178,9 @@ Important environment overrides:
 | `ARC_RUNTIME_GRPC_ADDR`, `ARC_RUNTIME_HTTP_ADDR` | Runtime addresses |
 | `ARC_DB_TYPE`, `ARC_DB_HOST`, `ARC_DB_PORT` | Database connection |
 | `ARC_DB_USER`, `ARC_DB_PASSWORD`, `ARC_DB_NAME` | Database credentials |
+| `ARC_SCHEDULED_TASK_SCAN_INTERVAL_SEC` | Scheduled task database scan interval, default `60` |
+| `ATHENA_INTERNAL_SERVICE_TOKEN` | Shared local token accepted by the internal scheduled-task endpoint |
+| `ATHENA_DEVICE_TOKEN` | Bearer token accepted by the desktop Action/Observation WebSocket |
 
 The database is enabled when both `db_host` and `db_name` are non-empty. Keep model provider secrets in model-key records, not in source control or public API responses.
 

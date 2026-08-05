@@ -8,8 +8,8 @@ package callback
 import (
 	"github.com/gin-gonic/gin"
 
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
+	log "github.com/good-fish-man/logx"
 )
 
 // Handler serves POST /callback/:channel.

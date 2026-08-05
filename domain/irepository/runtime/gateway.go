@@ -24,4 +24,5 @@ type RuntimeGateway interface {
 	Resume(ctx context.Context, in *entity.ResumeInput) (*entity.ResumeResult, error)
 	Stop(ctx context.Context, in *entity.StopInput) (*entity.StopResult, error)
 	Health(ctx context.Context, in *entity.HealthInput) (*entity.HealthStatus, error)
+	ListCapabilities(ctx context.Context, traceID string) ([]entity.CapabilityDefinition, error)
 }

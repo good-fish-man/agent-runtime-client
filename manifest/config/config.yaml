@@ -11,13 +11,21 @@ runtime:
   request_timeout_sec: 60
   dial_timeout_sec: 5
 
+control:
+  # Required by Athena Desktop when connecting to /v1/control/device.
+  device_token: ""
+
+scheduled_task:
+  # Cron expressions are minute-granularity, so 60s avoids noisy DB polling.
+  scan_interval_sec: 60
+
 log:
   level: "debug"
 
 db:
   db_type: "postgres"
   username: "postgres"
-  password: ""
+  password: "a123456"
   db_host: "127.0.0.1"
   db_port: 5432
   db_name: "agent_runtime"

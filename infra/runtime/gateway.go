@@ -11,8 +11,8 @@ import (
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
 	irepo "github.com/good-fish-man/agent-runtime-client/domain/irepository/runtime"
-	"github.com/good-fish-man/agent-runtime-client/pkg/log"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
+	log "github.com/good-fish-man/logx"
 )
 
 // Gateway implements domain irepository.RuntimeGateway over gRPC.
@@ -113,6 +113,23 @@ func (g *Gateway) Health(ctx context.Context, in *entity.HealthInput) (*entity.H
 		return nil, log.WrapError(err, "RuntimeGateway.Health.rpc")
 	}
 	return fromHealthResponse(resp), nil
+}
+
+func (g *Gateway) ListCapabilities(ctx context.Context, traceID string) ([]entity.CapabilityDefinition, error) {
+	ctx, cancel := g.unaryCtx(ctx, traceID)
+	defer cancel()
+	response, err := g.client.rpc.ListCapabilities(ctx, &runtimev1.ListCapabilitiesRequest{TraceId: traceID})
+	if err != nil {
+		return nil, log.WrapError(err, "RuntimeGateway.ListCapabilities.rpc")
+	}
+	result := make([]entity.CapabilityDefinition, 0, len(response.GetCapabilities()))
+	for _, item := range response.GetCapabilities() {
+		result = append(result, entity.CapabilityDefinition{
+			ID: item.GetId(), Description: item.GetDescription(), Input: item.GetInput(), Output: item.GetOutput(),
+			ReadOnly: item.GetReadOnly(), Risk: item.GetRisk(), Status: item.GetStatus(), Provider: item.GetProvider(), Reason: item.GetReason(),
+		})
+	}
+	return result, nil
 }
 
 // unaryCtx attaches trace metadata and a per-call timeout for unary RPCs.
