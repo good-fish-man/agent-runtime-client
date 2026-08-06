@@ -48,6 +48,7 @@ jobs:
           GOWORK: "off"
         run: |
           set -euo pipefail
+          go mod tidy
           go mod download
           name="agent-runtime-client_${RELEASE_TAG}_${GOOS}_${GOARCH}"
           mkdir -p "package/$name" dist
