@@ -6,6 +6,12 @@ Agent Runtime Client 是 Athena 的控制面和公共 HTTP API。它负责用户
 
 虽然名称中包含 Client，但它实际是服务端程序，不是 SDK。浏览器只应访问本服务，不应直接携带模型 API Key 调用 Runtime。
 
+## 控制面实际效果
+
+登录后的 Dashboard 由本服务的 Agent、任务、Token、审批和会话接口提供数据。模型供应商凭据始终保留在服务端，同时为用户提供统一的运行视图。
+
+![Athena 控制面 Dashboard](docs/images/control-plane-dashboard.jpg)
+
 ## 核心能力
 
 - Gin HTTP API、登录认证、用户数据隔离和管理员权限。

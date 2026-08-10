@@ -24,6 +24,17 @@ type SysModel struct {
 	RuntimeMode   string `json:"runtime_mode"`
 }
 
+// ModelUsageMetric is a recent invocation aggregate used to enrich model cards.
+type ModelUsageMetric struct {
+	UserID         string
+	ModelID        string
+	ModelName      string
+	RequestCount   int64
+	SuccessCount   int64
+	LatencyTotalMs int64
+	LatencyCount   int64
+}
+
 // SysModelKey is a reusable provider credential owned by one user.
 type SysModelKey struct {
 	Ulid      string `json:"ulid"`

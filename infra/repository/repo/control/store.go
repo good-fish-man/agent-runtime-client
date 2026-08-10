@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
@@ -101,10 +102,37 @@ func (s *Store) SaveTask(ctx context.Context, task *entity.TaskSession) error {
 		Status: task.Status, Sequence: task.Sequence, ActiveSessions: active, Metadata: metadata,
 		CreatedAt: millis(task.CreatedAt), UpdatedAt: millis(task.UpdatedAt),
 	}
-	return log.WrapError(s.data.DB(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "task_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"conversation_id", "user_id", "device_id", "status", "sequence", "active_sessions", "metadata", "updated_at"}),
-	}).Create(value).Error, "ControlStore.SaveTask")
+	db := s.data.DB(ctx)
+	created := db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "task_id"}}, DoNothing: true}).Create(value)
+	if created.Error != nil {
+		return log.WrapError(created.Error, "ControlStore.SaveTask.create")
+	}
+	if created.RowsAffected > 0 {
+		return nil
+	}
+	return log.WrapError(db.Transaction(func(tx *gorm.DB) error {
+		newer := tx.Model(&po.Task{}).
+			Where("task_id = ? AND updated_at <= ?", value.TaskID, value.UpdatedAt).
+			Updates(map[string]any{
+				"conversation_id": value.ConversationID,
+				"user_id":         value.UserID,
+				"device_id":       value.DeviceID,
+				"sequence":        value.Sequence,
+				"active_sessions": value.ActiveSessions,
+				"metadata":        value.Metadata,
+				"updated_at":      value.UpdatedAt,
+			})
+		if newer.Error != nil {
+			return newer.Error
+		}
+		return tx.Model(&po.Task{}).
+			Where("task_id = ?", value.TaskID).
+			Update("status", gorm.Expr(
+				"CASE WHEN status IN ? THEN status ELSE ? END",
+				[]string{entity.StatusCompleted, entity.StatusFailed, entity.StatusCancelled},
+				value.Status,
+			)).Error
+	}), "ControlStore.SaveTask.update")
 }
 
 func (s *Store) FindTask(ctx context.Context, taskID string) (*entity.TaskSession, error) {

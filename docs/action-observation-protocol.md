@@ -1,8 +1,8 @@
-# Athena Action/Observation Protocol v2
+# Athena Action/Observation Protocol v3
 
 [English](#wire-contract) | [简体中文](#中文说明)
 
-Athena desktop devices connect to the Runtime Client control plane through an outbound WebSocket. The protocol identifier is `athena.agent.v2`; reasoning remains on the Agent side while devices only execute typed capabilities and report observed state.
+Athena desktop devices connect to the Runtime Client control plane through an outbound WebSocket. The protocol identifier is `athena.agent.v3`; reasoning remains on the Agent side while devices only execute typed capabilities and report observed state.
 
 The protocol follows a strict layer split:
 
@@ -29,7 +29,7 @@ The first device message must be `HELLO`. The server responds with `WELCOME`; ei
 
 ```json
 {
-  "protocol": "athena.agent.v2",
+  "protocol": "athena.agent.v3",
   "type": "HELLO",
   "device_id": "device-01",
   "name": "Athena Desktop",
@@ -44,7 +44,7 @@ The first device message must be `HELLO`. The server responds with `WELCOME`; ei
 
 ```json
 {
-  "protocol": "athena.agent.v2",
+  "protocol": "athena.agent.v3",
   "type": "ACTION",
   "task_id": "task-01",
   "action_id": "action-01",
@@ -64,7 +64,7 @@ The Runtime Client rejects actions whose capability was not advertised by the se
 
 ```json
 {
-  "protocol": "athena.agent.v2",
+  "protocol": "athena.agent.v3",
   "type": "OBSERVATION",
   "task_id": "task-01",
   "action_id": "action-01",
@@ -78,11 +78,26 @@ The Runtime Client rejects actions whose capability was not advertised by the se
     "page": {"url": "https://www.youtube.com", "title": "YouTube"},
     "snapshot": "- textbox \"Search\" @e1",
     "key_elements": [{"ref": "@e1", "label": "textbox \"Search\""}]
-  }
+  },
+  "attachments": [
+    {
+      "id": "artifact-0123456789abcdef",
+      "kind": "image",
+      "mime_type": "image/png",
+      "size": 248320,
+      "sha256": "...",
+      "encoding": "base64",
+      "data": "...",
+      "purpose": "browser_observation",
+      "detail": "auto"
+    }
+  ]
 }
 ```
 
 Valid terminal statuses are `SUCCEEDED`, `FAILED`, `CANCELLED`, `EXPIRED`, `BLOCKED`, `WAITING_APPROVAL`, and `WAITING_USER`. An executor must report actual observed state and must not infer success from a dispatched command.
+
+Observation attachments are transient evidence. Version 3 accepts at most two PNG/JPEG/WebP images of at most 4 MiB each, validates decoded size and SHA-256, and maps them to native multimodal model parts only when the active model declares `vision`, `multimodal`, or `image-input`. Attachment data is never stored in `agent_control_observation`, task history, logs, or frontend stream events; those surfaces receive metadata only.
 
 ### Progress
 
@@ -90,7 +105,7 @@ Long-running actions may emit non-terminal progress events before the final Obse
 
 ```json
 {
-  "protocol": "athena.agent.v2",
+  "protocol": "athena.agent.v3",
   "type": "PROGRESS",
   "task_id": "task-01",
   "action_id": "action-01",
@@ -142,7 +157,7 @@ Generic keyboard, pointer, browser, and terminal capabilities must use `BLOCK` f
 
 ```json
 {
-  "protocol": "athena.agent.v2",
+  "protocol": "athena.agent.v3",
   "type": "CANCEL",
   "task_id": "task-01",
   "action_id": "action-01",
@@ -181,6 +196,7 @@ Browser Runtime、Desktop Runtime、File Runtime、Terminal Runtime 都属于执
 - HTTP 请求断开或超时后，服务端下发 `CANCEL`，桌面端取消对应 Context。
 - `ASK_USER` 不会静默执行，设备返回 `WAITING_APPROVAL`；后续应由桌面审批界面恢复。
 - 登录、验证码、扫码和 2FA 使用 `WAITING_USER`，用户完成后可在同一聊天中继续，Runtime Client 会恢复设备 Session。
+- 截图附件只在当前 WebSocket 与模型回合中短暂存在，正文不会写入数据库、日志、任务历史或前端事件；不支持视觉的模型继续使用语义结构、标注图例和 OCR。
 - 当前设备令牌是部署级共享密钥。远程多用户部署应在下一阶段替换为一次性配对码和设备级可撤销令牌。
 - 开启数据库后，设备、Task Session、Action 和 Observation 会持久化；重复幂等键在服务重启后仍不会再次执行。
 - 设备第一次被登录用户选中时会自动绑定，也可以调用绑定接口显式认领；绑定后其他用户无法查看或路由到该设备。
@@ -189,4 +205,4 @@ Browser Runtime、Desktop Runtime、File Runtime、Terminal Runtime 都属于执
 
 ## Versioning Rule
 
-`athena.agent.v2` is frozen. New functionality must use a typed capability inside the existing Action/Observation loop. Breaking fields, enums, transports, or responsibility boundaries require a new protocol version; special assistant JSON, model-text action parsing, and frontend execution relays are prohibited.
+`athena.agent.v3` is the current wire contract. It intentionally breaks v2 by adding bounded Observation attachments; Launcher, Runtime Client, and Agent Runtime must be upgraded together. New behavior still belongs in typed capabilities and the Action/Observation loop. Special assistant JSON, model-text action parsing, and frontend execution relays remain prohibited.

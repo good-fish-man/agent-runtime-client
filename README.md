@@ -6,6 +6,12 @@ Agent Runtime Client is Athena's control plane and public HTTP API. It manages u
 
 Despite its historical name, this is a server application rather than an SDK. Browser clients should call this service and should never call the runtime with model API keys directly.
 
+## Control Plane in Action
+
+The authenticated dashboard is backed by this service's agent, task, token, approval, and conversation APIs. Provider credentials remain server-side while users get a single operational view.
+
+![Athena control-plane dashboard](docs/images/control-plane-dashboard.jpg)
+
 ## Highlights
 
 - Gin HTTP API with authentication, per-user data isolation, and administrator permissions.

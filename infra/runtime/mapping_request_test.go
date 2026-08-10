@@ -33,3 +33,12 @@ func TestToRunRequestMapsCapabilities(t *testing.T) {
 		t.Fatalf("capability config = %v", got)
 	}
 }
+
+func TestToRunRequestMapsVisualInputs(t *testing.T) {
+	request := toRunRequest(&entity.RunInput{VisualInputs: []entity.VisualInput{{
+		ID: "image-1", MIMEType: "image/png", Data: []byte("image"), SHA256: "abc", Detail: "high",
+	}}})
+	if len(request.GetVisualInputs()) != 1 || request.GetVisualInputs()[0].GetMimeType() != "image/png" || string(request.GetVisualInputs()[0].GetData()) != "image" {
+		t.Fatalf("visual inputs were not mapped: %#v", request.GetVisualInputs())
+	}
+}

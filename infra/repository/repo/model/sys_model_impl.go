@@ -168,6 +168,45 @@ func (r *SysModelRepo) FindAll(ctx context.Context, queries []*query.Query, sele
 	return converter.P2EList(ps), nil
 }
 
+func (r *SysModelRepo) FindRecentUsageMetrics(ctx context.Context, since int64) ([]entity.ModelUsageMetric, error) {
+	chatMetrics := make([]entity.ModelUsageMetric, 0)
+	err := r.data.DB(ctx).
+		Table("chat_message AS cm").
+		Select(`cs.user_id AS user_id,
+			cm.model_id AS model_id,
+			cm.model AS model_name,
+			COUNT(*) AS request_count,
+			SUM(CASE WHEN cm.status IN ('success', 'pending_approval') THEN 1 ELSE 0 END) AS success_count,
+			SUM(CASE WHEN cm.latency_ms > 0 THEN cm.latency_ms ELSE 0 END) AS latency_total_ms,
+			SUM(CASE WHEN cm.latency_ms > 0 THEN 1 ELSE 0 END) AS latency_count`).
+		Joins("JOIN chat_session AS cs ON cs.ulid = cm.session_id").
+		Where("cm.role = ? AND cm.created_at >= ? AND cm.deleted_at = 0 AND cs.deleted_at = 0", "assistant", since).
+		Where("cm.model_id <> '' OR cm.model <> ''").
+		Group("cs.user_id, cm.model_id, cm.model").
+		Scan(&chatMetrics).Error
+	if err != nil {
+		return nil, log.WrapError(err, "Repository.FindRecentUsageMetrics.chat")
+	}
+
+	mediaMetrics := make([]entity.ModelUsageMetric, 0)
+	err = r.data.DB(ctx).
+		Table("sys_media_generation_job AS job").
+		Select(`job.user_id AS user_id,
+			job.model_id AS model_id,
+			job.model_name AS model_name,
+			COUNT(*) AS request_count,
+			SUM(CASE WHEN job.status = 'completed' THEN 1 ELSE 0 END) AS success_count,
+			SUM(CASE WHEN job.finished_at > job.started_at AND job.started_at > 0 THEN job.finished_at - job.started_at ELSE 0 END) AS latency_total_ms,
+			SUM(CASE WHEN job.finished_at > job.started_at AND job.started_at > 0 THEN 1 ELSE 0 END) AS latency_count`).
+		Where("job.created_at >= ? AND job.deleted_at = 0", since).
+		Group("job.user_id, job.model_id, job.model_name").
+		Scan(&mediaMetrics).Error
+	if err != nil {
+		return nil, log.WrapError(err, "Repository.FindRecentUsageMetrics.media")
+	}
+	return append(chatMetrics, mediaMetrics...), nil
+}
+
 func (r *SysModelRepo) FindPage(ctx context.Context, queries []*query.Query, reqPage *query.PageData, reqSort *query.SortData, selectArgs ...[]string) ([]*entity.SysModel, *query.PageData, error) {
 	where, values, err := query.BuildWhere(queries)
 	if err != nil {

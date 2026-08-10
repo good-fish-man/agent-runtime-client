@@ -1,12 +1,22 @@
 package control
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
-const Protocol = "athena.agent.v2"
+const Protocol = "athena.agent.v3"
+
+const (
+	AttachmentEncodingBase64  = "base64"
+	MaxAttachmentBytes        = 4 << 20
+	MaxObservationAttachments = 2
+)
 
 const (
 	TypeHello        = "HELLO"
@@ -54,6 +64,20 @@ type Policy struct {
 	Decision string `json:"decision"`
 }
 
+// Attachment is transient device evidence. Data is consumed by the current
+// model turn and is intentionally excluded from persistence and UI events.
+type Attachment struct {
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	MIMEType string `json:"mime_type"`
+	Size     int64  `json:"size"`
+	SHA256   string `json:"sha256"`
+	Encoding string `json:"encoding"`
+	Data     string `json:"data,omitempty"`
+	Purpose  string `json:"purpose,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+}
+
 type Action struct {
 	Protocol       string         `json:"protocol"`
 	Type           string         `json:"type"`
@@ -69,32 +93,34 @@ type Action struct {
 }
 
 type Observation struct {
+	Protocol    string         `json:"protocol"`
+	Type        string         `json:"type"`
+	TaskID      string         `json:"task_id"`
+	ActionID    string         `json:"action_id"`
+	SessionID   string         `json:"session_id,omitempty"`
+	Sequence    int64          `json:"sequence"`
+	Status      string         `json:"status"`
+	ObservedAt  time.Time      `json:"observed_at"`
+	State       map[string]any `json:"state,omitempty"`
+	Attachments []Attachment   `json:"attachments,omitempty"`
+	Error       string         `json:"error,omitempty"`
+}
+
+type Progress struct {
 	Protocol   string         `json:"protocol"`
 	Type       string         `json:"type"`
 	TaskID     string         `json:"task_id"`
 	ActionID   string         `json:"action_id"`
 	SessionID  string         `json:"session_id,omitempty"`
 	Sequence   int64          `json:"sequence"`
-	Status     string         `json:"status"`
-	ObservedAt time.Time      `json:"observed_at"`
+	Capability string         `json:"capability,omitempty"`
+	Stage      string         `json:"stage,omitempty"`
+	Message    string         `json:"message,omitempty"`
+	Progress   int            `json:"progress,omitempty"`
+	Bytes      int64          `json:"bytes,omitempty"`
+	Total      int64          `json:"total,omitempty"`
 	State      map[string]any `json:"state,omitempty"`
-	Error      string         `json:"error,omitempty"`
-}
-
-type Progress struct {
-	Protocol  string         `json:"protocol"`
-	Type      string         `json:"type"`
-	TaskID    string         `json:"task_id"`
-	ActionID  string         `json:"action_id"`
-	SessionID string         `json:"session_id,omitempty"`
-	Sequence  int64          `json:"sequence"`
-	Stage     string         `json:"stage,omitempty"`
-	Message   string         `json:"message,omitempty"`
-	Progress  int            `json:"progress,omitempty"`
-	Bytes     int64          `json:"bytes,omitempty"`
-	Total     int64          `json:"total,omitempty"`
-	State     map[string]any `json:"state,omitempty"`
-	SentAt    time.Time      `json:"sent_at"`
+	SentAt     time.Time      `json:"sent_at"`
 }
 
 type Cancel struct {
@@ -176,12 +202,70 @@ func (o Observation) Validate() error {
 	if o.TaskID == "" || o.ActionID == "" || o.Sequence <= 0 || o.ObservedAt.IsZero() {
 		return fmt.Errorf("task_id, action_id, positive sequence, and observed_at are required")
 	}
+	if len(o.Attachments) > MaxObservationAttachments {
+		return fmt.Errorf("observation has too many attachments")
+	}
+	attachmentIDs := make(map[string]bool, len(o.Attachments))
+	for _, attachment := range o.Attachments {
+		if attachmentIDs[attachment.ID] {
+			return fmt.Errorf("duplicate attachment id %q", attachment.ID)
+		}
+		attachmentIDs[attachment.ID] = true
+		if err := attachment.Validate(); err != nil {
+			return err
+		}
+	}
 	switch o.Status {
 	case ObservationSucceeded, ObservationFailed, ObservationCancelled, ObservationExpired, ObservationBlocked, ObservationWaitingApproval, ObservationWaitingUser:
 		return nil
 	default:
 		return fmt.Errorf("unsupported observation status %q", o.Status)
 	}
+}
+
+func (a Attachment) Validate() error {
+	if a.ID == "" || a.Kind != "image" || a.SHA256 == "" {
+		return fmt.Errorf("attachment id, image kind, and sha256 are required")
+	}
+	if a.MIMEType != "image/png" && a.MIMEType != "image/jpeg" && a.MIMEType != "image/webp" {
+		return fmt.Errorf("unsupported attachment MIME type %q", a.MIMEType)
+	}
+	if a.Encoding != AttachmentEncodingBase64 {
+		return fmt.Errorf("unsupported attachment encoding %q", a.Encoding)
+	}
+	if a.Size <= 0 || a.Size > MaxAttachmentBytes {
+		return fmt.Errorf("attachment size must be between 1 and %d bytes", MaxAttachmentBytes)
+	}
+	if a.Data == "" {
+		return fmt.Errorf("attachment data is required")
+	}
+	if len(a.Data) > base64.StdEncoding.EncodedLen(MaxAttachmentBytes) {
+		return fmt.Errorf("attachment %s encoded payload is too large", a.ID)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(a.Data)
+	if err != nil {
+		return fmt.Errorf("decode attachment %s: %w", a.ID, err)
+	}
+	if int64(len(decoded)) != a.Size {
+		return fmt.Errorf("attachment %s size does not match payload", a.ID)
+	}
+	digest := sha256.Sum256(decoded)
+	if !strings.EqualFold(hex.EncodeToString(digest[:]), a.SHA256) {
+		return fmt.Errorf("attachment %s sha256 does not match payload", a.ID)
+	}
+	return nil
+}
+
+// WithoutAttachmentData returns an observation safe for persistence, logs,
+// task history, and frontend stream events.
+func (o Observation) WithoutAttachmentData() Observation {
+	copy := o
+	copy.Attachments = make([]Attachment, len(o.Attachments))
+	for i, attachment := range o.Attachments {
+		attachment.Data = ""
+		copy.Attachments[i] = attachment
+	}
+	return copy
 }
 
 func (p Progress) Validate() error {
@@ -204,6 +288,24 @@ func ValidTaskStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func TerminalTaskStatus(status string) bool {
+	switch status {
+	case StatusCompleted, StatusFailed, StatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// CanTransitionTaskStatus keeps the first terminal outcome authoritative.
+// Repeated writes of the same terminal state remain idempotent.
+func CanTransitionTaskStatus(current, next string) bool {
+	if !ValidTaskStatus(next) {
+		return false
+	}
+	return current == "" || current == next || !TerminalTaskStatus(current)
 }
 
 func NewCancel(action Action, reason string) Cancel {

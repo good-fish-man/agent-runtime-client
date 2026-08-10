@@ -56,6 +56,11 @@ func (s *SysModelSvc) FindPage(ctx context.Context, queries []*query.Query, reqP
 	return values, page, log.WrapError(err, "SysModelSvc.FindPage")
 }
 
+func (s *SysModelSvc) FindRecentUsageMetrics(ctx context.Context, since int64) ([]entity.ModelUsageMetric, error) {
+	values, err := s.repo.FindRecentUsageMetrics(ctx, since)
+	return values, log.WrapError(err, "SysModelSvc.FindRecentUsageMetrics")
+}
+
 func (s *SysModelSvc) FindCatalog(ctx context.Context, modelType, provider string) ([]*entity.ModelCatalog, error) {
 	value, err := s.repo.FindCatalog(ctx, modelType, provider)
 	return value, log.WrapError(err, "SysModelSvc.FindCatalog")

@@ -4,7 +4,7 @@ Status: complete
 
 ## Implemented
 
-- Launcher opens and maintains the outbound `athena.agent.v2` WebSocket.
+- Launcher opens and maintains the outbound `athena.agent.v3` WebSocket.
 - `HELLO` registers device identity, platform, architecture, and capabilities.
 - Runtime Client records device online/offline state and applies a 45-second heartbeat deadline.
 - An unclaimed online device binds to the first authenticated user who explicitly binds it or routes an Action to it. Cross-user listing and routing are rejected.

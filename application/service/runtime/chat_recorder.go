@@ -3,17 +3,16 @@ package runtime
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	controlentity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	chatpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/chat"
 	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
 	log "github.com/good-fish-man/logx"
-	"gorm.io/gorm"
 )
 
 type streamCapture struct {
@@ -21,6 +20,7 @@ type streamCapture struct {
 	done      *entity.DoneEvent
 	errEvent  *entity.ErrorEvent
 	approvals []entity.PendingApproval
+	research  map[string]any
 }
 
 func newStreamCapture() *streamCapture { return &streamCapture{} }
@@ -45,6 +45,10 @@ func (c *streamCapture) capture(event *entity.StreamEvent) {
 		if event.Interrupted != nil {
 			c.approvals = append([]entity.PendingApproval(nil), event.Interrupted.PendingApprovals...)
 		}
+	case entity.StreamTypeProgress:
+		if snapshot := researchSnapshotFromProgress(event.Progress); snapshot != nil {
+			c.research = snapshot
+		}
 	case entity.StreamTypeError:
 		c.errEvent = event.Error
 	case entity.StreamTypeDone:
@@ -67,6 +71,7 @@ type chatRecordInput struct {
 	Channel       string
 	Prompt        string
 	AssistantText string
+	ModelID       string
 	Model         string
 	PromptTokens  int
 	OutputTokens  int
@@ -106,7 +111,7 @@ func (r *chatRecorder) Record(ctx context.Context, input chatRecordInput) {
 	}
 }
 
-func (s *RuntimeService) recordCompletion(ctx context.Context, values map[string]any, prompt, content string, metadata *entity.ResponseMetadata, approvals []entity.PendingApproval, runErr error) {
+func (s *RuntimeService) recordCompletion(ctx context.Context, values map[string]any, models map[string]entity.ModelConfig, prompt, content string, metadata *entity.ResponseMetadata, approvals []entity.PendingApproval, runErr error) {
 	if s == nil || s.chat == nil {
 		return
 	}
@@ -122,12 +127,12 @@ func (s *RuntimeService) recordCompletion(ctx context.Context, values map[string
 	s.chat.Record(context.WithoutCancel(ctx), chatRecordInput{
 		UserID: authctx.UserID(ctx), AgentID: contextString(values, "agent_id"), SessionID: contextString(values, "session_id"), Channel: contextString(values, "channel"),
 		Prompt: prompt, AssistantText: content, TraceID: traceID(ctx), Status: status, ErrorMessage: errMessage, Approvals: approvals,
-		Model: metadataModel(metadata), PromptTokens: metadataPromptTokens(metadata), OutputTokens: metadataCompletionTokens(metadata), TotalTokens: metadataTotalTokens(metadata), LatencyMs: metadataLatency(metadata),
+		ModelID: recordingModelID(models), Model: recordingModelName(metadata, models), PromptTokens: metadataPromptTokens(metadata), OutputTokens: metadataCompletionTokens(metadata), TotalTokens: metadataTotalTokens(metadata), LatencyMs: metadataLatency(metadata),
 		Metadata: metadataMap(metadata),
 	})
 }
 
-func (s *RuntimeService) recordStream(ctx context.Context, values map[string]any, prompt string, capture *streamCapture, runErr error) {
+func (s *RuntimeService) recordStream(ctx context.Context, values map[string]any, models map[string]entity.ModelConfig, prompt string, capture *streamCapture, runErr error) {
 	if s == nil || s.chat == nil || capture == nil {
 		return
 	}
@@ -151,22 +156,29 @@ func (s *RuntimeService) recordStream(ctx context.Context, values map[string]any
 	if metadata == nil && capture.done != nil {
 		metadata = &entity.ResponseMetadata{PromptTokens: capture.done.PromptTokens, CompletionTokens: capture.done.CompletionTokens, TokensUsed: capture.done.TotalTokens}
 	}
+	recordMetadata := metadataMap(metadata)
+	if len(capture.research) > 0 {
+		if recordMetadata == nil {
+			recordMetadata = make(map[string]any)
+		}
+		recordMetadata["research"] = capture.research
+	}
 	s.chat.Record(context.WithoutCancel(ctx), chatRecordInput{
 		UserID: authctx.UserID(ctx), AgentID: contextString(values, "agent_id"), SessionID: contextString(values, "session_id"), Channel: contextString(values, "channel"),
 		Prompt: prompt, AssistantText: capture.content.String(), TraceID: traceID(ctx), Status: status, ErrorMessage: errMessage, Approvals: capture.approvals,
-		Model: metadataModel(metadata), PromptTokens: metadataPromptTokens(metadata), OutputTokens: metadataCompletionTokens(metadata), TotalTokens: metadataTotalTokens(metadata), LatencyMs: metadataLatency(metadata),
-		Metadata: metadataMap(metadata),
+		ModelID: recordingModelID(models), Model: recordingModelName(metadata, models), PromptTokens: metadataPromptTokens(metadata), OutputTokens: metadataCompletionTokens(metadata), TotalTokens: metadataTotalTokens(metadata), LatencyMs: metadataLatency(metadata),
+		Metadata: recordMetadata,
 	})
 }
 
 func (r *chatRecorder) record(ctx context.Context, input chatRecordInput) error {
 	db := r.data.DB(ctx)
 	session := chatpo.ChatSession{}
-	err := db.Where("ulid = ?", input.SessionID).First(&session).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
+	lookup := db.Where("ulid = ?", input.SessionID).Limit(1).Find(&session)
+	if lookup.Error != nil {
+		return lookup.Error
 	}
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	if lookup.RowsAffected == 0 {
 		session = chatpo.ChatSession{Ulid: input.SessionID, UserId: input.UserID, AgentId: input.AgentID, Title: titleFromPrompt(input.Prompt), Status: "active", Channel: input.Channel}
 		if err := db.Create(&session).Error; err != nil {
 			return err
@@ -202,7 +214,7 @@ func (r *chatRecorder) record(ctx context.Context, input chatRecordInput) error 
 		assistantStatus = "pending_approval"
 	}
 	assistant := &chatpo.ChatMessage{
-		SessionId: input.SessionID, CreatedAt: now + 1, Role: "assistant", Content: input.AssistantText, Model: input.Model,
+		SessionId: input.SessionID, CreatedAt: now + 1, Role: "assistant", Content: input.AssistantText, ModelID: input.ModelID, Model: input.Model,
 		InputTokens: input.PromptTokens, OutputTokens: input.OutputTokens, TotalTokens: input.TotalTokens, LatencyMs: input.LatencyMs,
 		Trace: jsonField(map[string]any{"trace_id": input.TraceID}), Status: assistantStatus, ErrorMsg: input.ErrorMessage, Metadata: jsonField(input.Metadata),
 	}
@@ -229,6 +241,23 @@ func (r *chatRecorder) record(ctx context.Context, input chatRecordInput) error 
 		}
 	}
 	return nil
+}
+
+func researchSnapshotFromProgress(progress *controlentity.Progress) map[string]any {
+	if progress == nil || progress.Capability != "research.execute" || len(progress.State) == 0 {
+		return nil
+	}
+	pages, ok := progress.State["valuable_pages"].([]any)
+	if !ok || len(pages) == 0 {
+		return nil
+	}
+	return map[string]any{
+		"queryTexts":  progress.State["query_texts"],
+		"pages":       pages,
+		"confidence":  progress.State["confidence"],
+		"queryCount":  progress.State["queries"],
+		"sourceCount": progress.State["sources"],
+	}
 }
 
 func titleFromPrompt(prompt string) string {
@@ -267,6 +296,17 @@ func metadataModel(metadata *entity.ResponseMetadata) string {
 		return ""
 	}
 	return metadata.Model
+}
+
+func recordingModelID(models map[string]entity.ModelConfig) string {
+	return modelID(models["default"])
+}
+
+func recordingModelName(metadata *entity.ResponseMetadata, models map[string]entity.ModelConfig) string {
+	if name := metadataModel(metadata); name != "" {
+		return name
+	}
+	return strings.TrimSpace(models["default"].Name)
 }
 
 func metadataPromptTokens(metadata *entity.ResponseMetadata) int {

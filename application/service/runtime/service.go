@@ -76,30 +76,30 @@ func (s *RuntimeService) Run(ctx context.Context, req *dto.RunReq) (*entity.Comp
 	in := assembler.ToRunInput(req)
 	in.TraceID = traceID(ctx)
 	if err := s.hydrateAgentConfig(ctx, in); err != nil {
-		return nil, log.WrapError(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService.Run.hydrateAgentConfig")
 	}
 	if err := s.injectMemories(ctx, in.Context); err != nil {
-		return nil, log.WrapError(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService.Run.injectMemories")
 	}
 	if err := s.ensureUserModel(ctx, &in.Models); err != nil {
-		return nil, log.WrapError(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService.Run.ensureUserModel")
 	}
 	if err := s.hydrateModels(ctx, in.Models); err != nil {
-		return nil, log.WrapError(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService.Run.hydrateModels")
 	}
 	if err := s.hydrateSubAgentModels(ctx, in.SubAgents); err != nil {
-		return nil, log.WrapError(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService.Run.hydrateSubAgentModels")
 	}
 	result, err := s.svc.Run(ctx, in)
 	if err == nil && result != nil {
 		s.storeMemories(ctx, in.Context, result.Memories)
 	}
 	if result != nil {
-		s.recordCompletion(ctx, in.Context, in.Prompt, result.Content, result.Metadata, result.PendingApprovals, err)
+		s.recordCompletion(ctx, in.Context, in.Models, in.Prompt, result.Content, result.Metadata, result.PendingApprovals, err)
 	} else if err != nil {
-		s.recordCompletion(ctx, in.Context, in.Prompt, "", nil, nil, err)
+		s.recordCompletion(ctx, in.Context, in.Models, in.Prompt, "", nil, nil, err)
 	}
-	return result, err
+	return result, log.WrapError(err, "RuntimeService.Run.gateway")
 }
 
 // RunStream executes a streaming run.
@@ -110,24 +110,24 @@ func (s *RuntimeService) RunStream(ctx context.Context, req *dto.RunReq, emit St
 	in.TraceID = traceID(ctx)
 	in.Options = withStream(in.Options)
 	if err := s.hydrateAgentConfig(ctx, in); err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.RunStream.hydrateAgentConfig")
 	}
 	if err := s.injectMemories(ctx, in.Context); err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.RunStream.injectMemories")
 	}
 	if err := s.ensureUserModel(ctx, &in.Models); err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.RunStream.ensureUserModel")
 	}
 	if err := s.hydrateModels(ctx, in.Models); err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.RunStream.hydrateModels")
 	}
 	if err := s.hydrateSubAgentModels(ctx, in.SubAgents); err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.RunStream.hydrateSubAgentModels")
 	}
 	capture := newStreamCapture()
 	err := s.runControlLoop(ctx, in, req.DeviceID, s.memoryAwareEmitter(ctx, in.Context, capture.Wrap(emit)))
-	s.recordStream(ctx, in.Context, in.Prompt, capture, err)
-	return log.WrapError(err, "RuntimeService.RunStream")
+	s.recordStream(ctx, in.Context, in.Models, in.Prompt, capture, err)
+	return log.WrapError(err, "RuntimeService.RunStream.controlLoop")
 }
 
 // RunAgent executes a non-streaming agent run.
@@ -137,22 +137,22 @@ func (s *RuntimeService) RunAgent(ctx context.Context, req *dto.AgentReq) (*enti
 	in := assembler.ToAgentInput(req)
 	in.TraceID = traceID(ctx)
 	if err := s.hydrateAgentModels(ctx, in.Context, &in.Models); err != nil {
-		return nil, log.WrapError(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService.RunAgent.hydrateAgentModels")
 	}
 	if err := s.injectMemories(ctx, in.Context); err != nil {
-		return nil, log.WrapError(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService.RunAgent.injectMemories")
 	}
 	if err := s.ensureUserModel(ctx, &in.Models); err != nil {
-		return nil, log.WrapError(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService.RunAgent.ensureUserModel")
 	}
 	if err := s.hydrateModels(ctx, in.Models); err != nil {
-		return nil, log.WrapError(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService.RunAgent.hydrateModels")
 	}
 	value, err := s.svc.RunAgent(ctx, in)
 	if value != nil {
-		s.recordCompletion(ctx, in.Context, in.Task, value.Content, value.Metadata, nil, err)
+		s.recordCompletion(ctx, in.Context, in.Models, in.Task, value.Content, value.Metadata, nil, err)
 	} else if err != nil {
-		s.recordCompletion(ctx, in.Context, in.Task, "", nil, nil, err)
+		s.recordCompletion(ctx, in.Context, in.Models, in.Task, "", nil, nil, err)
 	}
 	return value, log.WrapError(err, "RuntimeService.RunAgent")
 }
@@ -165,21 +165,21 @@ func (s *RuntimeService) RunAgentStream(ctx context.Context, req *dto.AgentReq, 
 	in.TraceID = traceID(ctx)
 	in.Stream = true
 	if err := s.hydrateAgentModels(ctx, in.Context, &in.Models); err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.RunAgentStream.hydrateAgentModels")
 	}
 	if err := s.injectMemories(ctx, in.Context); err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.RunAgentStream.injectMemories")
 	}
 	if err := s.ensureUserModel(ctx, &in.Models); err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.RunAgentStream.ensureUserModel")
 	}
 	if err := s.hydrateModels(ctx, in.Models); err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.RunAgentStream.hydrateModels")
 	}
 	capture := newStreamCapture()
 	err := s.runAgentControlLoop(ctx, in, req.DeviceID, s.memoryAwareEmitter(ctx, in.Context, capture.Wrap(emit)))
-	s.recordStream(ctx, in.Context, in.Task, capture, err)
-	return log.WrapError(err, "RuntimeService.RunAgentStream")
+	s.recordStream(ctx, in.Context, in.Models, in.Task, capture, err)
+	return log.WrapError(err, "RuntimeService.RunAgentStream.controlLoop")
 }
 
 const maxDeviceActionIterations = 8
@@ -223,6 +223,7 @@ func (s *RuntimeService) runControlLoop(ctx context.Context, in *entity.RunInput
 			return context.Canceled
 		}
 		applyDeviceObservation(in.Context, originalPrompt, pending, observation)
+		in.VisualInputs = visualInputsFromObservation(in.Models, observation)
 		in.Prompt = nextDeviceObservationPrompt(originalPrompt, pending, observation)
 	}
 	if s.controlHub != nil {
@@ -272,6 +273,7 @@ func (s *RuntimeService) runAgentControlLoop(ctx context.Context, in *entity.Age
 			return context.Canceled
 		}
 		applyDeviceObservation(in.Context, originalTask, pending, observation)
+		in.VisualInputs = visualInputsFromObservation(in.Models, observation)
 		in.Task = nextDeviceObservationPrompt(originalTask, pending, observation)
 	}
 	if s.controlHub != nil {
@@ -427,7 +429,11 @@ func failedControlObservation(action *controlentity.Action, message string, stat
 }
 
 func emitControlObservation(ctx context.Context, emit StreamFunc, observation *controlentity.Observation) error {
-	return emit(&entity.StreamEvent{EmittedAt: time.Now().UTC(), TraceID: traceID(ctx), Type: entity.StreamTypeObservation, Observation: observation})
+	if observation == nil {
+		return nil
+	}
+	safe := observation.WithoutAttachmentData()
+	return emit(&entity.StreamEvent{EmittedAt: time.Now().UTC(), TraceID: traceID(ctx), Type: entity.StreamTypeObservation, Observation: &safe})
 }
 
 func emitControlProgress(ctx context.Context, emit StreamFunc, progress *controlentity.Progress) error {
@@ -467,11 +473,19 @@ func observationContext(observation *controlentity.Observation) map[string]any {
 	if observation == nil {
 		return nil
 	}
+	attachments := make([]map[string]any, 0, len(observation.Attachments))
+	for _, attachment := range observation.Attachments {
+		attachments = append(attachments, map[string]any{
+			"id": attachment.ID, "kind": attachment.Kind, "mime_type": attachment.MIMEType,
+			"size": attachment.Size, "sha256": attachment.SHA256, "purpose": attachment.Purpose,
+			"detail": attachment.Detail, "model_input": attachment.Data != "",
+		})
+	}
 	return map[string]any{
 		"protocol": observation.Protocol, "type": observation.Type, "task_id": observation.TaskID,
 		"action_id": observation.ActionID, "session_id": observation.SessionID, "sequence": observation.Sequence,
 		"status": observation.Status, "observed_at": observation.ObservedAt.Format(time.RFC3339Nano),
-		"state": observation.State, "error": observation.Error,
+		"state": observation.State, "attachments": attachments, "error": observation.Error,
 	}
 }
 
@@ -775,7 +789,7 @@ func (s *RuntimeService) hydrateControlContext(ctx context.Context, values map[s
 		values["desktop_bridge"] = true
 	}
 	if s.controlHub.HasAvailableCapability(userID,
-		"browser.open", "browser.navigate", "browser.observe", "browser.click", "browser.type", "browser.press", "browser.scroll", "browser.wait", "browser.download", "browser.screenshot", "browser.close",
+		"browser.task", "browser.open", "browser.navigate", "browser.observe", "browser.click", "browser.play", "browser.pause", "browser.type", "browser.hover", "browser.select", "browser.drag", "browser.press", "browser.scroll", "browser.back", "browser.forward", "browser.refresh", "browser.wait", "browser.download", "browser.screenshot", "browser.automation", "browser.close",
 	) {
 		values["browser_controller"] = true
 	}
@@ -821,7 +835,7 @@ func (s *RuntimeService) hydrateAgentConfig(ctx context.Context, in *entity.RunI
 	}
 	agent, err := s.agentSvc.FindById(ctx, agentID)
 	if err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.hydrateAgentConfig.findAgent")
 	}
 	if agent == nil || agent.Ulid == "" || agent.DeletedAt != 0 || !agent.Enabled {
 		return apierror.ErrNotFound.WithMessage("agent not found or disabled")
@@ -832,7 +846,7 @@ func (s *RuntimeService) hydrateAgentConfig(ctx context.Context, in *entity.RunI
 	if agent.IsSystem {
 		binding, bindingErr := s.agentSvc.FindUserModel(ctx, authctx.UserID(ctx), agent.Ulid)
 		if bindingErr != nil {
-			return bindingErr
+			return log.WrapError(bindingErr, "RuntimeService.hydrateAgentConfig.findUserModel")
 		}
 		if binding != nil {
 			agent.Model = binding.Model
@@ -942,7 +956,7 @@ func (s *RuntimeService) hydrateModels(ctx context.Context, models map[string]en
 		cfg.APIKey = ""
 		model, err := s.resolveModel(ctx, cfg, modelTypeForRole(role))
 		if err != nil {
-			return log.WrapError(err, "RuntimeService")
+			return log.WrapError(err, "RuntimeService.hydrateModels.resolveModel")
 		}
 		if model == nil {
 			return apierror.ErrModelBindingRequired
@@ -970,7 +984,7 @@ func (s *RuntimeService) hydrateSubAgentModels(ctx context.Context, subAgents []
 		cfg.APIKey = ""
 		model, err := s.resolveModel(ctx, cfg, "llm")
 		if err != nil {
-			return log.WrapError(err, "RuntimeService")
+			return log.WrapError(err, "RuntimeService.hydrateSubAgentModels.resolveModel")
 		}
 		if model == nil {
 			return apierror.ErrModelBindingRequired.WithMessage("子 Agent 绑定的模型不存在")
@@ -993,14 +1007,14 @@ func (s *RuntimeService) resolveModel(ctx context.Context, cfg entity.ModelConfi
 	if id := modelID(cfg); id != "" {
 		m, err := s.modelSvc.FindById(ctx, id)
 		if err != nil {
-			return nil, log.WrapError(err, "RuntimeService")
+			return nil, log.WrapError(err, "RuntimeService.resolveModel.findByID")
 		}
 		if m != nil && m.DeletedAt == 0 && m.CreatedBy == userID {
 			if !m.Enabled {
 				return nil, apierror.ErrForbidden.WithMessage("当前模型已被管理员停用")
 			}
 			if err := validateRuntimeModelType(m.ModelType, expectedType, m.Capabilities); err != nil {
-				return nil, log.WrapError(err, "RuntimeService")
+				return nil, log.WrapError(err, "RuntimeService.resolveModel.validateType")
 			}
 			return s.resolveStoredModel(ctx, m, userID)
 		}
@@ -1022,14 +1036,14 @@ func (s *RuntimeService) resolveModel(ctx context.Context, cfg entity.ModelConfi
 	}
 	ens, err := s.modelSvc.FindAll(ctx, queries)
 	if err != nil {
-		return nil, log.WrapError(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService.resolveModel.findByName")
 	}
 	if len(ens) == 0 {
 		return nil, nil
 	}
 	m := ens[0]
 	if err := validateRuntimeModelType(m.ModelType, expectedType, m.Capabilities); err != nil {
-		return nil, log.WrapError(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService.resolveModel.validateType")
 	}
 	return s.resolveStoredModel(ctx, m, userID)
 }
@@ -1081,7 +1095,7 @@ func (s *RuntimeService) resolveStoredModel(ctx context.Context, model *modelent
 	baseURL := model.BaseUrl
 	key, err := s.modelSvc.FindKeyByID(ctx, model.KeyID)
 	if err != nil {
-		return nil, log.WrapError(err, "RuntimeService")
+		return nil, log.WrapError(err, "RuntimeService.resolveStoredModel.findKey")
 	}
 	if key == nil || key.Ulid == "" || key.DeletedAt != 0 || !key.Enabled {
 		return nil, apierror.ErrModelBindingRequired.WithMessage("模型绑定的 Key 不存在或已停用")
@@ -1141,12 +1155,12 @@ func (s *RuntimeService) ensureUserModel(ctx context.Context, models *map[string
 	}
 	items, err := s.modelSvc.FindAll(ctx, append(append([]*query.Query{}, queries...), &query.Query{Key: "category", Operator: query.OpEq, Value: "default"}))
 	if err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.ensureUserModel.findDefault")
 	}
 	if len(items) == 0 {
 		items, err = s.modelSvc.FindAll(ctx, queries)
 		if err != nil {
-			return log.WrapError(err, "RuntimeService")
+			return log.WrapError(err, "RuntimeService.ensureUserModel.findAvailable")
 		}
 	}
 	if len(items) == 0 {
@@ -1174,7 +1188,7 @@ func (s *RuntimeService) hydrateAgentModels(ctx context.Context, values map[stri
 	}
 	agent, err := s.agentSvc.FindById(ctx, id)
 	if err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.hydrateAgentModels.findAgent")
 	}
 	if agent == nil || agent.Ulid == "" || agent.DeletedAt != 0 || !agent.Enabled {
 		return apierror.ErrNotFound.WithMessage("agent not found or disabled")
@@ -1185,7 +1199,7 @@ func (s *RuntimeService) hydrateAgentModels(ctx context.Context, values map[stri
 	if agent.IsSystem {
 		binding, bindingErr := s.agentSvc.FindUserModel(ctx, authctx.UserID(ctx), agent.Ulid)
 		if bindingErr != nil {
-			return bindingErr
+			return log.WrapError(bindingErr, "RuntimeService.hydrateAgentModels.findUserModel")
 		}
 		if binding != nil {
 			agent.Model = binding.Model
@@ -1248,7 +1262,7 @@ func (s *RuntimeService) injectMemories(ctx context.Context, values map[string]a
 	}
 	text, err := s.memorySvc.ContextText(ctx, authctx.UserID(ctx), agentIDFromContext(values), 20)
 	if err != nil {
-		return log.WrapError(err, "RuntimeService")
+		return log.WrapError(err, "RuntimeService.injectMemories.contextText")
 	}
 	if text != "" {
 		values["long_term_memories"] = text

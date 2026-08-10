@@ -169,6 +169,59 @@ func TestHubPersistsConversationDeviceSession(t *testing.T) {
 	}
 }
 
+func TestHubTerminalStatusIgnoresLateStatusProgressAndObservation(t *testing.T) {
+	hub := NewHub()
+	ctx := context.Background()
+	if err := hub.BeginTask(ctx, "task-1", "user-1", "chat-1", "device-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.SetTaskStatus(ctx, "task-1", entity.StatusFailed); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.SetTaskStatus(ctx, "task-1", entity.StatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	hub.recordProgress("task-1", entity.Progress{Progress: 100, Stage: "late"})
+	hub.mu.Lock()
+	hub.recordObservationLocked("task-1", entity.Observation{Status: entity.ObservationSucceeded})
+	hub.mu.Unlock()
+	task, ok, err := hub.Task(ctx, "task-1")
+	if err != nil || !ok {
+		t.Fatalf("task lookup = %t, %v", ok, err)
+	}
+	if task.Status != entity.StatusFailed {
+		t.Fatalf("task status = %q, want %q", task.Status, entity.StatusFailed)
+	}
+	if len(task.Observations) != 1 {
+		t.Fatalf("late observation was not retained: %+v", task.Observations)
+	}
+}
+
+func TestHubActionFailureCanBeRecoveredByControlLoop(t *testing.T) {
+	hub := NewHub()
+	ctx := context.Background()
+	if err := hub.BeginTask(ctx, "task-1", "user-1", "chat-1", "device-1"); err != nil {
+		t.Fatal(err)
+	}
+	hub.mu.Lock()
+	hub.recordObservationLocked("task-1", entity.Observation{Status: entity.ObservationFailed, Error: "retryable action failure"})
+	hub.mu.Unlock()
+	task, ok, err := hub.Task(ctx, "task-1")
+	if err != nil || !ok {
+		t.Fatalf("task lookup = %t, %v", ok, err)
+	}
+	if task.Status != entity.StatusEvaluating {
+		t.Fatalf("action failure prematurely terminated task with %q", task.Status)
+	}
+	if err := hub.SetTaskStatus(ctx, "task-1", entity.StatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	task, _, _ = hub.Task(ctx, "task-1")
+	if task.Status != entity.StatusCompleted {
+		t.Fatalf("recovered task status = %q, want %q", task.Status, entity.StatusCompleted)
+	}
+}
+
 func TestHubBindsDeviceToFirstAuthenticatedUser(t *testing.T) {
 	hub := NewHub()
 	connection := &cancelConnection{messages: make(chan any, 1)}

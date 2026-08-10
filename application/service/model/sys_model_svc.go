@@ -4,7 +4,9 @@ package model
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
+	"time"
 
 	assembler "github.com/good-fish-man/agent-runtime-client/application/assembler/model"
 	dto "github.com/good-fish-man/agent-runtime-client/application/dto/model"
@@ -109,6 +111,7 @@ func (s *SysModelService) FindSysModelAdminAll(ctx context.Context) ([]*dto.Find
 	for _, item := range result {
 		s.enrichKey(ctx, item)
 	}
+	s.enrichUsage(ctx, result)
 	return result, nil
 }
 
@@ -120,7 +123,9 @@ func (s *SysModelService) FindSysModelAdminByID(ctx context.Context, modelID str
 	if model == nil || model.Ulid == "" || model.DeletedAt != 0 {
 		return nil, apierror.ErrNotFound.WithMessage("model not found or deleted")
 	}
-	return s.asm.E2DFind(model), nil
+	result := s.asm.E2DFind(model)
+	s.enrichUsage(ctx, []*dto.FindSysModelRsp{result})
+	return result, nil
 }
 
 func (s *SysModelService) FindSysModelById(ctx context.Context, req *dto.FindSysModelByIdReq) (*dto.FindSysModelRsp, error) {
@@ -136,6 +141,7 @@ func (s *SysModelService) FindSysModelById(ctx context.Context, req *dto.FindSys
 	}
 	rsp := s.asm.E2DFind(en)
 	s.enrichKey(ctx, rsp)
+	s.enrichUsage(ctx, []*dto.FindSysModelRsp{rsp})
 	return rsp, nil
 }
 
@@ -153,6 +159,7 @@ func (s *SysModelService) FindSysModelAll(ctx context.Context, req *dto.FindSysM
 	for _, item := range result {
 		s.enrichKey(ctx, item)
 	}
+	s.enrichUsage(ctx, result)
 	return result, nil
 }
 
@@ -166,7 +173,105 @@ func (s *SysModelService) FindSysModelPage(ctx context.Context, req *dto.FindSys
 	for _, item := range entries {
 		s.enrichKey(ctx, item)
 	}
+	s.enrichUsage(ctx, entries)
 	return &dto.FindSysModelPageRsp{Entries: entries, PageData: pageData}, nil
+}
+
+func (s *SysModelService) enrichUsage(ctx context.Context, items []*dto.FindSysModelRsp) {
+	if len(items) == 0 {
+		return
+	}
+	metrics, err := s.srv.FindRecentUsageMetrics(ctx, time.Now().Add(-24*time.Hour).UnixMilli())
+	if err != nil {
+		log.WarnwCtx(ctx, "load recent model usage failed", "error", err)
+		return
+	}
+	applyModelUsageMetrics(items, metrics)
+}
+
+type modelUsageAggregate struct {
+	requests       int64
+	successes      int64
+	latencyTotalMS int64
+	latencyCount   int64
+}
+
+func applyModelUsageMetrics(items []*dto.FindSysModelRsp, metrics []entity.ModelUsageMetric) {
+	byID := make(map[string]*dto.FindSysModelRsp, len(items))
+	byName := make(map[string]*dto.FindSysModelRsp, len(items))
+	duplicateNames := make(map[string]bool)
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		byID[modelUsageKey(item.CreatedBy, item.Ulid)] = item
+		nameKey := modelUsageKey(item.CreatedBy, item.Name)
+		if _, exists := byName[nameKey]; exists {
+			duplicateNames[nameKey] = true
+		} else {
+			byName[nameKey] = item
+		}
+	}
+
+	aggregates := make(map[string]*modelUsageAggregate, len(items))
+	totals := make(map[string]int64)
+	for _, metric := range metrics {
+		var item *dto.FindSysModelRsp
+		if strings.TrimSpace(metric.ModelID) != "" {
+			item = byID[modelUsageKey(metric.UserID, metric.ModelID)]
+		}
+		if item == nil && strings.TrimSpace(metric.ModelName) != "" {
+			key := modelUsageKey(metric.UserID, metric.ModelName)
+			if !duplicateNames[key] {
+				item = byName[key]
+			}
+		}
+		if item == nil || metric.RequestCount <= 0 {
+			continue
+		}
+		aggregate := aggregates[item.Ulid]
+		if aggregate == nil {
+			aggregate = &modelUsageAggregate{}
+			aggregates[item.Ulid] = aggregate
+		}
+		aggregate.requests += metric.RequestCount
+		aggregate.successes += metric.SuccessCount
+		aggregate.latencyTotalMS += metric.LatencyTotalMs
+		aggregate.latencyCount += metric.LatencyCount
+		totals[item.CreatedBy] += metric.RequestCount
+	}
+
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		aggregate := aggregates[item.Ulid]
+		if aggregate == nil || aggregate.requests == 0 {
+			item.Usage, item.UsageRate, item.UsageCount, item.SuccessRate = 0, 0, 0, 0
+			continue
+		}
+		item.UsageCount = aggregate.requests
+		if total := totals[item.CreatedBy]; total > 0 {
+			rate := float64(aggregate.requests) * 100 / float64(total)
+			item.Usage = int(math.Round(rate))
+			item.UsageRate = math.Round(rate*100) / 100
+		}
+		item.SuccessRate = math.Round(float64(aggregate.successes)*1000/float64(aggregate.requests)) / 10
+		if aggregate.latencyCount > 0 {
+			item.Latency = formatModelLatency(aggregate.latencyTotalMS / aggregate.latencyCount)
+		}
+	}
+}
+
+func modelUsageKey(userID, model string) string {
+	return strings.TrimSpace(userID) + "\x00" + strings.ToLower(strings.TrimSpace(model))
+}
+
+func formatModelLatency(milliseconds int64) string {
+	if milliseconds < 1000 {
+		return fmt.Sprintf("%d ms", milliseconds)
+	}
+	return fmt.Sprintf("%.2f s", float64(milliseconds)/1000)
 }
 
 func (s *SysModelService) FindModelCatalog(ctx context.Context, req *dto.FindModelCatalogReq) ([]*dto.FindModelCatalogRsp, error) {

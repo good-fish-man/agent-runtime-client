@@ -3,6 +3,7 @@
 package infrapkg
 
 import (
+	"encoding/json"
 	"strings"
 
 	"google.golang.org/protobuf/types/known/structpb"
@@ -19,6 +20,22 @@ func ToStruct(m map[string]any) *structpb.Struct {
 		return nil
 	}
 	s, err := structpb.NewStruct(m)
+	if err == nil {
+		return s
+	}
+
+	// Context may contain typed slices or structs supplied by device
+	// observations. Normalize them through JSON instead of dropping the entire
+	// request context when protobuf cannot consume a concrete Go type directly.
+	data, marshalErr := json.Marshal(m)
+	if marshalErr != nil {
+		return nil
+	}
+	var normalized map[string]any
+	if json.Unmarshal(data, &normalized) != nil {
+		return nil
+	}
+	s, err = structpb.NewStruct(normalized)
 	if err != nil {
 		return nil
 	}

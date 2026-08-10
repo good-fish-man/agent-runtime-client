@@ -14,6 +14,7 @@ type ChatMessage struct {
 	CreatedAt    int64      `gorm:"column:created_at;autoCreateTime:milli;type:bigint;comment:创建时间;" json:"created_at"`
 	Role         string     `gorm:"column:role;type:varchar(32);comment:角色:user/assistant/system;" json:"role"`
 	Content      string     `gorm:"column:content;type:text;comment:消息内容;" json:"content"`
+	ModelID      string     `gorm:"column:model_id;type:varchar(128);index;comment:模型ID;" json:"model_id"`
 	Model        string     `gorm:"column:model;type:varchar(128);comment:使用的模型;" json:"model"`
 	InputTokens  int        `gorm:"column:input_tokens;default:0;type:int;comment:输入Token数;" json:"input_tokens"`
 	OutputTokens int        `gorm:"column:output_tokens;default:0;type:int;comment:输出Token数;" json:"output_tokens"`

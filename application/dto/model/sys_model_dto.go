@@ -79,25 +79,28 @@ type (
 	}
 
 	FindSysModelRsp struct {
-		Ulid          string `json:"ulid"`
-		CreatedAt     int64  `json:"created_at"`
-		UpdatedAt     int64  `json:"updated_at"`
-		CreatedBy     string `json:"created_by"`
-		UpdatedBy     string `json:"updated_by"`
-		Name          string `json:"name"`
-		Provider      string `json:"provider"`
-		BaseUrl       string `json:"baseUrl"`
-		ModelType     string `json:"modelType"`
-		Category      string `json:"category"`
-		Status        string `json:"status"`
-		Latency       string `json:"latency"`
-		ContextWindow string `json:"contextWindow"`
-		Capabilities  string `json:"capabilities"`
-		Usage         int    `json:"usage"`
-		Enabled       bool   `json:"enabled"`
-		RuntimeMode   string `json:"runtimeMode"`
-		KeyID         string `json:"keyId"`
-		KeyName       string `json:"keyName"`
+		Ulid          string  `json:"ulid"`
+		CreatedAt     int64   `json:"created_at"`
+		UpdatedAt     int64   `json:"updated_at"`
+		CreatedBy     string  `json:"created_by"`
+		UpdatedBy     string  `json:"updated_by"`
+		Name          string  `json:"name"`
+		Provider      string  `json:"provider"`
+		BaseUrl       string  `json:"baseUrl"`
+		ModelType     string  `json:"modelType"`
+		Category      string  `json:"category"`
+		Status        string  `json:"status"`
+		Latency       string  `json:"latency"`
+		ContextWindow string  `json:"contextWindow"`
+		Capabilities  string  `json:"capabilities"`
+		Usage         int     `json:"usage"`
+		UsageRate     float64 `json:"usageRate"`
+		UsageCount    int64   `json:"usageCount"`
+		SuccessRate   float64 `json:"successRate"`
+		Enabled       bool    `json:"enabled"`
+		RuntimeMode   string  `json:"runtimeMode"`
+		KeyID         string  `json:"keyId"`
+		KeyName       string  `json:"keyName"`
 	}
 
 	CreateModelKeyReq struct {

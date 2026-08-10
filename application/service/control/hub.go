@@ -407,8 +407,9 @@ func (h *Hub) Observe(ctx context.Context, observation entity.Observation) error
 	if err := observation.Validate(); err != nil {
 		return err
 	}
+	safeObservation := observation.WithoutAttachmentData()
 	if h.store != nil {
-		if err := h.store.SaveObservation(ctx, observation); err != nil {
+		if err := h.store.SaveObservation(ctx, safeObservation); err != nil {
 			return err
 		}
 	}
@@ -426,7 +427,7 @@ func (h *Hub) Observe(ctx context.Context, observation entity.Observation) error
 			}
 		}
 		h.mu.Unlock()
-		h.recordObservation(observation.TaskID, observation)
+		h.recordObservation(observation.TaskID, safeObservation)
 		return nil
 	}
 	select {
@@ -479,6 +480,10 @@ func (h *Hub) SetTaskStatus(ctx context.Context, taskID, status string) error {
 		current = stored
 		h.mu.Lock()
 		h.sessions[taskID] = current
+	}
+	if !entity.CanTransitionTaskStatus(current.Status, status) {
+		h.mu.Unlock()
+		return nil
 	}
 	current.Status = status
 	current.UpdatedAt = time.Now().UTC()
@@ -560,8 +565,9 @@ func (h *Hub) Dispatch(ctx context.Context, deviceID string, action entity.Actio
 		if len(h.completed) >= completedObservationLimit {
 			h.completed = make(map[string]entity.Observation)
 		}
-		h.completed[action.IdempotencyKey] = observation
-		h.recordObservationLocked(action.TaskID, observation)
+		safeObservation := observation.WithoutAttachmentData()
+		h.completed[action.IdempotencyKey] = safeObservation
+		h.recordObservationLocked(action.TaskID, safeObservation)
 		copy := cloneTask(h.sessions[action.TaskID])
 		h.mu.Unlock()
 		_ = h.saveTask(context.WithoutCancel(ctx), &copy)
@@ -635,7 +641,9 @@ func (h *Hub) recordAction(ctx context.Context, deviceID string, action entity.A
 		h.sessions[action.TaskID] = current
 	}
 	current.DeviceID = deviceID
-	current.Status = entity.StatusExecuting
+	if entity.CanTransitionTaskStatus(current.Status, entity.StatusExecuting) {
+		current.Status = entity.StatusExecuting
+	}
 	current.Sequence = action.Sequence
 	current.Actions = append(current.Actions, action)
 	current.UpdatedAt = time.Now().UTC()
@@ -669,7 +677,9 @@ func (h *Hub) recordProgress(taskID string, progress entity.Progress) {
 		current.Metadata = make(map[string]interface{})
 	}
 	current.Metadata["latest_progress"] = progress
-	current.Status = entity.StatusExecuting
+	if entity.CanTransitionTaskStatus(current.Status, entity.StatusExecuting) {
+		current.Status = entity.StatusExecuting
+	}
 	current.UpdatedAt = time.Now().UTC()
 }
 
@@ -679,15 +689,15 @@ func (h *Hub) recordObservationLocked(taskID string, observation entity.Observat
 		return
 	}
 	current.Observations = append(current.Observations, observation)
-	current.Status = entity.StatusEvaluating
-	if observation.Status == entity.ObservationFailed || observation.Status == entity.ObservationExpired || observation.Status == entity.ObservationBlocked {
-		current.Status = entity.StatusFailed
-	} else if observation.Status == entity.ObservationWaitingApproval {
-		current.Status = entity.StatusWaitingApproval
-	} else if observation.Status == entity.ObservationWaitingUser {
-		current.Status = entity.StatusWaitingUser
-	} else if observation.Status == entity.ObservationCancelled {
-		current.Status = entity.StatusCancelled
+	if !entity.TerminalTaskStatus(current.Status) {
+		current.Status = entity.StatusEvaluating
+		if observation.Status == entity.ObservationWaitingApproval {
+			current.Status = entity.StatusWaitingApproval
+		} else if observation.Status == entity.ObservationWaitingUser {
+			current.Status = entity.StatusWaitingUser
+		} else if observation.Status == entity.ObservationCancelled {
+			current.Status = entity.StatusCancelled
+		}
 	}
 	if observation.SessionID != "" {
 		family := sessionFamily(observation.SessionID)

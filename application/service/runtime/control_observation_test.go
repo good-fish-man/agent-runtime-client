@@ -151,11 +151,11 @@ func TestHydrateControlContextFromConnectedDevice(t *testing.T) {
 	hub := controlsvc.NewHub()
 	connection := &testConnection{}
 	if err := hub.Register(context.Background(), controlentity.DeviceMessage{
-		DeviceID: "device-1", Capabilities: []string{"browser.open", "app.open"},
+		DeviceID: "device-1", Capabilities: []string{"browser.hover", "app.open"},
 	}, connection); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := hub.ResolveDevice(context.Background(), "user-1", "", "browser.open"); err != nil {
+	if _, err := hub.ResolveDevice(context.Background(), "user-1", "", "browser.hover"); err != nil {
 		t.Fatal(err)
 	}
 	service := &RuntimeService{controlHub: hub}

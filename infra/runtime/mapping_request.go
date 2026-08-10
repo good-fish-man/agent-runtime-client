@@ -29,6 +29,7 @@ func toRunRequest(in *entity.RunInput) *runtimev1.RunRequest {
 		Options:        toRunOptions(in.Options),
 		Sandbox:        toSandbox(in.Sandbox),
 		Files:          toFiles(in.Files),
+		VisualInputs:   toVisualInputs(in.VisualInputs),
 		RequestId:      in.RequestID,
 		TraceId:        in.TraceID,
 	}
@@ -43,10 +44,22 @@ func toAgentRequest(in *entity.AgentInput) *runtimev1.AgentRequest {
 		Context:      infrapkg.ToStruct(in.Context),
 		Models:       toModels(in.Models),
 		Capabilities: toCapabilities(in.Capabilities),
+		VisualInputs: toVisualInputs(in.VisualInputs),
 		Stream:       in.Stream,
 		RequestId:    in.RequestID,
 		TraceId:      in.TraceID,
 	}
+}
+
+func toVisualInputs(values []entity.VisualInput) []*runtimev1.VisualInput {
+	result := make([]*runtimev1.VisualInput, 0, len(values))
+	for _, value := range values {
+		result = append(result, &runtimev1.VisualInput{
+			Id: value.ID, MimeType: value.MIMEType, Data: value.Data, Sha256: value.SHA256,
+			Purpose: value.Purpose, Detail: value.Detail,
+		})
+	}
+	return result
 }
 
 func toMediaGenerationRequest(in *entity.MediaGenerationInput) *runtimev1.MediaGenerationRequest {

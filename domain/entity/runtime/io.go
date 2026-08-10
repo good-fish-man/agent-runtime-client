@@ -19,6 +19,7 @@ type RunInput struct {
 	Options        *RunOptions            `json:"options,omitempty"`
 	Sandbox        *SandboxConfig         `json:"sandbox,omitempty"`
 	Files          []FileConfig           `json:"files,omitempty"`
+	VisualInputs   []VisualInput          `json:"visual_inputs,omitempty"`
 	RequestID      string                 `json:"request_id"`
 	TraceID        string                 `json:"trace_id"`
 }
@@ -29,9 +30,21 @@ type AgentInput struct {
 	Context      map[string]any         `json:"context,omitempty"`
 	Models       map[string]ModelConfig `json:"models,omitempty"`
 	Capabilities []CapabilityConfig     `json:"capabilities,omitempty"`
+	VisualInputs []VisualInput          `json:"visual_inputs,omitempty"`
 	Stream       bool                   `json:"stream"`
 	RequestID    string                 `json:"request_id"`
 	TraceID      string                 `json:"trace_id"`
+}
+
+// VisualInput is trusted, bounded evidence decoded from an Athena device
+// observation. It is sent as a native multimodal model part, never prompt text.
+type VisualInput struct {
+	ID       string `json:"id"`
+	MIMEType string `json:"mime_type"`
+	Data     []byte `json:"data"`
+	SHA256   string `json:"sha256"`
+	Purpose  string `json:"purpose,omitempty"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 type CapabilityDefinition struct {

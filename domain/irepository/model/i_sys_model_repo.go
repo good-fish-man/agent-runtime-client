@@ -17,6 +17,7 @@ type ISysModelRepo interface {
 	FindById(ctx context.Context, ulid string, selectColumn ...string) (en *entity.SysModel, err error)
 	FindAll(ctx context.Context, queries []*query.Query, selectArgs ...[]string) (entries []*entity.SysModel, err error)
 	FindPage(ctx context.Context, queries []*query.Query, reqPage *query.PageData, reqSort *query.SortData, selectArgs ...[]string) (entries []*entity.SysModel, rspPage *query.PageData, err error)
+	FindRecentUsageMetrics(ctx context.Context, since int64) ([]entity.ModelUsageMetric, error)
 	CreateKey(ctx context.Context, key *entity.SysModelKey) (string, error)
 	UpdateKey(ctx context.Context, key *entity.SysModelKey) error
 	DeleteKey(ctx context.Context, keyID, userID string) error
