@@ -14,6 +14,7 @@ type ChatTokenStats struct {
 	AgentId      string  `gorm:"column:agent_id;type:varchar(128);comment:智能体ID;" json:"agent_id"`
 	UserId       string  `gorm:"column:user_id;type:varchar(128);comment:用户ID;" json:"user_id"`
 	Date         string  `gorm:"column:date;type:varchar(16);comment:统计日期:YYYY-MM-DD;index:idx_stats;" json:"date"`
+	ModelID      string  `gorm:"column:model_id;type:varchar(128);comment:模型ID;index" json:"model_id"`
 	Model        string  `gorm:"column:model;type:varchar(128);comment:模型标识;" json:"model"`
 	InputTokens  int     `gorm:"column:input_tokens;default:0;type:int;comment:当日输入Token累计;" json:"input_tokens"`
 	OutputTokens int     `gorm:"column:output_tokens;default:0;type:int;comment:当日输出Token累计;" json:"output_tokens"`

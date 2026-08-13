@@ -128,19 +128,31 @@ type ToolCallMetadata struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// ModelUsageMetadata is the request-scoped token aggregate for one concrete LLM.
+type ModelUsageMetadata struct {
+	ModelID          string `json:"model_id"`
+	Provider         string `json:"provider"`
+	Model            string `json:"model"`
+	PromptTokens     int32  `json:"prompt_tokens"`
+	CompletionTokens int32  `json:"completion_tokens"`
+	TotalTokens      int32  `json:"total_tokens"`
+	RequestCount     int32  `json:"request_count"`
+}
+
 // ResponseMetadata is aggregate telemetry for a response.
 type ResponseMetadata struct {
-	Model            string             `json:"model"`
-	LatencyMs        int64              `json:"latency_ms"`
-	TokensUsed       int32              `json:"tokens_used"`
-	PromptTokens     int32              `json:"prompt_tokens"`
-	CompletionTokens int32              `json:"completion_tokens"`
-	ToolCallsCount   int32              `json:"tool_calls_count"`
-	A2ACallsCount    int32              `json:"a2a_calls_count"`
-	SkillCallsCount  int32              `json:"skill_calls_count"`
-	Iterations       int32              `json:"iterations"`
-	ToolCallsDetail  []ToolCallMetadata `json:"tool_calls_detail,omitempty"`
-	Error            string             `json:"error,omitempty"`
+	Model            string               `json:"model"`
+	LatencyMs        int64                `json:"latency_ms"`
+	TokensUsed       int32                `json:"tokens_used"`
+	PromptTokens     int32                `json:"prompt_tokens"`
+	CompletionTokens int32                `json:"completion_tokens"`
+	ToolCallsCount   int32                `json:"tool_calls_count"`
+	A2ACallsCount    int32                `json:"a2a_calls_count"`
+	SkillCallsCount  int32                `json:"skill_calls_count"`
+	Iterations       int32                `json:"iterations"`
+	ToolCallsDetail  []ToolCallMetadata   `json:"tool_calls_detail,omitempty"`
+	ModelUsage       []ModelUsageMetadata `json:"model_usage,omitempty"`
+	Error            string               `json:"error,omitempty"`
 }
 
 // PendingApproval describes a tool call awaiting human approval.

@@ -31,6 +31,9 @@ type ModelUsageMetric struct {
 	ModelName      string
 	RequestCount   int64
 	SuccessCount   int64
+	InputTokens    int64
+	OutputTokens   int64
+	TotalTokens    int64
 	LatencyTotalMs int64
 	LatencyCount   int64
 }

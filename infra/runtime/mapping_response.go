@@ -2,6 +2,8 @@ package runtime
 
 import (
 	runtimev1 "github.com/good-fish-man/agent-runtime/gen/agent/runtime/v1"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
 	infrapkg "github.com/good-fish-man/agent-runtime-client/infra/pkg"
@@ -134,8 +136,139 @@ func fromMetadata(m *runtimev1.ResponseMetadata) *entity.ResponseMetadata {
 		SkillCallsCount:  m.SkillCallsCount,
 		Iterations:       m.Iterations,
 		ToolCallsDetail:  fromToolCallDetails(m.ToolCallsDetail),
+		ModelUsage:       fromModelUsage(m),
 		Error:            m.Error,
 	}
+}
+
+func fromModelUsage(metadata *runtimev1.ResponseMetadata) []entity.ModelUsageMetadata {
+	if metadata == nil {
+		return nil
+	}
+	message := metadata.ProtoReflect()
+	if usage := modelUsageFromReflection(message); len(usage) > 0 {
+		return usage
+	}
+	// A client compiled against an older Runtime proto keeps field 12 as
+	// unknown bytes. Decode it so Runtime and Client can be released in order.
+	return modelUsageFromUnknown(message.GetUnknown())
+}
+
+func modelUsageFromReflection(message protoreflect.Message) []entity.ModelUsageMetadata {
+	field := message.Descriptor().Fields().ByNumber(12)
+	if field == nil || !field.IsList() || field.Kind() != protoreflect.MessageKind {
+		return nil
+	}
+	list := message.Get(field).List()
+	result := make([]entity.ModelUsageMetadata, 0, list.Len())
+	for i := 0; i < list.Len(); i++ {
+		result = append(result, modelUsageFromMessage(list.Get(i).Message()))
+	}
+	return result
+}
+
+func modelUsageFromMessage(message protoreflect.Message) entity.ModelUsageMetadata {
+	return entity.ModelUsageMetadata{
+		ModelID:          reflectedString(message, 1),
+		Provider:         reflectedString(message, 2),
+		Model:            reflectedString(message, 3),
+		PromptTokens:     int32(reflectedInt(message, 4)),
+		CompletionTokens: int32(reflectedInt(message, 5)),
+		TotalTokens:      int32(reflectedInt(message, 6)),
+		RequestCount:     int32(reflectedInt(message, 7)),
+	}
+}
+
+func reflectedString(message protoreflect.Message, number protoreflect.FieldNumber) string {
+	field := message.Descriptor().Fields().ByNumber(number)
+	if field == nil {
+		return ""
+	}
+	return message.Get(field).String()
+}
+
+func reflectedInt(message protoreflect.Message, number protoreflect.FieldNumber) int64 {
+	field := message.Descriptor().Fields().ByNumber(number)
+	if field == nil {
+		return 0
+	}
+	return message.Get(field).Int()
+}
+
+func modelUsageFromUnknown(data []byte) []entity.ModelUsageMetadata {
+	result := make([]entity.ModelUsageMetadata, 0)
+	for len(data) > 0 {
+		number, wireType, tagLength := protowire.ConsumeTag(data)
+		if tagLength < 0 {
+			return result
+		}
+		data = data[tagLength:]
+		if number == 12 && wireType == protowire.BytesType {
+			payload, length := protowire.ConsumeBytes(data)
+			if length < 0 {
+				return result
+			}
+			result = append(result, decodeModelUsage(payload))
+			data = data[length:]
+			continue
+		}
+		length := protowire.ConsumeFieldValue(number, wireType, data)
+		if length < 0 {
+			return result
+		}
+		data = data[length:]
+	}
+	return result
+}
+
+func decodeModelUsage(data []byte) entity.ModelUsageMetadata {
+	var result entity.ModelUsageMetadata
+	for len(data) > 0 {
+		number, wireType, tagLength := protowire.ConsumeTag(data)
+		if tagLength < 0 {
+			return result
+		}
+		data = data[tagLength:]
+		switch {
+		case number >= 1 && number <= 3 && wireType == protowire.BytesType:
+			value, length := protowire.ConsumeString(data)
+			if length < 0 {
+				return result
+			}
+			switch number {
+			case 1:
+				result.ModelID = value
+			case 2:
+				result.Provider = value
+			case 3:
+				result.Model = value
+			}
+			data = data[length:]
+		case number >= 4 && number <= 7 && wireType == protowire.VarintType:
+			value, length := protowire.ConsumeVarint(data)
+			if length < 0 {
+				return result
+			}
+			switch number {
+			case 4:
+				result.PromptTokens = int32(value)
+			case 5:
+				result.CompletionTokens = int32(value)
+			case 6:
+				result.TotalTokens = int32(value)
+			case 7:
+				result.RequestCount = int32(value)
+			}
+			data = data[length:]
+		default:
+			length := protowire.ConsumeFieldValue(number, wireType, data)
+			if length < 0 {
+				return result
+			}
+			data = data[length:]
+		}
+	}
+	return result
 }
 
 func fromToolCallDetails(list []*runtimev1.ToolCallMetadata) []entity.ToolCallMetadata {

@@ -192,6 +192,9 @@ func (s *SysModelService) enrichUsage(ctx context.Context, items []*dto.FindSysM
 type modelUsageAggregate struct {
 	requests       int64
 	successes      int64
+	inputTokens    int64
+	outputTokens   int64
+	totalTokens    int64
 	latencyTotalMS int64
 	latencyCount   int64
 }
@@ -226,7 +229,7 @@ func applyModelUsageMetrics(items []*dto.FindSysModelRsp, metrics []entity.Model
 				item = byName[key]
 			}
 		}
-		if item == nil || metric.RequestCount <= 0 {
+		if item == nil {
 			continue
 		}
 		aggregate := aggregates[item.Ulid]
@@ -236,6 +239,9 @@ func applyModelUsageMetrics(items []*dto.FindSysModelRsp, metrics []entity.Model
 		}
 		aggregate.requests += metric.RequestCount
 		aggregate.successes += metric.SuccessCount
+		aggregate.inputTokens += metric.InputTokens
+		aggregate.outputTokens += metric.OutputTokens
+		aggregate.totalTokens += metric.TotalTokens
 		aggregate.latencyTotalMS += metric.LatencyTotalMs
 		aggregate.latencyCount += metric.LatencyCount
 		totals[item.CreatedBy] += metric.RequestCount
@@ -246,11 +252,19 @@ func applyModelUsageMetrics(items []*dto.FindSysModelRsp, metrics []entity.Model
 			continue
 		}
 		aggregate := aggregates[item.Ulid]
-		if aggregate == nil || aggregate.requests == 0 {
+		if aggregate == nil {
 			item.Usage, item.UsageRate, item.UsageCount, item.SuccessRate = 0, 0, 0, 0
+			item.InputTokens, item.OutputTokens, item.TotalTokens = 0, 0, 0
 			continue
 		}
 		item.UsageCount = aggregate.requests
+		item.InputTokens = aggregate.inputTokens
+		item.OutputTokens = aggregate.outputTokens
+		item.TotalTokens = aggregate.totalTokens
+		if aggregate.requests == 0 {
+			item.Usage, item.UsageRate, item.SuccessRate = 0, 0, 0
+			continue
+		}
 		if total := totals[item.CreatedBy]; total > 0 {
 			rate := float64(aggregate.requests) * 100 / float64(total)
 			item.Usage = int(math.Round(rate))

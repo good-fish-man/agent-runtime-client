@@ -970,6 +970,7 @@ func (s *RuntimeService) hydrateModels(ctx context.Context, models map[string]en
 		}
 		cfg.ExtraFields["runtime_mode"] = model.RuntimeMode
 		cfg.ExtraFields["capabilities"] = model.Capabilities
+		cfg.ExtraFields["model_id"] = model.ID
 		models[role] = cfg
 	}
 	return nil
@@ -997,6 +998,7 @@ func (s *RuntimeService) hydrateSubAgentModels(ctx context.Context, subAgents []
 			cfg.ExtraFields = make(map[string]any)
 		}
 		cfg.ExtraFields["runtime_mode"] = model.RuntimeMode
+		cfg.ExtraFields["model_id"] = model.ID
 		subAgents[i].Model = &cfg
 	}
 	return nil
@@ -1089,7 +1091,7 @@ func (s *RuntimeService) resolveStoredModel(ctx context.Context, model *modelent
 		if modelentity.RequiresAPIKey(model.Provider, model.BaseUrl) {
 			return nil, apierror.ErrModelBindingRequired.WithMessage("远程模型尚未绑定 Key")
 		}
-		return &modelEntity{Provider: model.Provider, Name: model.Name, BaseUrl: model.BaseUrl, RuntimeMode: runtimeMode, Capabilities: model.Capabilities}, nil
+		return &modelEntity{ID: model.Ulid, Provider: model.Provider, Name: model.Name, BaseUrl: model.BaseUrl, RuntimeMode: runtimeMode, Capabilities: model.Capabilities}, nil
 	}
 	apiKey := ""
 	baseURL := model.BaseUrl
@@ -1108,10 +1110,11 @@ func (s *RuntimeService) resolveStoredModel(ctx context.Context, model *modelent
 	if strings.TrimSpace(apiKey) == "" && modelentity.RequiresAPIKey(model.Provider, baseURL) {
 		return nil, apierror.ErrModelBindingRequired.WithMessage("模型 Key 尚未设置")
 	}
-	return &modelEntity{Provider: model.Provider, Name: model.Name, BaseUrl: baseURL, ApiKey: apiKey, RuntimeMode: runtimeMode, Capabilities: model.Capabilities}, nil
+	return &modelEntity{ID: model.Ulid, Provider: model.Provider, Name: model.Name, BaseUrl: baseURL, ApiKey: apiKey, RuntimeMode: runtimeMode, Capabilities: model.Capabilities}, nil
 }
 
 type modelEntity struct {
+	ID           string
 	Provider     string
 	Name         string
 	BaseUrl      string

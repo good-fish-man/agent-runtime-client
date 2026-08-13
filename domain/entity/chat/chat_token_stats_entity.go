@@ -9,6 +9,7 @@ type ChatTokenStats struct {
 	AgentId      string  `json:"agent_id"`
 	UserId       string  `json:"user_id"`
 	Date         string  `json:"date"`
+	ModelID      string  `json:"model_id"`
 	Model        string  `json:"model"`
 	InputTokens  int     `json:"input_tokens"`
 	OutputTokens int     `json:"output_tokens"`
@@ -28,5 +29,5 @@ func (s *ChatTokenStats) AddTokens(input, output int) {
 }
 
 func (s *ChatTokenStats) GetKey() string {
-	return s.AgentId + "_" + s.UserId + "_" + s.Date + "_" + s.Model
+	return s.AgentId + "_" + s.UserId + "_" + s.Date + "_" + s.ModelID + "_" + s.Model
 }

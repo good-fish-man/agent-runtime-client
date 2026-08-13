@@ -97,6 +97,9 @@ type (
 		UsageRate     float64 `json:"usageRate"`
 		UsageCount    int64   `json:"usageCount"`
 		SuccessRate   float64 `json:"successRate"`
+		InputTokens   int64   `json:"inputTokens"`
+		OutputTokens  int64   `json:"outputTokens"`
+		TotalTokens   int64   `json:"totalTokens"`
 		Enabled       bool    `json:"enabled"`
 		RuntimeMode   string  `json:"runtimeMode"`
 		KeyID         string  `json:"keyId"`

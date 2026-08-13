@@ -82,6 +82,7 @@ type chatRecordInput struct {
 	ErrorMessage  string
 	Metadata      map[string]any
 	Approvals     []entity.PendingApproval
+	ModelUsage    []entity.ModelUsageMetadata
 }
 
 func newChatRecorder(data *data.Data) *chatRecorder {
@@ -128,7 +129,7 @@ func (s *RuntimeService) recordCompletion(ctx context.Context, values map[string
 		UserID: authctx.UserID(ctx), AgentID: contextString(values, "agent_id"), SessionID: contextString(values, "session_id"), Channel: contextString(values, "channel"),
 		Prompt: prompt, AssistantText: content, TraceID: traceID(ctx), Status: status, ErrorMessage: errMessage, Approvals: approvals,
 		ModelID: recordingModelID(models), Model: recordingModelName(metadata, models), PromptTokens: metadataPromptTokens(metadata), OutputTokens: metadataCompletionTokens(metadata), TotalTokens: metadataTotalTokens(metadata), LatencyMs: metadataLatency(metadata),
-		Metadata: metadataMap(metadata),
+		Metadata: metadataMap(metadata), ModelUsage: metadataModelUsage(metadata),
 	})
 }
 
@@ -167,7 +168,7 @@ func (s *RuntimeService) recordStream(ctx context.Context, values map[string]any
 		UserID: authctx.UserID(ctx), AgentID: contextString(values, "agent_id"), SessionID: contextString(values, "session_id"), Channel: contextString(values, "channel"),
 		Prompt: prompt, AssistantText: capture.content.String(), TraceID: traceID(ctx), Status: status, ErrorMessage: errMessage, Approvals: capture.approvals,
 		ModelID: recordingModelID(models), Model: recordingModelName(metadata, models), PromptTokens: metadataPromptTokens(metadata), OutputTokens: metadataCompletionTokens(metadata), TotalTokens: metadataTotalTokens(metadata), LatencyMs: metadataLatency(metadata),
-		Metadata: recordMetadata,
+		Metadata: recordMetadata, ModelUsage: metadataModelUsage(metadata),
 	})
 }
 
@@ -231,16 +232,44 @@ func (r *chatRecorder) record(ctx context.Context, input chatRecordInput) error 
 			return err
 		}
 	}
-	if input.TotalTokens > 0 || input.PromptTokens > 0 || input.OutputTokens > 0 {
+	for _, usage := range normalizedModelUsage(input) {
 		stats := chatpo.ChatTokenStats{
-			SessionId: input.SessionID, AgentId: input.AgentID, UserId: input.UserID, Date: chatpo.GetDateKey(), Model: input.Model,
-			InputTokens: input.PromptTokens, OutputTokens: input.OutputTokens, TotalTokens: input.TotalTokens, RequestCount: 1,
+			SessionId: input.SessionID, AgentId: input.AgentID, UserId: input.UserID, Date: chatpo.GetDateKey(),
+			ModelID: usage.ModelID, Model: usage.Model, InputTokens: int(usage.PromptTokens),
+			OutputTokens: int(usage.CompletionTokens), TotalTokens: int(usage.TotalTokens), RequestCount: int(usage.RequestCount),
 		}
 		if err := db.Create(&stats).Error; err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func normalizedModelUsage(input chatRecordInput) []entity.ModelUsageMetadata {
+	usageRecords := append([]entity.ModelUsageMetadata(nil), input.ModelUsage...)
+	if len(usageRecords) == 0 && (input.TotalTokens > 0 || input.PromptTokens > 0 || input.OutputTokens > 0) {
+		usageRecords = []entity.ModelUsageMetadata{{
+			ModelID: input.ModelID, Model: input.Model, PromptTokens: int32(input.PromptTokens),
+			CompletionTokens: int32(input.OutputTokens), TotalTokens: int32(input.TotalTokens), RequestCount: 1,
+		}}
+	}
+	for i := range usageRecords {
+		usageRecords[i].ModelID = strings.TrimSpace(usageRecords[i].ModelID)
+		usageRecords[i].Model = strings.TrimSpace(usageRecords[i].Model)
+		if usageRecords[i].ModelID == "" && len(usageRecords) == 1 {
+			usageRecords[i].ModelID = strings.TrimSpace(input.ModelID)
+		}
+		if usageRecords[i].Model == "" && len(usageRecords) == 1 {
+			usageRecords[i].Model = strings.TrimSpace(input.Model)
+		}
+		if usageRecords[i].RequestCount <= 0 {
+			usageRecords[i].RequestCount = 1
+		}
+		if usageRecords[i].TotalTokens <= 0 {
+			usageRecords[i].TotalTokens = usageRecords[i].PromptTokens + usageRecords[i].CompletionTokens
+		}
+	}
+	return usageRecords
 }
 
 func researchSnapshotFromProgress(progress *controlentity.Progress) map[string]any {
@@ -338,6 +367,13 @@ func metadataLatency(metadata *entity.ResponseMetadata) int {
 		return 0
 	}
 	return int(metadata.LatencyMs)
+}
+
+func metadataModelUsage(metadata *entity.ResponseMetadata) []entity.ModelUsageMetadata {
+	if metadata == nil || len(metadata.ModelUsage) == 0 {
+		return nil
+	}
+	return append([]entity.ModelUsageMetadata(nil), metadata.ModelUsage...)
 }
 
 func metadataMap(metadata *entity.ResponseMetadata) map[string]any {

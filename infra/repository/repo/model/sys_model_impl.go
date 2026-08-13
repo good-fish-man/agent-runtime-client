@@ -188,6 +188,23 @@ func (r *SysModelRepo) FindRecentUsageMetrics(ctx context.Context, since int64) 
 		return nil, log.WrapError(err, "Repository.FindRecentUsageMetrics.chat")
 	}
 
+	tokenMetrics := make([]entity.ModelUsageMetric, 0)
+	err = r.data.DB(ctx).
+		Table("chat_token_stats AS stats").
+		Select(`stats.user_id AS user_id,
+			stats.model_id AS model_id,
+			stats.model AS model_name,
+			COALESCE(SUM(stats.input_tokens), 0) AS input_tokens,
+			COALESCE(SUM(stats.output_tokens), 0) AS output_tokens,
+			COALESCE(SUM(CASE WHEN stats.total_tokens > 0 THEN stats.total_tokens ELSE stats.input_tokens + stats.output_tokens END), 0) AS total_tokens`).
+		Where("stats.created_at >= ?", since).
+		Where("stats.model_id <> '' OR stats.model <> ''").
+		Group("stats.user_id, stats.model_id, stats.model").
+		Scan(&tokenMetrics).Error
+	if err != nil {
+		return nil, log.WrapError(err, "Repository.FindRecentUsageMetrics.tokens")
+	}
+
 	mediaMetrics := make([]entity.ModelUsageMetric, 0)
 	err = r.data.DB(ctx).
 		Table("sys_media_generation_job AS job").
@@ -204,7 +221,8 @@ func (r *SysModelRepo) FindRecentUsageMetrics(ctx context.Context, since int64) 
 	if err != nil {
 		return nil, log.WrapError(err, "Repository.FindRecentUsageMetrics.media")
 	}
-	return append(chatMetrics, mediaMetrics...), nil
+	metrics := append(chatMetrics, tokenMetrics...)
+	return append(metrics, mediaMetrics...), nil
 }
 
 func (r *SysModelRepo) FindPage(ctx context.Context, queries []*query.Query, reqPage *query.PageData, reqSort *query.SortData, selectArgs ...[]string) ([]*entity.SysModel, *query.PageData, error) {
