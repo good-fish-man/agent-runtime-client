@@ -40,6 +40,31 @@ func (h *Handler) List(c *gin.Context) {
 	response.Ok(c, items)
 }
 
+func (h *Handler) Export(c *gin.Context) {
+	value, err := h.svc.Export(c.Request.Context(), c.GetString(consts.CtxKeyUserID))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, value)
+}
+
+func (h *Handler) DeleteAll(c *gin.Context) {
+	var req struct {
+		Confirmation string `json:"confirmation"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Confirmation != "DELETE ALL MEMORY" {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage("confirmation must equal DELETE ALL MEMORY"))
+		return
+	}
+	deleted, err := h.svc.DeleteAll(c.Request.Context(), c.GetString(consts.CtxKeyUserID))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, gin.H{"deleted": deleted})
+}
+
 func (h *Handler) Delete(c *gin.Context) {
 	if err := h.svc.Delete(c.Request.Context(), c.GetString(consts.CtxKeyUserID), c.Param("ulid")); err != nil {
 		_ = c.Error(err)

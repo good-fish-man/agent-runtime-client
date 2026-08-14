@@ -51,6 +51,61 @@ func TestDeviceLeaseIsExclusiveAndFenced(t *testing.T) {
 	if err := store.ReleaseDeviceLease(context.Background(), device.DeviceID, "client-a", first.FencingToken, now.Add(3*time.Second)); err == nil {
 		t.Fatal("stale lease released the current owner")
 	}
+	if err := store.ValidateDeviceLease(context.Background(), device.DeviceID, second.LeaseOwner, second.FencingToken, now.Add(3*time.Second)); err != nil {
+		t.Fatalf("current lease was rejected: %v", err)
+	}
+	if err := store.ValidateDeviceLease(context.Background(), device.DeviceID, first.LeaseOwner, first.FencingToken, now.Add(3*time.Second)); err == nil {
+		t.Fatal("stale fencing token passed lease validation")
+	}
+}
+
+func TestMarkAllDevicesOfflineKeepsLiveDeviceCapabilitiesOnline(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.TempDir()+"/offline.db?_busy_timeout=5000"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&po.Device{}, &po.CapabilityDefinition{}, &po.CapabilityInstance{}, &po.DeviceCapability{}); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(data.New(db))
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	for _, id := range []string{"expired-device", "live-device"} {
+		_, err := store.AcquireDeviceLease(context.Background(), &entity.RegisteredDevice{
+			DeviceID: id, Name: id, Capabilities: []string{"browser.open"},
+			CapabilityInstances: []entity.CapabilityInstance{{InstanceID: id + ":browser-open", Capability: "browser.open", Version: "1"}},
+		}, "control-a", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Model(&po.Device{}).Where("device_id = ?", "expired-device").Update("lease_expires_at", now.Add(-time.Second).UnixMilli()).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkAllDevicesOffline(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	var devices []po.Device
+	if err := db.Order("device_id").Find(&devices).Error; err != nil {
+		t.Fatal(err)
+	}
+	status := make(map[string]bool, len(devices))
+	for _, device := range devices {
+		status[device.DeviceID] = device.Online
+	}
+	if status["expired-device"] || !status["live-device"] {
+		t.Fatalf("unexpected device online state: %#v", status)
+	}
+	var instances []po.CapabilityInstance
+	if err := db.Order("device_id").Find(&instances).Error; err != nil {
+		t.Fatal(err)
+	}
+	instanceStatus := make(map[string]bool, len(instances))
+	for _, instance := range instances {
+		instanceStatus[instance.DeviceID] = instance.Online
+	}
+	if instanceStatus["expired-device"] || !instanceStatus["live-device"] {
+		t.Fatalf("unexpected capability online state: %#v", instanceStatus)
+	}
 }
 
 func TestApplyWorldPatchSupportsSetMergeRemoveAndEscapedPointers(t *testing.T) {

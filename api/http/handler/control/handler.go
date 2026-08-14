@@ -302,7 +302,10 @@ func (h *Handler) serveDevice(socket *websocket.Conn) {
 	}
 	defer h.hub.Unregister(context.Background(), hello.DeviceID, connection)
 	_ = socket.SetDeadline(time.Now().Add(45 * time.Second))
-	_ = connection.Send(gin.H{"protocol": entity.Protocol, "type": entity.TypeWelcome, "device_id": hello.DeviceID, "sent_at": time.Now().UTC()})
+	welcome, err := h.hub.DeviceLease(hello.DeviceID, connection)
+	if err != nil || connection.Send(welcome) != nil {
+		return
+	}
 	for {
 		var payload string
 		if err := websocket.Message.Receive(socket, &payload); err != nil {
@@ -318,8 +321,24 @@ func (h *Handler) serveDevice(socket *websocket.Conn) {
 		switch raw.Type {
 		case entity.TypeHeartbeat:
 			_ = socket.SetDeadline(time.Now().Add(45 * time.Second))
+			var heartbeat entity.DeviceMessage
+			if err := entity.DecodeStrict([]byte(payload), &heartbeat); err != nil {
+				continue
+			}
+			if _, err := h.hub.DeviceLease(hello.DeviceID, connection); err != nil {
+				return
+			}
+			if heartbeat.LeaseOwner != welcome.LeaseOwner || heartbeat.FencingToken != welcome.FencingToken {
+				_ = connection.Send(gin.H{"protocol": entity.Protocol, "type": entity.TypeError, "error": "stale device fencing token"})
+				return
+			}
 			h.hub.Touch(context.Background(), hello.DeviceID)
-			_ = connection.Send(gin.H{"protocol": entity.Protocol, "type": entity.TypeHeartbeatAck, "sent_at": time.Now().UTC()})
+			welcome, err = h.hub.DeviceLease(hello.DeviceID, connection)
+			if err != nil {
+				return
+			}
+			welcome.Type = entity.TypeHeartbeatAck
+			_ = connection.Send(welcome)
 		case entity.TypeObservation:
 			_ = socket.SetDeadline(time.Now().Add(45 * time.Second))
 			var observation entity.Observation
@@ -327,7 +346,7 @@ func (h *Handler) serveDevice(socket *websocket.Conn) {
 				continue
 			}
 			h.hub.Touch(context.Background(), hello.DeviceID)
-			if err := h.hub.Observe(context.Background(), observation); err != nil {
+			if err := h.hub.ObserveFromDevice(context.Background(), hello.DeviceID, connection, observation); err != nil {
 				_ = connection.Send(gin.H{"protocol": entity.Protocol, "type": entity.TypeError, "error": err.Error()})
 			}
 		case entity.TypeProgress:
@@ -337,7 +356,7 @@ func (h *Handler) serveDevice(socket *websocket.Conn) {
 				continue
 			}
 			h.hub.Touch(context.Background(), hello.DeviceID)
-			if err := h.hub.Progress(context.Background(), progress); err != nil {
+			if err := h.hub.ProgressFromDevice(context.Background(), hello.DeviceID, connection, progress); err != nil {
 				_ = connection.Send(gin.H{"protocol": entity.Protocol, "type": entity.TypeError, "error": err.Error()})
 			}
 		}

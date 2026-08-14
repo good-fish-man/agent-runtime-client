@@ -8,22 +8,26 @@
 
 ## 加密备份
 
-Launcher 配置 `pg_dump`、`pg_restore`、备份目录和 256 位密钥文件的绝对路径。PostgreSQL custom-format 数据直接流式进入分块 AES-GCM 加密，不在磁盘写明文 dump。每个 Artifact 和规范化 Manifest 都有 SHA-256。
+Launcher 配置 `pg_dump`、`pg_restore`、备份目录和 256 位密钥文件的绝对路径。PostgreSQL custom-format 数据直接流式进入分块 AES-GCM 加密，不在磁盘写明文 dump。每个 Artifact 都有 SHA-256；规范化 Manifest 使用受保护备份 Key 执行 HMAC-SHA256，绑定 Backup ID、Artifact 清单、大小、Hash 与 Key 身份。
 
 恢复流程：
 
 1. `POST /operations/backups` 创建恢复点。
-2. `POST /operations/backups/{id}/verify` 校验 Manifest、Artifact Hash、大小和所有 AES-GCM 认证标签。
+2. `POST /operations/backups/{id}/verify` 校验 Manifest HMAC、Artifact Hash、大小和所有 AES-GCM 认证标签。
 3. 调用 restore 且设置 `validate_only=true`，只验证不修改数据库。
-4. 正式恢复还必须提供 `confirmation: "RESTORE {id}"` 和已验证的 Manifest SHA-256。
+4. 正式恢复还必须提供 `confirmation: "RESTORE {id}"` 和已验证的 Manifest SHA-256。`pg_restore` 使用 `--exit-on-error --single-transaction`，不会把部分写入的数据库误报为恢复成功。
 
 Launcher 替换本地版本前会先创建备份。备份失败时旧服务继续运行，更新保持可重试状态。
 
 ## State 丢失
 
-Launcher 会把安装身份同步到 `~/.athena/secrets` 下权限为 0600 的恢复文件。`state.json` 丢失时，数据库密码、Browser Vault Key、备份 Key、本机内部 Token 和 Device ID 会从恢复文件找回。如果 state 与恢复文件冲突，启动会失败，而不是静默轮换身份。
+Launcher 会把安装身份同步到 `~/.athena/secrets` 下权限为 0600 的普通恢复文件。`state.json` 丢失时，数据库密码、Browser Vault Key、备份 Key、本机内部 Token 和 Device ID 会从恢复文件找回。符号链接、非普通文件、组/其他用户可访问权限、超大 State 和读写替换竞争都会被拒绝。如果 state 与恢复文件冲突，启动会失败，而不是静默轮换身份。
 
 应将 `~/.athena/secrets` 与数据库备份分开保管。如果 state 和备份加密 Key 同时丢失，加密备份按安全设计无法恢复。
+
+## 隐私导出与清除
+
+认证用户可以在 Experience 工作区导出自己的 Memory 与 Experience 保留数据。Memory 和 Experience 批量清除分别要求显式确认。Memory 私有字段会从软删除记录中清空；Experience Payload 与派生评测数据会物理删除，只保留最小审计删除标记。Owner Scope 在 Repository 事务中强制执行，不接受浏览器请求体指定 Owner。
 
 ## 恢复演练
 

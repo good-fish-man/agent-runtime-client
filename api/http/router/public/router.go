@@ -176,12 +176,16 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		r := g.Group("/memory")
 		r.POST("", h.Memory.Create)
 		r.POST("/all", h.Memory.List)
+		r.GET("/export", h.Memory.Export)
+		r.DELETE("", h.Memory.DeleteAll)
 		r.DELETE("/:ulid", h.Memory.Delete)
 	}
 
 	if h.Experience != nil {
 		r := g.Group("/experience")
 		r.GET("", h.Experience.List)
+		r.GET("/export", h.Experience.Export)
+		r.DELETE("", h.Experience.DeleteAll)
 		r.GET("/preferences", h.Experience.GetPreference)
 		r.PUT("/preferences", h.Experience.UpdatePreference)
 		r.GET("/stats", h.Experience.Stats)

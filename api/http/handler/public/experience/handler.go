@@ -91,6 +91,31 @@ func (h *Handler) Delete(c *gin.Context) {
 	response.Ok(c, nil)
 }
 
+func (h *Handler) Export(c *gin.Context) {
+	value, err := h.service.Export(c.Request.Context(), userID(c))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, value)
+}
+
+func (h *Handler) DeleteAll(c *gin.Context) {
+	var request struct {
+		Confirmation string `json:"confirmation"`
+	}
+	if err := c.ShouldBindJSON(&request); err != nil || request.Confirmation != "DELETE ALL EXPERIENCE" {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage("confirmation must equal DELETE ALL EXPERIENCE"))
+		return
+	}
+	deleted, err := h.service.DeleteAll(c.Request.Context(), userID(c))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, gin.H{"deleted": deleted})
+}
+
 func (h *Handler) Search(c *gin.Context) {
 	var request entity.SearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {

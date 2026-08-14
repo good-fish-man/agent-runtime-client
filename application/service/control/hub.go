@@ -15,6 +15,7 @@ import (
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
 	irepository "github.com/good-fish-man/agent-runtime-client/domain/irepository/control"
+	"github.com/good-fish-man/athena-protocol/sdk/safety"
 	log "github.com/good-fish-man/logx"
 )
 
@@ -118,6 +119,7 @@ type deviceLeaseStore interface {
 	AcquireDeviceLease(context.Context, *entity.RegisteredDevice, string, time.Time) (*entity.RegisteredDevice, error)
 	RenewDeviceLease(context.Context, string, string, uint64, time.Time) error
 	ReleaseDeviceLease(context.Context, string, string, uint64, time.Time) error
+	ValidateDeviceLease(context.Context, string, string, uint64, time.Time) error
 }
 
 type outboxStore interface {
@@ -314,11 +316,86 @@ func (h *Hub) recoverDeviceActions(ctx context.Context, device *Device) {
 			h.persistTerminalObservation(ctx, action, entity.ObservationExpired, "action expired while the Control Plane was offline")
 			continue
 		}
+		action.DeviceID = device.ID
+		action.LeaseOwner = device.LeaseOwner
+		action.FencingToken = device.FencingToken
+		if err := h.ensureDeviceLease(ctx, device); err != nil {
+			log.WarnwCtx(ctx, "reject recoverable action from stale control plane", "device_id", device.ID, "action_id", action.ActionID, "error_chain", log.FormatError(err))
+			return
+		}
 		if err := device.conn.Send(action); err != nil {
 			log.WarnwCtx(ctx, "redispatch recoverable device action failed", "device_id", device.ID, "task_id", action.TaskID, "action_id", action.ActionID, "error_chain", log.FormatError(err))
 			return
 		}
 	}
+}
+
+func (h *Hub) DeviceLease(deviceID string, conn Connection) (entity.DeviceMessage, error) {
+	h.mu.RLock()
+	device := h.devices[deviceID]
+	h.mu.RUnlock()
+	if device == nil || device.conn != conn || !device.Online {
+		return entity.DeviceMessage{}, ErrDeviceOffline
+	}
+	return entity.DeviceMessage{
+		Protocol: entity.Protocol, Type: entity.TypeWelcome, DeviceID: device.ID,
+		LeaseOwner: device.LeaseOwner, FencingToken: device.FencingToken,
+		LeaseExpiresAt: device.LeaseExpiresAt, SentAt: time.Now().UTC(),
+	}, nil
+}
+
+func (h *Hub) validateDeviceConnection(ctx context.Context, deviceID string, conn Connection, owner string, token uint64) (*Device, error) {
+	h.mu.RLock()
+	device := h.devices[deviceID]
+	h.mu.RUnlock()
+	if device == nil || device.conn != conn || !device.Online {
+		return nil, ErrDeviceOffline
+	}
+	if device.FencingToken > 0 && (owner != device.LeaseOwner || token != device.FencingToken) {
+		return nil, fmt.Errorf("device message fencing token is stale")
+	}
+	if err := h.ensureDeviceLease(ctx, device); err != nil {
+		return nil, err
+	}
+	return device, nil
+}
+
+func (h *Hub) ensureDeviceLease(ctx context.Context, device *Device) error {
+	if device == nil {
+		return ErrDeviceOffline
+	}
+	if leaseStore, ok := h.store.(deviceLeaseStore); ok {
+		if err := leaseStore.ValidateDeviceLease(ctx, device.ID, device.LeaseOwner, device.FencingToken, time.Now().UTC()); err != nil {
+			return fmt.Errorf("device lease validation failed: %w", err)
+		}
+	}
+	return nil
+}
+
+func (h *Hub) ObserveFromDevice(ctx context.Context, deviceID string, conn Connection, observation entity.Observation) error {
+	if observation.DeviceID == "" {
+		observation.DeviceID = deviceID
+	}
+	if observation.DeviceID != deviceID {
+		return fmt.Errorf("observation device_id does not match the authenticated connection")
+	}
+	if _, err := h.validateDeviceConnection(ctx, deviceID, conn, observation.LeaseOwner, observation.FencingToken); err != nil {
+		return err
+	}
+	return h.Observe(ctx, observation)
+}
+
+func (h *Hub) ProgressFromDevice(ctx context.Context, deviceID string, conn Connection, progress entity.Progress) error {
+	if progress.DeviceID == "" {
+		progress.DeviceID = deviceID
+	}
+	if progress.DeviceID != deviceID {
+		return fmt.Errorf("progress device_id does not match the authenticated connection")
+	}
+	if _, err := h.validateDeviceConnection(ctx, deviceID, conn, progress.LeaseOwner, progress.FencingToken); err != nil {
+		return err
+	}
+	return h.Progress(ctx, progress)
 }
 
 func (h *Hub) Unregister(ctx context.Context, deviceID string, conn Connection) {
@@ -1085,6 +1162,14 @@ func (h *Hub) Dispatch(ctx context.Context, deviceID string, action entity.Actio
 	if device == nil {
 		return nil, ErrDeviceOffline
 	}
+	action.LeaseOwner = device.LeaseOwner
+	action.FencingToken = device.FencingToken
+	if err := action.Validate(); err != nil {
+		return nil, err
+	}
+	if err := h.ensureDeviceLease(ctx, device); err != nil {
+		return nil, err
+	}
 	if taskRevision > 0 {
 		if action.Revision != taskRevision {
 			return nil, fmt.Errorf("stale action revision: got %d, current task revision is %d", action.Revision, taskRevision)
@@ -1162,6 +1247,10 @@ func (h *Hub) dispatchPersistedAction(ctx context.Context, device *Device, actio
 		delete(h.pending, action.ActionID)
 		h.mu.Unlock()
 	}()
+	if err := h.ensureDeviceLease(ctx, device); err != nil {
+		_ = h.SetTaskStatus(context.WithoutCancel(ctx), action.TaskID, entity.TaskStatusPaused)
+		return nil, err
+	}
 	if err := device.conn.Send(action); err != nil {
 		_ = h.SetTaskStatus(context.WithoutCancel(ctx), action.TaskID, entity.TaskStatusPaused)
 		return nil, fmt.Errorf("%w: send action to %s: %v", ErrDeviceOffline, device.ID, err)
@@ -1283,7 +1372,33 @@ func sanitizeObservationForPersistence(observation entity.Observation) entity.Ob
 	safe.Summary = redactSensitiveString(safe.Summary)
 	safe.Error = redactSensitiveString(safe.Error)
 	safe.ErrorDetail = redactErrorDetail(safe.ErrorDetail)
-	return safe
+	return normalizeObservationContent(safe)
+}
+
+func normalizeObservationContent(observation entity.Observation) entity.Observation {
+	encoded, err := json.Marshal(observation)
+	if err != nil {
+		return observation
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(encoded, &generic); err != nil {
+		return observation
+	}
+	normalized, report := safety.NormalizeValue(generic, 32*1024)
+	encoded, err = json.Marshal(normalized)
+	if err != nil || json.Unmarshal(encoded, &observation) != nil {
+		return observation
+	}
+	if observation.State == nil {
+		observation.State = make(map[string]any)
+	}
+	observation.State["_athena_content_security"] = map[string]any{
+		"schema": safety.EnvelopeSchema, "trust": safety.TrustExternal,
+		"policy": safety.PolicyDataOnly, "risk": report.Risk,
+		"indicators": report.Indicators, "sha256": report.SHA256,
+		"truncated": report.Truncated,
+	}
+	return observation
 }
 
 func redactErrorDetail(detail *entity.ErrorDetail) *entity.ErrorDetail {

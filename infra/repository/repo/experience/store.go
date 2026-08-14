@@ -277,23 +277,46 @@ func (s *Store) DeletePayload(ctx context.Context, ownerID, experienceID string,
 		if audit.Tombstoned {
 			return nil
 		}
-		if err := tx.Where("experience_id = ? AND owner_id = ?", experienceID, ownerID).Delete(&po.ExperiencePayload{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("experience_id = ? AND owner_id = ?", experienceID, ownerID).Delete(&po.ExperienceRedaction{}).Error; err != nil {
-			return err
-		}
-		if err := deleteDerivedEvaluationData(tx, ownerID, experienceID); err != nil {
-			return err
-		}
-		if err := tx.Model(&po.FailureClassification{}).Where("experience_id = ? AND owner_id = ?", experienceID, ownerID).
-			Updates(map[string]any{"summary": "", "evidence": "[]", "updated_at": millis(deletedAt)}).Error; err != nil {
-			return err
-		}
-		return tx.Model(&po.Experience{}).Where("experience_id = ? AND owner_id = ?", experienceID, ownerID).Updates(map[string]any{
-			"status": entity.StatusDeleted, "skip_reason": "", "outcome": "", "tombstoned": true, "updated_at": millis(deletedAt),
-		}).Error
+		return deleteExperiencePayload(tx, audit, deletedAt)
 	}), "ExperienceStore.DeletePayload")
+}
+
+func (s *Store) DeleteAllPayloads(ctx context.Context, ownerID string, deletedAt time.Time) (int64, error) {
+	var deleted int64
+	err := s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
+		values := make([]po.Experience, 0)
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("owner_id = ? AND tombstoned = ?", ownerID, false).Find(&values).Error; err != nil {
+			return err
+		}
+		for _, value := range values {
+			if err := deleteExperiencePayload(tx, value, deletedAt); err != nil {
+				return err
+			}
+			deleted++
+		}
+		return nil
+	})
+	return deleted, log.WrapError(err, "ExperienceStore.DeleteAllPayloads")
+}
+
+func deleteExperiencePayload(tx *gorm.DB, audit po.Experience, deletedAt time.Time) error {
+	experienceID, ownerID := audit.ExperienceID, audit.OwnerID
+	if err := tx.Where("experience_id = ? AND owner_id = ?", experienceID, ownerID).Delete(&po.ExperiencePayload{}).Error; err != nil {
+		return err
+	}
+	if err := tx.Where("experience_id = ? AND owner_id = ?", experienceID, ownerID).Delete(&po.ExperienceRedaction{}).Error; err != nil {
+		return err
+	}
+	if err := deleteDerivedEvaluationData(tx, ownerID, experienceID); err != nil {
+		return err
+	}
+	if err := tx.Model(&po.FailureClassification{}).Where("experience_id = ? AND owner_id = ?", experienceID, ownerID).
+		Updates(map[string]any{"summary": "", "evidence": "[]", "updated_at": millis(deletedAt)}).Error; err != nil {
+		return err
+	}
+	return tx.Model(&po.Experience{}).Where("experience_id = ? AND owner_id = ?", experienceID, ownerID).Updates(map[string]any{
+		"status": entity.StatusDeleted, "skip_reason": "", "outcome": "", "tombstoned": true, "updated_at": millis(deletedAt),
+	}).Error
 }
 
 // deleteDerivedEvaluationData prevents a user-deleted Experience from

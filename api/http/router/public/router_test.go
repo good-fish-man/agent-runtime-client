@@ -15,6 +15,7 @@ import (
 	knowledgehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge"
 	kbhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
 	learninghandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/learning"
+	memoryhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/memory"
 	modelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
 	orchestrationhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/orchestration"
 	skillhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/skill"
@@ -29,6 +30,7 @@ import (
 	knowledgesvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge"
 	kbsvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge_base"
 	learningsvc "github.com/good-fish-man/agent-runtime-client/application/service/learning"
+	memorysvc "github.com/good-fish-man/agent-runtime-client/application/service/memory"
 	modelsvc "github.com/good-fish-man/agent-runtime-client/application/service/model"
 	orchestrationsvc "github.com/good-fish-man/agent-runtime-client/application/service/orchestration"
 	skillsvc "github.com/good-fish-man/agent-runtime-client/application/service/skill"
@@ -47,6 +49,7 @@ func TestRegisterNoConflicts(t *testing.T) {
 		User:          userhandler.NewHandler(usersvc.NewSysUserService(nil)),
 		Config:        confighandler.NewHandler(appconfig.PathsConfig{}),
 		Model:         modelhandler.NewHandler(modelsvc.NewSysModelService(nil)),
+		Memory:        memoryhandler.NewHandler(memorysvc.NewService(nil)),
 		KB:            kbhandler.NewHandler(kbsvc.NewSysKnowledgeBaseService(nil)),
 		Skill:         skillhandler.NewHandler(skillsvc.NewSysSkillService(nil)),
 		Agent:         agenthandler.NewHandler(agentsvc.NewSysAgentService(nil)),
@@ -74,7 +77,14 @@ func TestRegisterNoConflicts(t *testing.T) {
 	}
 	prefix := "/api/xiaoqinglong/agent-frame/v1"
 	expected := []string{
+		"POST " + prefix + "/memory",
+		"POST " + prefix + "/memory/all",
+		"GET " + prefix + "/memory/export",
+		"DELETE " + prefix + "/memory",
+		"DELETE " + prefix + "/memory/:ulid",
 		"GET " + prefix + "/experience",
+		"GET " + prefix + "/experience/export",
+		"DELETE " + prefix + "/experience",
 		"GET " + prefix + "/experience/preferences",
 		"PUT " + prefix + "/experience/preferences",
 		"GET " + prefix + "/experience/stats",

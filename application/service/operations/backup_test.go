@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -99,5 +100,89 @@ func TestBackupTamperingFailsBeforeRestore(t *testing.T) {
 	}
 	if len(archiver.restored) != 0 {
 		t.Fatal("restore executed before verification completed")
+	}
+}
+
+func TestBackupManifestCannotBeRewrittenWithOnlySHA256(t *testing.T) {
+	home := t.TempDir()
+	keyPath := filepath.Join(home, "backup.key")
+	if err := os.WriteFile(keyPath, []byte(strings.Repeat("ef", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := newBackupManagerForTest(filepath.Join(home, "backups"), keyPath, &memoryArchiver{dump: []byte("database")})
+	manifest, err := manager.Create(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "backups", manifest.BackupID, "manifest.json")
+	forged, err := readBackupManifest(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged.DatabaseVersion = "PostgreSQL attacker"
+	forged.ManifestSHA256, err = backupManifestDigest(forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeBackupManifest(filepath.Dir(path), forged); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Verify(context.Background(), manifest.BackupID); err == nil || !strings.Contains(err.Error(), "authentication failed") {
+		t.Fatalf("forged manifest was not rejected by HMAC: %v", err)
+	}
+	if _, err := manager.List(); err == nil || !strings.Contains(err.Error(), "authentication failed") {
+		t.Fatalf("backup inventory accepted forged metadata: %v", err)
+	}
+}
+
+func TestBackupManifestCannotMoveBetweenBackupIDs(t *testing.T) {
+	home := t.TempDir()
+	keyPath := filepath.Join(home, "backup.key")
+	if err := os.WriteFile(keyPath, []byte(strings.Repeat("12", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := newBackupManagerForTest(filepath.Join(home, "backups"), keyPath, &memoryArchiver{dump: []byte("database")})
+	manifest, err := manager.Create(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherID := "backup-20260815T120001Z-deadbeef"
+	otherDir := filepath.Join(home, "backups", otherID)
+	if err := os.MkdirAll(otherDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, "backups", manifest.BackupID, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherDir, "manifest.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Verify(context.Background(), otherID); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("relocated manifest was not rejected: %v", err)
+	}
+}
+
+func TestBackupKeyRejectsUnsafePermissionsAndSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX key permission semantics are not available on Windows")
+	}
+	home := t.TempDir()
+	keyPath := filepath.Join(home, "backup.key")
+	if err := os.WriteFile(keyPath, []byte(strings.Repeat("34", 32)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readBackupKey(keyPath); err == nil || !strings.Contains(err.Error(), "permissions") {
+		t.Fatalf("unsafe key permissions were accepted: %v", err)
+	}
+	if err := os.Chmod(keyPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(home, "backup-link.key")
+	if err := os.Symlink(keyPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readBackupKey(linkPath); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlinked key was accepted: %v", err)
 	}
 }

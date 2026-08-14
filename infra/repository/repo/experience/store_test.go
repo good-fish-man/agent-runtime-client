@@ -116,6 +116,50 @@ func TestStoreRetentionAndDisabledPreference(t *testing.T) {
 	}
 }
 
+func TestStoreDeleteAllPayloadsIsOwnerScoped(t *testing.T) {
+	store, db := newTestStore(t)
+	ctx := context.Background()
+	deleteAt := time.Now().UTC().Add(time.Hour)
+	for _, fixture := range []*entity.StoredExperience{
+		testStoredExperience("experience-bulk-1", "task-bulk-1", "user-1", deleteAt),
+		testStoredExperience("experience-bulk-2", "task-bulk-2", "user-1", deleteAt),
+		testStoredExperience("experience-other", "task-other", "user-2", deleteAt),
+	} {
+		created, err := store.Create(ctx, fixture)
+		if err != nil || !created {
+			t.Fatalf("create %s: created=%v err=%v", fixture.Experience.ExperienceID, created, err)
+		}
+	}
+
+	deleted, err := store.DeleteAllPayloads(ctx, "user-1", time.Now().UTC())
+	if err != nil || deleted != 2 {
+		t.Fatalf("delete all: deleted=%d err=%v", deleted, err)
+	}
+	for _, id := range []string{"experience-bulk-1", "experience-bulk-2"} {
+		value, err := store.Find(ctx, "user-1", id)
+		if err != nil || value != nil {
+			t.Fatalf("deleted experience remained readable: id=%s value=%#v err=%v", id, value, err)
+		}
+	}
+	other, err := store.Find(ctx, "user-2", "experience-other")
+	if err != nil || other == nil || other.GoalSummary == "" {
+		t.Fatalf("other owner's experience changed: value=%#v err=%v", other, err)
+	}
+
+	var ownerPayloads int64
+	if err := db.Model(&po.ExperiencePayload{}).Where("owner_id = ?", "user-1").Count(&ownerPayloads).Error; err != nil || ownerPayloads != 0 {
+		t.Fatalf("owner payloads survived deletion: count=%d err=%v", ownerPayloads, err)
+	}
+	var otherPayloads int64
+	if err := db.Model(&po.ExperiencePayload{}).Where("owner_id = ?", "user-2").Count(&otherPayloads).Error; err != nil || otherPayloads != 1 {
+		t.Fatalf("other owner payload was deleted: count=%d err=%v", otherPayloads, err)
+	}
+	_, total, err := store.List(ctx, "user-1", entity.ListFilter{Status: entity.StatusDeleted, Limit: 10})
+	if err != nil || total != 2 {
+		t.Fatalf("audit tombstones: total=%d err=%v", total, err)
+	}
+}
+
 func newTestStore(t *testing.T) (*Store, *gorm.DB) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})

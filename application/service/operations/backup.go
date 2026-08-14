@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -17,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -28,9 +30,10 @@ import (
 )
 
 const (
-	backupMagic     = "ATHENA-BACKUP-AESGCM-1\n"
+	backupMagic     = "ATHENA-BACKUP-AESGCM-2\n"
 	backupChunkSize = 1 << 20
 	backupProtocol  = "1.0-draft"
+	maxManifestSize = 1 << 20
 )
 
 var backupIDPattern = regexp.MustCompile(`^backup-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$`)
@@ -103,7 +106,7 @@ func (m *BackupManager) Create(ctx context.Context) (*operationsv1.BackupManifes
 		_ = writer.CloseWithError(dumpErr)
 		dumpDone <- dumpErr
 	}()
-	encryptErr := encryptBackup(file, reader, key)
+	encryptErr := encryptBackup(file, reader, key, id, "database")
 	if encryptErr != nil {
 		_ = reader.CloseWithError(encryptErr)
 	}
@@ -125,8 +128,7 @@ func (m *BackupManager) Create(ctx context.Context) (*operationsv1.BackupManifes
 		CreatedAt: now, CompletedAt: &completedAt,
 		Artifacts: []operationsv1.BackupArtifact{{Name: "database", RelativePath: "database.dump.enc", SHA256: digest, SizeBytes: size, Classification: operationsv1.ClassificationSensitive, Encrypted: true}},
 	}
-	manifest.ManifestSHA256, err = backupManifestDigest(manifest)
-	if err != nil {
+	if err = sealBackupManifest(manifest, key); err != nil {
 		_ = os.RemoveAll(directory)
 		return nil, err
 	}
@@ -185,7 +187,11 @@ func (m *BackupManager) Restore(ctx context.Context, request operationsv1.Restor
 	if err != nil {
 		return nil, err
 	}
-	file, err := os.Open(filepath.Join(m.directory, manifest.BackupID, manifest.Artifacts[0].RelativePath))
+	artifact, err := databaseBackupArtifact(manifest)
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(filepath.Join(m.directory, manifest.BackupID, filepath.FromSlash(artifact.RelativePath)))
 	if err != nil {
 		return nil, fmt.Errorf("open encrypted restore artifact: %w", err)
 	}
@@ -193,7 +199,7 @@ func (m *BackupManager) Restore(ctx context.Context, request operationsv1.Restor
 	reader, writer := io.Pipe()
 	decryptDone := make(chan error, 1)
 	go func() {
-		decryptErr := decryptBackup(writer, file, key)
+		decryptErr := decryptBackup(writer, file, key, manifest.BackupID, artifact.Name)
 		_ = writer.CloseWithError(decryptErr)
 		decryptDone <- decryptErr
 	}()
@@ -216,15 +222,14 @@ func (m *BackupManager) verifyLocked(ctx context.Context, backupID string) (*ope
 	if err != nil {
 		return nil, err
 	}
-	if err := manifest.Validate(); err != nil {
-		return nil, fmt.Errorf("validate backup manifest: %w", err)
-	}
-	expected, err := backupManifestDigest(manifest)
-	if err != nil || !strings.EqualFold(expected, manifest.ManifestSHA256) {
-		return nil, fmt.Errorf("backup manifest integrity verification failed")
+	if manifest.BackupID != backupID {
+		return nil, fmt.Errorf("backup manifest identity does not match its directory")
 	}
 	key, err := readBackupKey(m.keyFile)
 	if err != nil {
+		return nil, err
+	}
+	if err := authenticateBackupManifest(manifest, key); err != nil {
 		return nil, err
 	}
 	for _, artifact := range manifest.Artifacts {
@@ -237,7 +242,7 @@ func (m *BackupManager) verifyLocked(ctx context.Context, backupID string) (*ope
 		if err != nil {
 			return nil, err
 		}
-		decryptErr := decryptBackup(io.Discard, file, key)
+		decryptErr := decryptBackup(io.Discard, file, key, manifest.BackupID, artifact.Name)
 		_ = file.Close()
 		if decryptErr != nil {
 			return nil, fmt.Errorf("authenticate backup artifact %s: %w", artifact.Name, decryptErr)
@@ -261,14 +266,31 @@ func (m *BackupManager) listLocked() ([]operationsv1.BackupManifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	items := make([]operationsv1.BackupManifest, 0, len(entries))
+	backupEntries := make([]os.DirEntry, 0, len(entries))
 	for _, entry := range entries {
 		if !entry.IsDir() || !backupIDPattern.MatchString(entry.Name()) {
 			continue
 		}
+		backupEntries = append(backupEntries, entry)
+	}
+	if len(backupEntries) == 0 {
+		return []operationsv1.BackupManifest{}, nil
+	}
+	key, err := readBackupKey(m.keyFile)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]operationsv1.BackupManifest, 0, len(backupEntries))
+	for _, entry := range backupEntries {
 		manifest, err := readBackupManifest(filepath.Join(m.directory, entry.Name()))
 		if err != nil {
 			return nil, err
+		}
+		if manifest.BackupID != entry.Name() {
+			return nil, fmt.Errorf("backup manifest identity does not match directory %s", entry.Name())
+		}
+		if err := authenticateBackupManifest(manifest, key); err != nil {
+			return nil, fmt.Errorf("authenticate backup %s: %w", entry.Name(), err)
 		}
 		items = append(items, *manifest)
 	}
@@ -320,7 +342,7 @@ func (p *postgresArchiver) Dump(ctx context.Context, output io.Writer) error {
 }
 
 func (p *postgresArchiver) Restore(ctx context.Context, input io.Reader) error {
-	args := append(p.connectionArgs(), "--clean", "--if-exists", "--no-owner", "--no-acl", "--dbname", p.config.DBName)
+	args := append(p.connectionArgs(), "--clean", "--if-exists", "--exit-on-error", "--single-transaction", "--no-owner", "--no-acl", "--dbname", p.config.DBName)
 	return p.run(ctx, p.restorePath, args, input, io.Discard)
 }
 
@@ -367,7 +389,7 @@ func (w *limitedWriter) Write(value []byte) (int, error) {
 	return original, err
 }
 
-func encryptBackup(output io.Writer, input io.Reader, key []byte) error {
+func encryptBackup(output io.Writer, input io.Reader, key []byte, backupID, artifactName string) error {
 	gcm, err := backupGCM(key)
 	if err != nil {
 		return err
@@ -377,6 +399,7 @@ func encryptBackup(output io.Writer, input io.Reader, key []byte) error {
 		return err
 	}
 	buffer := make([]byte, backupChunkSize)
+	var sequence uint64
 	for {
 		count, readErr := input.Read(buffer)
 		if count > 0 {
@@ -384,7 +407,7 @@ func encryptBackup(output io.Writer, input io.Reader, key []byte) error {
 			if _, err := rand.Read(nonce); err != nil {
 				return err
 			}
-			sealed := gcm.Seal(nil, nonce, buffer[:count], nil)
+			sealed := gcm.Seal(nil, nonce, buffer[:count], backupChunkAAD(backupID, artifactName, sequence))
 			if err := binary.Write(buffered, binary.BigEndian, uint32(len(sealed))); err != nil {
 				return err
 			}
@@ -394,6 +417,7 @@ func encryptBackup(output io.Writer, input io.Reader, key []byte) error {
 			if _, err := buffered.Write(sealed); err != nil {
 				return err
 			}
+			sequence++
 		}
 		if readErr == io.EOF {
 			break
@@ -408,7 +432,7 @@ func encryptBackup(output io.Writer, input io.Reader, key []byte) error {
 	return buffered.Flush()
 }
 
-func decryptBackup(output io.Writer, input io.Reader, key []byte) error {
+func decryptBackup(output io.Writer, input io.Reader, key []byte, backupID, artifactName string) error {
 	gcm, err := backupGCM(key)
 	if err != nil {
 		return err
@@ -418,6 +442,7 @@ func decryptBackup(output io.Writer, input io.Reader, key []byte) error {
 	if _, err := io.ReadFull(buffered, header); err != nil || string(header) != backupMagic {
 		return fmt.Errorf("backup encryption header is invalid")
 	}
+	var sequence uint64
 	for {
 		var size uint32
 		if err := binary.Read(buffered, binary.BigEndian, &size); err != nil {
@@ -437,14 +462,19 @@ func decryptBackup(output io.Writer, input io.Reader, key []byte) error {
 		if _, err := io.ReadFull(buffered, sealed); err != nil {
 			return err
 		}
-		plain, err := gcm.Open(nil, nonce, sealed, nil)
+		plain, err := gcm.Open(nil, nonce, sealed, backupChunkAAD(backupID, artifactName, sequence))
 		if err != nil {
 			return err
 		}
 		if _, err := output.Write(plain); err != nil {
 			return err
 		}
+		sequence++
 	}
+}
+
+func backupChunkAAD(backupID, artifactName string, sequence uint64) []byte {
+	return []byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", backupProtocol, backupID, artifactName, sequence))
 }
 
 func backupGCM(key []byte) (cipher.AEAD, error) {
@@ -456,7 +486,29 @@ func backupGCM(key []byte) (cipher.AEAD, error) {
 }
 
 func readBackupKey(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect backup encryption key: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("backup encryption key must be a regular file")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("backup encryption key permissions must not allow group or other access")
+	}
+	if info.Size() > 128 {
+		return nil, fmt.Errorf("backup encryption key file exceeds the size limit")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read backup encryption key: %w", err)
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return nil, fmt.Errorf("backup encryption key changed while it was being opened")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 129))
 	if err != nil {
 		return nil, fmt.Errorf("read backup encryption key: %w", err)
 	}
@@ -493,12 +545,86 @@ func fileSHA256(path string) (string, int64, error) {
 func backupManifestDigest(manifest *operationsv1.BackupManifest) (string, error) {
 	copy := *manifest
 	copy.ManifestSHA256 = ""
+	copy.Integrity.Value = ""
 	data, err := json.Marshal(copy)
 	if err != nil {
 		return "", err
 	}
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func sealBackupManifest(manifest *operationsv1.BackupManifest, key []byte) error {
+	manifest.Integrity = operationsv1.IntegrityProof{
+		Algorithm: operationsv1.IntegrityHMACSHA256,
+		KeyID:     backupKeyID(key),
+	}
+	digest, err := backupManifestDigest(manifest)
+	if err != nil {
+		return err
+	}
+	manifest.ManifestSHA256 = digest
+	manifest.Integrity.Value, err = backupManifestMAC(manifest, key)
+	return err
+}
+
+func backupManifestMAC(manifest *operationsv1.BackupManifest, key []byte) (string, error) {
+	copy := *manifest
+	copy.Integrity.Value = ""
+	data, err := json.Marshal(copy)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(data)
+	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func verifyBackupManifestMAC(manifest *operationsv1.BackupManifest, key []byte) error {
+	if manifest.Integrity.Algorithm != operationsv1.IntegrityHMACSHA256 || manifest.Integrity.KeyID != backupKeyID(key) {
+		return fmt.Errorf("backup manifest integrity key does not match this installation")
+	}
+	expected, err := backupManifestMAC(manifest, key)
+	if err != nil {
+		return err
+	}
+	expectedBytes, expectedErr := hex.DecodeString(expected)
+	actualBytes, actualErr := hex.DecodeString(manifest.Integrity.Value)
+	if expectedErr != nil || actualErr != nil || !hmac.Equal(expectedBytes, actualBytes) {
+		return fmt.Errorf("backup manifest authentication failed")
+	}
+	return nil
+}
+
+func authenticateBackupManifest(manifest *operationsv1.BackupManifest, key []byte) error {
+	if err := manifest.Validate(); err != nil {
+		return fmt.Errorf("validate backup manifest: %w", err)
+	}
+	expected, err := backupManifestDigest(manifest)
+	if err != nil || !strings.EqualFold(expected, manifest.ManifestSHA256) {
+		return fmt.Errorf("backup manifest integrity verification failed")
+	}
+	return verifyBackupManifestMAC(manifest, key)
+}
+
+func backupKeyID(key []byte) string {
+	digest := sha256.Sum256(key)
+	return "sha256:" + hex.EncodeToString(digest[:8])
+}
+
+func databaseBackupArtifact(manifest *operationsv1.BackupManifest) (operationsv1.BackupArtifact, error) {
+	var result operationsv1.BackupArtifact
+	count := 0
+	for _, artifact := range manifest.Artifacts {
+		if artifact.Name == "database" {
+			result = artifact
+			count++
+		}
+	}
+	if count != 1 {
+		return operationsv1.BackupArtifact{}, fmt.Errorf("backup must contain exactly one database artifact")
+	}
+	return result, nil
 }
 
 func writeBackupManifest(directory string, manifest *operationsv1.BackupManifest) error {
@@ -515,15 +641,28 @@ func writeBackupManifest(directory string, manifest *operationsv1.BackupManifest
 }
 
 func readBackupManifest(directory string) (*operationsv1.BackupManifest, error) {
-	data, err := os.ReadFile(filepath.Join(directory, "manifest.json"))
+	path := filepath.Join(directory, "manifest.json")
+	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, fmt.Errorf("read backup manifest: %w", err)
 	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxManifestSize {
+		return nil, fmt.Errorf("backup manifest must be a bounded regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read backup manifest: %w", err)
+	}
+	defer file.Close()
 	var manifest operationsv1.BackupManifest
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder := json.NewDecoder(io.LimitReader(file, maxManifestSize+1))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&manifest); err != nil {
 		return nil, fmt.Errorf("parse backup manifest: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, fmt.Errorf("backup manifest contains trailing data")
 	}
 	return &manifest, nil
 }

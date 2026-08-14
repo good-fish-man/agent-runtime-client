@@ -56,6 +56,14 @@ type Service struct {
 	wg            sync.WaitGroup
 }
 
+type ExportBundle struct {
+	Schema     string              `json:"schema"`
+	OwnerID    string              `json:"owner_id"`
+	ExportedAt time.Time           `json:"exported_at"`
+	Preference entity.Preference   `json:"preference"`
+	Items      []entity.Experience `json:"items"`
+}
+
 func NewService(store repository.Store, control controlrepo.Store, options ...Option) *Service {
 	service := &Service{
 		store: store, control: control, redactor: NewRedactor(), queue: make(chan string, defaultQueueSize),
@@ -199,6 +207,29 @@ func (s *Service) Delete(ctx context.Context, ownerID, experienceID string) erro
 		return apierror.ErrNotFound.WithMessage("experience not found")
 	}
 	return err
+}
+
+func (s *Service) Export(ctx context.Context, ownerID string) (*ExportBundle, error) {
+	preference, err := s.Preference(ctx, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]entity.Experience, 0)
+	for offset := 0; ; offset += 200 {
+		page, total, err := s.List(ctx, ownerID, entity.ListFilter{Limit: 200, Offset: offset})
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, page...)
+		if len(items) >= int(total) || len(page) == 0 {
+			break
+		}
+	}
+	return &ExportBundle{Schema: "athena.privacy-export.v1", OwnerID: ownerID, ExportedAt: time.Now().UTC(), Preference: *preference, Items: items}, nil
+}
+
+func (s *Service) DeleteAll(ctx context.Context, ownerID string) (int64, error) {
+	return s.store.DeleteAllPayloads(ctx, ownerID, time.Now().UTC())
 }
 
 func (s *Service) Stats(ctx context.Context, ownerID string) (*entity.Stats, error) {

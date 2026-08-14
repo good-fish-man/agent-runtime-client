@@ -147,6 +147,23 @@ func (s *Store) RenewDeviceLease(ctx context.Context, deviceID, owner string, to
 	return nil
 }
 
+func (s *Store) ValidateDeviceLease(ctx context.Context, deviceID, owner string, token uint64, now time.Time) error {
+	if strings.TrimSpace(deviceID) == "" || strings.TrimSpace(owner) == "" || token == 0 {
+		return fmt.Errorf("device lease identity and fencing token are required")
+	}
+	var count int64
+	err := s.data.DB(ctx).Model(&po.Device{}).
+		Where("device_id = ? AND online = ? AND lease_owner = ? AND fencing_token = ? AND lease_expires_at > ?", deviceID, true, owner, token, millis(now)).
+		Count(&count).Error
+	if err != nil {
+		return log.WrapError(err, "ControlStore.ValidateDeviceLease")
+	}
+	if count != 1 {
+		return fmt.Errorf("validate device %s lease: fencing token is stale or expired", deviceID)
+	}
+	return nil
+}
+
 func (s *Store) ReleaseDeviceLease(ctx context.Context, deviceID, owner string, token uint64, seenAt time.Time) error {
 	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&po.Device{}).
@@ -201,12 +218,13 @@ func (s *Store) SetDeviceOnline(ctx context.Context, deviceID string, online boo
 
 func (s *Store) MarkAllDevicesOffline(ctx context.Context, seenAt time.Time) error {
 	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&po.Device{}).Where("online = ? AND lease_expires_at < ?", true, millis(seenAt)).
-			Updates(map[string]any{"online": false, "lease_owner": "", "last_seen_at": millis(seenAt), "revision": gorm.Expr("revision + 1")}).Error; err != nil {
+		expired := tx.Model(&po.Device{}).Select("device_id").Where("online = ? AND lease_expires_at < ?", true, millis(seenAt))
+		if err := tx.Model(&po.CapabilityInstance{}).Where("online = ? AND device_id IN (?)", true, expired).
+			Updates(map[string]any{"online": false, "revision": gorm.Expr("revision + 1"), "updated_at": millis(seenAt)}).Error; err != nil {
 			return err
 		}
-		return tx.Model(&po.CapabilityInstance{}).Where("online = ?", true).
-			Updates(map[string]any{"online": false, "revision": gorm.Expr("revision + 1"), "updated_at": millis(seenAt)}).Error
+		return tx.Model(&po.Device{}).Where("online = ? AND lease_expires_at < ?", true, millis(seenAt)).
+			Updates(map[string]any{"online": false, "lease_owner": "", "lease_expires_at": millis(seenAt), "last_seen_at": millis(seenAt), "revision": gorm.Expr("revision + 1")}).Error
 	}), "ControlStore.MarkAllDevicesOffline")
 }
 
