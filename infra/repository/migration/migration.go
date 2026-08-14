@@ -23,6 +23,7 @@ import (
 	learningpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/learning"
 	memorypo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/memory"
 	modelpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/model"
+	operationspo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/operations"
 	orchestrationpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/orchestration"
 	pluginpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/plugin"
 	runtimepo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/runtime"
@@ -126,6 +127,7 @@ func InitTables(ctx context.Context, d *data.Data) error {
 		&jobpo.JobExecutionPO{},
 		&runtimepo.MediaGenerationJob{},
 		&scheduledtaskpo.ScheduledTask{},
+		&operationspo.GoldenJourneyResult{},
 	); err != nil {
 		return err
 	}

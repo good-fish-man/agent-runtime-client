@@ -1,11 +1,14 @@
 package operations
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	ga "github.com/good-fish-man/athena-protocol/protocol/ga/v1"
 	operationsv1 "github.com/good-fish-man/athena-protocol/protocol/operations/v1"
 
 	"github.com/good-fish-man/agent-runtime-client/api/http/middleware"
@@ -30,9 +33,14 @@ func (h *Handler) Readiness(c *gin.Context) {
 }
 
 func (h *Handler) GoldenJourneys(c *gin.Context) {
+	results, err := h.service.LastGoldenJourneyResults(c.Request.Context(), authctx.UserID(c.Request.Context()))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"items":        h.service.GoldenJourneyCatalog(),
-		"last_results": h.service.LastGoldenJourneyResults(),
+		"last_results": results,
 	})
 }
 
@@ -40,7 +48,37 @@ func (h *Handler) RunGoldenJourneys(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": h.service.RunGoldenJourneys(c.Request.Context(), authctx.UserID(c.Request.Context()))})
+	results, err := h.service.RunGoldenJourneys(c.Request.Context(), authctx.UserID(c.Request.Context()))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": results})
+}
+
+func (h *Handler) RecordGoldenJourneyEvidence(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	var request struct {
+		Items []ga.GoldenJourneyResult `json:"items"`
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<20)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "request body must contain exactly one JSON value"})
+		return
+	}
+	if err := h.service.RecordGoldenJourneyResults(c.Request.Context(), authctx.UserID(c.Request.Context()), request.Items); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"items": request.Items})
 }
 
 func (h *Handler) ListBackups(c *gin.Context) {

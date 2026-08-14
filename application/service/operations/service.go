@@ -28,6 +28,13 @@ type DeviceSource interface {
 
 type DatabaseProbe func(context.Context) error
 
+// GAEvidenceStore persists append-only golden-journey suites. Implementations
+// must scope every read and write by owner ID and verify stored content hashes.
+type GAEvidenceStore interface {
+	SaveGoldenJourneyResults(context.Context, string, []ga.GoldenJourneyResult) error
+	LastGoldenJourneyResults(context.Context, string, string) ([]ga.GoldenJourneyResult, error)
+}
+
 type Service struct {
 	runtimeURL string
 	database   DatabaseProbe
@@ -37,8 +44,9 @@ type Service struct {
 	instanceID string
 	backup     *BackupManager
 	gaConfig   GAConfig
+	gaStore    GAEvidenceStore
 	gaMu       sync.RWMutex
-	gaRuns     []ga.GoldenJourneyResult
+	gaRuns     map[string][][]ga.GoldenJourneyResult
 }
 
 func (s *Service) WithBackupManager(manager *BackupManager) *Service {
@@ -68,7 +76,13 @@ func New(runtimeURL string, database DatabaseProbe, devices DeviceSource) *Servi
 		runtimeURL: strings.TrimRight(strings.TrimSpace(runtimeURL), "/"), database: database, devices: devices,
 		client: &http.Client{Timeout: requestTimeout}, startedAt: time.Now().UTC(),
 		instanceID: fmt.Sprintf("%s-%d", host, os.Getpid()),
+		gaRuns:     make(map[string][][]ga.GoldenJourneyResult),
 	}
+}
+
+func (s *Service) WithGAEvidenceStore(store GAEvidenceStore) *Service {
+	s.gaStore = store
+	return s
 }
 
 func (s *Service) WithHTTPClient(client *http.Client) *Service {

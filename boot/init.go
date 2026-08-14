@@ -43,6 +43,7 @@ import (
 	experiencerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/experience"
 	knowledgerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/knowledge"
 	learningrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/learning"
+	operationsrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/operations"
 	orchestrationrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/orchestration"
 	runtimerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/runtime"
 	inruntime "github.com/good-fish-man/agent-runtime-client/infra/runtime"
@@ -192,6 +193,9 @@ func Init(cfgPath string) (*App, error) {
 			Orchestration: orchestrationService != nil, GoalSupervisor: orchestrationService != nil && cfg.Orchestration.Enabled,
 			PluginRegistry: store != nil,
 		})
+	if store != nil {
+		operationsService = operationsService.WithGAEvidenceStore(operationsrepo.NewStore(store))
+	}
 	pub.Operations = operationshandler.NewHandler(operationsService)
 	engine := httpapi.NewEngine(h, pub, cfg.Server.PublicPrefix, cfg.Server.Mode)
 	controlhandler.NewHandler(controlHub, cfg.Control.DeviceToken).Register(engine, pub.Auth, cfg.Server.PublicPrefix)

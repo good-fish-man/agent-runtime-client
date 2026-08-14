@@ -16,15 +16,36 @@ All routes use the configured public prefix, normally
 | --- | --- | --- | --- |
 | `GET` | `/operations/readiness` | authenticated | Aggregated Runtime, database, backup, device, and domain readiness. |
 | `GET` | `/operations/golden-journeys` | authenticated | Stable catalog of ten GA user journeys. |
-| `POST` | `/operations/golden-journeys/run` | administrator | Non-destructive infrastructure preflight. |
-| `GET` | `/operations/snapshot` | administrator | Health, SLO, device, queue, and backup summary. |
+| `POST` | `/operations/golden-journeys/run` | administrator | Non-destructive infrastructure preflight; never reports `PASS`. |
+| `POST` | `/operations/golden-journeys/evidence` | administrator | Record one complete independently executed E2E suite. |
+| `GET` | `/operations/health` | authenticated | Health, SLO, device, queue, and backup summary. |
 | `POST` | `/operations/backups` | administrator | Create an encrypted backup. |
 | `POST` | `/operations/backups/:id/verify` | administrator | Verify manifest and payload integrity. |
 
-The Golden Journey endpoint is a preflight, not a claim that a real provider,
+The run endpoint is a preflight, not a claim that a real provider,
 browser account, installer, or platform signature was exercised.
 `install-mode` and `safe-upgrade` remain `EXTERNAL_REQUIRED` until packaged
 release tests provide external evidence.
+
+Preflight results use `verification_level=PREFLIGHT` and can return only
+`NOT_RUN`, `FAIL`, `BLOCKED`, or `EXTERNAL_REQUIRED`. An independent runner may
+submit `verification_level=E2E` only as one ten-journey suite sharing one
+`run_id`. Every passing step must include all catalog evidence kinds. Accepted
+results are stored append-only in `os_ga_journey_result`, scoped by owner and
+protected by a content SHA-256. A later preflight does not hide the last E2E
+suite from readiness. `golden.suite` remains non-passing until all ten E2E
+journeys pass.
+
+Validate the catalog, shared run identity, step evidence, and JSON shape before
+uploading an E2E suite:
+
+```bash
+cd /path/to/athena-protocol
+go run ./cmd/validate-ga-evidence -file /path/to/golden-suite.json
+```
+
+The evidence API rejects unknown JSON fields, trailing JSON values, requests
+larger than 4 MiB, incomplete suites, and mixed run IDs.
 
 ## Traceability
 
@@ -42,6 +63,10 @@ deployment provenance before they are accepted by durable storage.
 5. Review `/operations/readiness`; do not ignore `FAIL`, `BLOCKED`, or
    `EXTERNAL_REQUIRED` entries.
 6. Test restore into an isolated data directory before relying on a backup.
+
+The startup migration is additive and idempotent. The v1.0 regression suite
+creates a representative v0.9 user, conversation, and memory, runs migration
+twice, and verifies that all records remain intact.
 
 ## User Data and Privacy
 
