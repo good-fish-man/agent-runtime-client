@@ -15,12 +15,14 @@ func TestApplyDeviceObservationStoresLatestHistoryAndActiveSession(t *testing.T)
 	values := map[string]any{}
 	action := &controlentity.Action{
 		Protocol: controlentity.Protocol, Type: controlentity.TypeAction, TaskID: "task-1", ActionID: "action-1",
+		AgentBuildID: "build-1", RunManifestID: "manifest-1",
 		SessionID: "athena-existing", Sequence: 1, IdempotencyKey: "task-1:action-1",
 		Deadline: time.Now().UTC().Add(time.Minute), Capability: "browser.open",
 		Arguments: map[string]any{"target": "YouTube"}, Policy: controlentity.Policy{Risk: controlentity.RiskMedium, Decision: controlentity.Allow},
 	}
 	observation := &controlentity.Observation{
 		Protocol: controlentity.Protocol, Type: controlentity.TypeObservation, TaskID: "task-1", ActionID: "action-1",
+		AgentBuildID: "build-1", RunManifestID: "manifest-1",
 		SessionID: "athena-browser-1", Sequence: 1, Status: controlentity.ObservationSucceeded, ObservedAt: time.Now().UTC(),
 		State: map[string]any{"url": "https://youtube.com", "title": "YouTube"},
 	}
@@ -34,11 +36,11 @@ func TestApplyDeviceObservationStoresLatestHistoryAndActiveSession(t *testing.T)
 		t.Fatalf("active sessions not set: %#v", values)
 	}
 	latest, ok := values["latest_action_observation"].(map[string]any)
-	if !ok || latest["status"] != controlentity.ObservationSucceeded {
+	if !ok || latest["status"] != controlentity.ObservationSucceeded || latest["run_manifest_id"] != "manifest-1" {
 		t.Fatalf("latest observation = %#v", values["latest_action_observation"])
 	}
 	actionCtx, ok := values["latest_action"].(map[string]any)
-	if !ok || actionCtx["capability"] != "browser.open" {
+	if !ok || actionCtx["capability"] != "browser.open" || actionCtx["agent_build_id"] != "build-1" {
 		t.Fatalf("latest action = %#v", values["latest_action"])
 	}
 	history, ok := values["action_observation_history"].([]any)
@@ -114,7 +116,8 @@ func TestNextDeviceObservationPromptWarnsAboutBrowserChallenge(t *testing.T) {
 func TestFailedControlObservationCarriesActionAndFriendlyOfflineMessage(t *testing.T) {
 	action := &controlentity.Action{
 		Protocol: controlentity.Protocol, Type: controlentity.TypeAction, TaskID: "task-1", ActionID: "action-1",
-		TraceID: "trace-control-1", SessionID: "athena-existing", Sequence: 2, Capability: "browser.open",
+		TraceID: "trace-control-1", AgentBuildID: "build-1", RunManifestID: "manifest-1",
+		SessionID: "athena-existing", Sequence: 2, Capability: "browser.open",
 	}
 	message := desktopOfflineMessage(action.Capability, "device-1")
 	observation := failedControlObservation(action, message, map[string]any{"connected": false})
@@ -128,6 +131,9 @@ func TestFailedControlObservationCarriesActionAndFriendlyOfflineMessage(t *testi
 	if observation.TraceID != action.TraceID {
 		t.Fatalf("observation trace_id = %q, want %q", observation.TraceID, action.TraceID)
 	}
+	if observation.AgentBuildID != action.AgentBuildID || observation.RunManifestID != action.RunManifestID {
+		t.Fatalf("observation deployment provenance = %+v", observation)
+	}
 	if observation.State["connected"] != false {
 		t.Fatalf("state = %#v", observation.State)
 	}
@@ -135,6 +141,28 @@ func TestFailedControlObservationCarriesActionAndFriendlyOfflineMessage(t *testi
 		if !strings.Contains(observation.Error, want) {
 			t.Fatalf("offline message missing %q: %s", want, observation.Error)
 		}
+	}
+}
+
+func TestAttachControlDeploymentProvenanceRequiresCompletePair(t *testing.T) {
+	now := time.Now().UTC()
+	action := &controlentity.Action{
+		Protocol: controlentity.Protocol, Type: controlentity.TypeAction,
+		TaskID: "task-1", StepID: "step-1", ActionID: "action-1",
+		Sequence: 1, Revision: 1, IdempotencyKey: "task-1:step-1:action-1",
+		IssuedAt: now, Deadline: now.Add(time.Minute), Capability: "browser.open",
+		Policy: controlentity.Policy{Risk: controlentity.RiskReadOnly, Decision: controlentity.Allow},
+	}
+	if err := attachControlDeploymentProvenance(map[string]any{
+		"agent_build_id": "build-1", "run_manifest_id": "manifest-1",
+	}, action); err != nil {
+		t.Fatal(err)
+	}
+	if action.AgentBuildID != "build-1" || action.RunManifestID != "manifest-1" {
+		t.Fatalf("deployment provenance = %+v", action)
+	}
+	if err := attachControlDeploymentProvenance(map[string]any{"agent_build_id": "build-2"}, action); err == nil {
+		t.Fatal("partial deployment provenance was accepted")
 	}
 }
 

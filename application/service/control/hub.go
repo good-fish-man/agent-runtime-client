@@ -1370,7 +1370,8 @@ func waitingApprovalObservation(action entity.Action, expiresAt time.Time) *enti
 	now := time.Now().UTC()
 	return &entity.Observation{
 		Protocol: entity.Protocol, Type: entity.TypeObservation, ObservationID: entity.NewID("observation"),
-		TaskID: action.TaskID, StepID: action.StepID, ActionID: action.ActionID, TraceID: action.TraceID, DeviceID: action.DeviceID,
+		TaskID: action.TaskID, StepID: action.StepID, ActionID: action.ActionID, TraceID: action.TraceID,
+		AgentBuildID: action.AgentBuildID, RunManifestID: action.RunManifestID, DeviceID: action.DeviceID,
 		SessionID: action.SessionID, Sequence: action.Sequence, Revision: action.Revision,
 		Status: entity.ObservationWaitingApproval, ObservedAt: now,
 		Summary: "Waiting for explicit user approval before dispatching the action.",
@@ -1382,7 +1383,8 @@ func policyObservation(action entity.Action, status, message string) entity.Obse
 	now := time.Now().UTC()
 	return entity.Observation{
 		Protocol: entity.Protocol, Type: entity.TypeObservation, ObservationID: entity.NewID("observation"),
-		TaskID: action.TaskID, StepID: action.StepID, ActionID: action.ActionID, TraceID: action.TraceID, DeviceID: action.DeviceID,
+		TaskID: action.TaskID, StepID: action.StepID, ActionID: action.ActionID, TraceID: action.TraceID,
+		AgentBuildID: action.AgentBuildID, RunManifestID: action.RunManifestID, DeviceID: action.DeviceID,
 		SessionID: action.SessionID, Sequence: action.Sequence, Revision: action.Revision,
 		Status: status, FinishedAt: now, ObservedAt: now, Summary: message, Error: message,
 		ErrorDetail: &entity.ErrorDetail{Code: "ACTION_" + status, Message: message, Operation: "action.policy"},
@@ -1412,7 +1414,8 @@ func (h *Hub) persistImmediateObservation(ctx context.Context, action entity.Act
 func (h *Hub) persistTerminalObservation(ctx context.Context, action entity.Action, status, message string) {
 	observation := entity.Observation{
 		Protocol: entity.Protocol, Type: entity.TypeObservation, ObservationID: entity.NewID("observation"),
-		TaskID: action.TaskID, StepID: action.StepID, ActionID: action.ActionID, TraceID: action.TraceID, DeviceID: action.DeviceID,
+		TaskID: action.TaskID, StepID: action.StepID, ActionID: action.ActionID, TraceID: action.TraceID,
+		AgentBuildID: action.AgentBuildID, RunManifestID: action.RunManifestID, DeviceID: action.DeviceID,
 		SessionID: action.SessionID, Sequence: action.Sequence, Revision: action.Revision,
 		Status: status, FinishedAt: time.Now().UTC(), ObservedAt: time.Now().UTC(), Error: message,
 		ErrorDetail: &entity.ErrorDetail{Code: "ACTION_" + status, Message: message},

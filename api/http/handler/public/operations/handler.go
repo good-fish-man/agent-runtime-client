@@ -22,6 +22,27 @@ func (h *Handler) Snapshot(c *gin.Context) {
 	c.JSON(http.StatusOK, h.service.Snapshot(c.Request.Context(), authctx.UserID(c.Request.Context())))
 }
 
+func (h *Handler) Readiness(c *gin.Context) {
+	report := h.service.Readiness(c.Request.Context(), authctx.UserID(c.Request.Context()))
+	// This is an operator report, not a load-balancer probe. Return the full
+	// body with HTTP 200 so the UI can render every blocker and external gate.
+	c.JSON(http.StatusOK, report)
+}
+
+func (h *Handler) GoldenJourneys(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"items":        h.service.GoldenJourneyCatalog(),
+		"last_results": h.service.LastGoldenJourneyResults(),
+	})
+}
+
+func (h *Handler) RunGoldenJourneys(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": h.service.RunGoldenJourneys(c.Request.Context(), authctx.UserID(c.Request.Context()))})
+}
+
 func (h *Handler) ListBackups(c *gin.Context) {
 	if !requireAdmin(c) {
 		return

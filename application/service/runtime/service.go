@@ -228,7 +228,7 @@ func (s *RuntimeService) runControlLoop(ctx context.Context, in *entity.RunInput
 			}
 			return err
 		}
-		observation, err := s.dispatchControlAction(ctx, requestedDevice, taskID, conversationID, originalPrompt, pending, emit)
+		observation, err := s.dispatchControlAction(ctx, requestedDevice, taskID, conversationID, originalPrompt, in.Context, pending, emit)
 		if err != nil && observation == nil {
 			_ = s.controlHub.SetTaskStatus(context.WithoutCancel(ctx), taskID, controlentity.StatusFailed)
 			return err
@@ -278,7 +278,7 @@ func (s *RuntimeService) runAgentControlLoop(ctx context.Context, in *entity.Age
 			}
 			return nil
 		}
-		observation, err := s.dispatchControlAction(ctx, requestedDevice, taskID, conversationID, originalTask, pending, emit)
+		observation, err := s.dispatchControlAction(ctx, requestedDevice, taskID, conversationID, originalTask, in.Context, pending, emit)
 		if err != nil && observation == nil {
 			_ = s.controlHub.SetTaskStatus(context.WithoutCancel(ctx), taskID, controlentity.StatusFailed)
 			return err
@@ -329,9 +329,12 @@ func (s *RuntimeService) runControlStep(ctx context.Context, taskID string, sequ
 	return pending, nil
 }
 
-func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDevice, taskID, conversationID, goal string, action *controlentity.Action, emit StreamFunc) (*controlentity.Observation, error) {
+func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDevice, taskID, conversationID, goal string, values map[string]any, action *controlentity.Action, emit StreamFunc) (*controlentity.Observation, error) {
 	if s.controlHub == nil {
 		return nil, apierror.ErrRuntimeUnavailable.WithMessage("desktop control plane is unavailable")
+	}
+	if err := attachControlDeploymentProvenance(values, action); err != nil {
+		return nil, log.WrapError(err, "RuntimeService.validateControlAction")
 	}
 	userID := authctx.UserID(ctx)
 	deviceID, capabilityInstanceID, err := s.controlHub.ResolveCapability(ctx, userID, requestedDevice, action.Capability, action.CapabilityInstanceID)
@@ -415,6 +418,15 @@ func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDev
 	return observation, nil
 }
 
+func attachControlDeploymentProvenance(values map[string]any, action *controlentity.Action) error {
+	if action == nil {
+		return fmt.Errorf("control action is required")
+	}
+	action.AgentBuildID = runtimeContextString(values, "agent_build_id")
+	action.RunManifestID = runtimeContextString(values, "run_manifest_id")
+	return action.Validate()
+}
+
 func desktopOfflineMessage(capability, requestedDevice string) string {
 	target := strings.TrimSpace(requestedDevice)
 	if target != "" {
@@ -466,7 +478,8 @@ func failedControlObservation(action *controlentity.Action, message string, stat
 	return &controlentity.Observation{
 		Protocol: controlentity.Protocol, Type: controlentity.TypeObservation,
 		ObservationID: controlentity.NewID("observation"), TaskID: action.TaskID, StepID: action.StepID,
-		ActionID: action.ActionID, TraceID: action.TraceID, DeviceID: action.DeviceID, SessionID: action.SessionID,
+		ActionID: action.ActionID, TraceID: action.TraceID, AgentBuildID: action.AgentBuildID, RunManifestID: action.RunManifestID,
+		DeviceID: action.DeviceID, SessionID: action.SessionID,
 		Sequence: action.Sequence, Revision: action.Revision, Status: controlentity.ObservationFailed,
 		FinishedAt: time.Now().UTC(), ObservedAt: time.Now().UTC(), State: state, Error: message,
 		ErrorDetail: &controlentity.ErrorDetail{Code: "CONTROL_ACTION_FAILED", Message: message},
@@ -535,7 +548,8 @@ func observationContext(observation *controlentity.Observation) map[string]any {
 	}
 	return map[string]any{
 		"protocol": observation.Protocol, "type": observation.Type, "task_id": observation.TaskID,
-		"action_id": observation.ActionID, "session_id": observation.SessionID, "sequence": observation.Sequence,
+		"action_id": observation.ActionID, "agent_build_id": observation.AgentBuildID,
+		"run_manifest_id": observation.RunManifestID, "session_id": observation.SessionID, "sequence": observation.Sequence,
 		"status": observation.Status, "observed_at": observation.ObservedAt.Format(time.RFC3339Nano),
 		"state": observation.State, "attachments": attachments, "error": observation.Error,
 	}
@@ -564,7 +578,8 @@ func actionContext(action *controlentity.Action) map[string]any {
 	}
 	return map[string]any{
 		"protocol": action.Protocol, "type": action.Type, "task_id": action.TaskID,
-		"action_id": action.ActionID, "session_id": action.SessionID, "sequence": action.Sequence,
+		"action_id": action.ActionID, "agent_build_id": action.AgentBuildID,
+		"run_manifest_id": action.RunManifestID, "session_id": action.SessionID, "sequence": action.Sequence,
 		"capability": action.Capability, "arguments": action.Arguments,
 		"deadline": action.Deadline.Format(time.RFC3339Nano),
 		"policy":   map[string]any{"risk": action.Policy.Risk, "decision": action.Policy.Decision},

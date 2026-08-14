@@ -132,6 +132,7 @@ func TestObservationPersistenceKeepsAttachmentMetadataWithoutPayload(t *testing.
 	observation := entity.Observation{
 		Protocol: entity.Protocol, Type: entity.TypeObservation,
 		ObservationID: "observation-1", TaskID: "task-1", StepID: "step-1", ActionID: "action-1",
+		AgentBuildID: "build-1", RunManifestID: "manifest-1",
 		Sequence: 1, Revision: 2, Status: entity.ObservationSucceeded, ObservedAt: now,
 		Attachments: []entity.Attachment{{
 			ID: "capture-1", Kind: "image", MIMEType: "image/png", Size: 4,
@@ -155,6 +156,9 @@ func TestObservationPersistenceKeepsAttachmentMetadataWithoutPayload(t *testing.
 	}
 	if stored.OwnerID != "user-1" || stored.TraceID != "trace-1" {
 		t.Fatalf("owner/trace correlation = %q/%q", stored.OwnerID, stored.TraceID)
+	}
+	if restored.AgentBuildID != "build-1" || restored.RunManifestID != "manifest-1" {
+		t.Fatalf("deployment provenance was not preserved: %+v", restored)
 	}
 }
 

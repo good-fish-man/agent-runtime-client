@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+GA operations: [Athena 1.0 control plane guide](docs/ga-operations-v1.0.md) | [简体中文](docs/ga-operations-v1.0.zh-CN.md)
+
 Agent Runtime Client is Athena's control plane and public HTTP API. It manages users, agents, model credentials, model assignments, memories, skills, knowledge bases, workspaces, and service configuration, then forwards execution requests to [`agent-runtime`](https://github.com/good-fish-man/agent-runtime) over gRPC.
 
 Despite its historical name, this is a server application rather than an SDK. Browser clients should call this service and should never call the runtime with model API keys directly.

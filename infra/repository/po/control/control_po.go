@@ -118,6 +118,8 @@ type Action struct {
 	TaskID               string `gorm:"column:task_id;type:varchar(128);not null;index:idx_os_action_task_sequence,priority:1"`
 	StepID               string `gorm:"column:step_id;type:varchar(128);not null;index"`
 	TraceID              string `gorm:"column:trace_id;type:varchar(128);index"`
+	AgentBuildID         string `gorm:"column:agent_build_id;type:varchar(128);index"`
+	RunManifestID        string `gorm:"column:run_manifest_id;type:varchar(128);index"`
 	DecisionID           string `gorm:"column:decision_id;type:varchar(128);index"`
 	DeviceID             string `gorm:"column:device_id;type:varchar(128);not null;index"`
 	CapabilityInstanceID string `gorm:"column:capability_instance_id;type:varchar(160);not null;index"`
@@ -190,6 +192,8 @@ type Observation struct {
 	StepID         string `gorm:"column:step_id;type:varchar(128);not null;index"`
 	OwnerID        string `gorm:"column:owner_id;type:varchar(128);not null;index"`
 	TraceID        string `gorm:"column:trace_id;type:varchar(128);index"`
+	AgentBuildID   string `gorm:"column:agent_build_id;type:varchar(128);index"`
+	RunManifestID  string `gorm:"column:run_manifest_id;type:varchar(128);index"`
 	DeviceID       string `gorm:"column:device_id;type:varchar(128);index"`
 	IdempotencyKey string `gorm:"column:idempotency_key;type:varchar(255);not null;uniqueIndex"`
 	SessionID      string `gorm:"column:session_id;type:varchar(128)"`

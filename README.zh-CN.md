@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+GA 运维：[Athena 1.0 控制面指南](docs/ga-operations-v1.0.zh-CN.md) | [English](docs/ga-operations-v1.0.md)
+
 Agent Runtime Client 是 Athena 的控制面和公共 HTTP API。它负责用户、Agent、模型凭据、模型绑定、记忆、Skills、知识库、工作区和服务配置，再通过 gRPC 将执行请求发送给 [`agent-runtime`](https://github.com/good-fish-man/agent-runtime)。
 
 虽然名称中包含 Client，但它实际是服务端程序，不是 SDK。浏览器只应访问本服务，不应直接携带模型 API Key 调用 Runtime。

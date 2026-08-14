@@ -95,6 +95,9 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 	if h.Operations != nil {
 		g.GET("/operations/health", h.Operations.Snapshot)
 		g.GET("/operations/slo", h.Operations.Snapshot)
+		g.GET("/operations/readiness", h.Operations.Readiness)
+		g.GET("/operations/golden-journeys", h.Operations.GoldenJourneys)
+		g.POST("/operations/golden-journeys/run", h.Operations.RunGoldenJourneys)
 		g.GET("/operations/backups", h.Operations.ListBackups)
 		g.POST("/operations/backups", h.Operations.CreateBackup)
 		g.POST("/operations/backups/:backup_id/verify", h.Operations.VerifyBackup)

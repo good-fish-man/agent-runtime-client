@@ -184,7 +184,15 @@ func Init(cfgPath string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	pub.Operations = operationshandler.NewHandler(operationssvc.New(cfg.Runtime.HTTPAddr, databaseProbe, controlHub).WithBackupManager(backupManager))
+	operationsService := operationssvc.New(cfg.Runtime.HTTPAddr, databaseProbe, controlHub).
+		WithBackupManager(backupManager).
+		WithGAConfig(operationssvc.GAConfig{
+			DataStore: store != nil, Conversation: appService != nil, Memory: store != nil,
+			Knowledge: knowledgeService != nil, Deployment: deploymentService != nil,
+			Orchestration: orchestrationService != nil, GoalSupervisor: orchestrationService != nil && cfg.Orchestration.Enabled,
+			PluginRegistry: store != nil,
+		})
+	pub.Operations = operationshandler.NewHandler(operationsService)
 	engine := httpapi.NewEngine(h, pub, cfg.Server.PublicPrefix, cfg.Server.Mode)
 	controlhandler.NewHandler(controlHub, cfg.Control.DeviceToken).Register(engine, pub.Auth, cfg.Server.PublicPrefix)
 	controlHub.Start(context.Background())

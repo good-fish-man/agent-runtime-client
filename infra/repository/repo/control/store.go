@@ -547,6 +547,7 @@ func sameDurableAction(left, right *po.Action) bool {
 		return left == right
 	}
 	return left.ActionID == right.ActionID && left.TaskID == right.TaskID && left.StepID == right.StepID &&
+		left.AgentBuildID == right.AgentBuildID && left.RunManifestID == right.RunManifestID &&
 		left.DecisionID == right.DecisionID && left.DeviceID == right.DeviceID &&
 		left.CapabilityInstanceID == right.CapabilityInstanceID && left.UserID == right.UserID &&
 		left.SessionID == right.SessionID && left.Protocol == right.Protocol && left.Sequence == right.Sequence &&
@@ -768,6 +769,9 @@ func (s *Store) SaveObservation(ctx context.Context, observation entity.Observat
 		}
 		if observation.TraceID == "" {
 			observation.TraceID = traceID
+		}
+		if observation.AgentBuildID != action.AgentBuildID || observation.RunManifestID != action.RunManifestID {
+			return fmt.Errorf("observation deployment provenance does not match durable action %s", observation.ActionID)
 		}
 		value, err := observationToPO(observation, action.IdempotencyKey, task.UserID, traceID)
 		if err != nil {
@@ -1052,6 +1056,7 @@ func actionToPO(deviceID, userID string, action entity.Action) (*po.Action, erro
 	}
 	return &po.Action{
 		ActionID: action.ActionID, TaskID: action.TaskID, StepID: action.StepID, TraceID: action.TraceID, DecisionID: action.DecisionID,
+		AgentBuildID: action.AgentBuildID, RunManifestID: action.RunManifestID,
 		DeviceID: deviceID, CapabilityInstanceID: action.CapabilityInstanceID,
 		UserID: userID, SessionID: action.SessionID, Protocol: action.Protocol,
 		Sequence: action.Sequence, Revision: action.Revision, IdempotencyKey: action.IdempotencyKey,
@@ -1115,6 +1120,7 @@ func observationToPO(observation entity.Observation, idempotencyKey, ownerID, tr
 	return &po.Observation{
 		ObservationID: observation.ObservationID, ActionID: observation.ActionID, TaskID: observation.TaskID,
 		StepID: observation.StepID, OwnerID: ownerID, TraceID: traceID,
+		AgentBuildID: observation.AgentBuildID, RunManifestID: observation.RunManifestID,
 		DeviceID: observation.DeviceID, IdempotencyKey: idempotencyKey,
 		SessionID: observation.SessionID, Protocol: observation.Protocol, Sequence: observation.Sequence,
 		Revision: observation.Revision, Status: observation.Status, StartedAt: millis(observation.StartedAt),
@@ -1461,7 +1467,8 @@ func stepToEntity(value *po.Step) entity.TaskStep {
 func actionToEntity(value *po.Action) entity.Action {
 	action := entity.Action{
 		Protocol: value.Protocol, Type: entity.TypeAction, TaskID: value.TaskID, StepID: value.StepID,
-		ActionID: value.ActionID, TraceID: value.TraceID, DecisionID: value.DecisionID, DeviceID: value.DeviceID,
+		ActionID: value.ActionID, TraceID: value.TraceID, AgentBuildID: value.AgentBuildID, RunManifestID: value.RunManifestID,
+		DecisionID: value.DecisionID, DeviceID: value.DeviceID,
 		CapabilityInstanceID: value.CapabilityInstanceID,
 		SessionID:            value.SessionID, Sequence: value.Sequence, Revision: value.Revision,
 		IdempotencyKey: value.IdempotencyKey, IssuedAt: fromMillis(value.IssuedAt), Deadline: fromMillis(value.Deadline),
@@ -1477,7 +1484,8 @@ func actionToEntity(value *po.Action) entity.Action {
 func observationToEntity(value *po.Observation) entity.Observation {
 	observation := entity.Observation{
 		Protocol: value.Protocol, Type: entity.TypeObservation, ObservationID: value.ObservationID,
-		TaskID: value.TaskID, StepID: value.StepID, ActionID: value.ActionID, TraceID: value.TraceID, DeviceID: value.DeviceID,
+		TaskID: value.TaskID, StepID: value.StepID, ActionID: value.ActionID, TraceID: value.TraceID,
+		AgentBuildID: value.AgentBuildID, RunManifestID: value.RunManifestID, DeviceID: value.DeviceID,
 		SessionID: value.SessionID, Sequence: value.Sequence, Revision: value.Revision,
 		Status: value.Status, StartedAt: fromMillis(value.StartedAt), FinishedAt: fromMillis(value.FinishedAt),
 		ObservedAt: fromMillis(value.ObservedAt), Summary: value.Summary, Error: value.Error,

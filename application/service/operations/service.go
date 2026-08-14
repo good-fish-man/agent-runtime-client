@@ -11,10 +11,12 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	controlsvc "github.com/good-fish-man/agent-runtime-client/application/service/control"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
+	ga "github.com/good-fish-man/athena-protocol/protocol/ga/v1"
 	operationsv1 "github.com/good-fish-man/athena-protocol/protocol/operations/v1"
 )
 
@@ -34,6 +36,9 @@ type Service struct {
 	startedAt  time.Time
 	instanceID string
 	backup     *BackupManager
+	gaConfig   GAConfig
+	gaMu       sync.RWMutex
+	gaRuns     []ga.GoldenJourneyResult
 }
 
 func (s *Service) WithBackupManager(manager *BackupManager) *Service {
