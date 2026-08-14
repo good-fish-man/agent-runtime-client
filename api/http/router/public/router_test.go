@@ -9,6 +9,7 @@ import (
 	callbackhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/callback"
 	channelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/channel"
 	confighandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/config"
+	deploymenthandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/deployment"
 	experiencehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/experience"
 	jobhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/job"
 	kbhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
@@ -20,6 +21,7 @@ import (
 
 	agentsvc "github.com/good-fish-man/agent-runtime-client/application/service/agent"
 	channelsvc "github.com/good-fish-man/agent-runtime-client/application/service/channel"
+	deploymentsvc "github.com/good-fish-man/agent-runtime-client/application/service/deployment"
 	experiencesvc "github.com/good-fish-man/agent-runtime-client/application/service/experience"
 	jobsvc "github.com/good-fish-man/agent-runtime-client/application/service/job"
 	kbsvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge_base"
@@ -46,6 +48,7 @@ func TestRegisterNoConflicts(t *testing.T) {
 		Agent:      agenthandler.NewHandler(agentsvc.NewSysAgentService(nil)),
 		Channel:    channelhandler.NewHandler(channelsvc.NewSysChannelService(nil)),
 		Experience: experiencehandler.NewHandler(experiencesvc.NewService(nil, nil)),
+		Deployment: deploymenthandler.NewHandler(deploymentsvc.NewService(nil)),
 		Learning:   learninghandler.NewHandler(learningsvc.NewServiceWithDependencies(nil, nil, nil)),
 		Callback:   callbackhandler.NewHandler(),
 		Weixin:     weixinhandler.NewHandler(),
@@ -95,6 +98,21 @@ func TestRegisterNoConflicts(t *testing.T) {
 		"PUT " + prefix + "/learning/demonstrations/:id",
 		"POST " + prefix + "/learning/demonstrations/:id/confirm",
 		"POST " + prefix + "/learning/demonstrations/:id/discard",
+		"POST " + prefix + "/deployment/builds",
+		"GET " + prefix + "/deployment/builds",
+		"GET " + prefix + "/deployment/builds/:id",
+		"POST " + prefix + "/deployment/promotions",
+		"GET " + prefix + "/deployment/promotions",
+		"POST " + prefix + "/deployment/promotions/:id/transition",
+		"POST " + prefix + "/deployment/promotions/:id/shadow",
+		"GET " + prefix + "/deployment/promotions/:id/shadow",
+		"POST " + prefix + "/deployment/promotions/:id/metrics",
+		"GET " + prefix + "/deployment/promotions/:id/metrics",
+		"POST " + prefix + "/deployment/promotions/:id/rollback",
+		"GET " + prefix + "/deployment/experiment",
+		"PUT " + prefix + "/deployment/experiment",
+		"GET " + prefix + "/deployment/manifests",
+		"GET " + prefix + "/deployment/rollbacks",
 	}
 	for _, route := range expected {
 		if _, ok := registered[route]; !ok {

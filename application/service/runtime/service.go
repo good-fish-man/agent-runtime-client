@@ -5,6 +5,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,9 +16,11 @@ import (
 	assembler "github.com/good-fish-man/agent-runtime-client/application/assembler/runtime"
 	dto "github.com/good-fish-man/agent-runtime-client/application/dto/runtime"
 	controlsvc "github.com/good-fish-man/agent-runtime-client/application/service/control"
+	deploymentsvc "github.com/good-fish-man/agent-runtime-client/application/service/deployment"
 	memorysvc "github.com/good-fish-man/agent-runtime-client/application/service/memory"
 	agententity "github.com/good-fish-man/agent-runtime-client/domain/entity/agent"
 	controlentity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
+	deploymententity "github.com/good-fish-man/agent-runtime-client/domain/entity/deployment"
 	modelentity "github.com/good-fish-man/agent-runtime-client/domain/entity/model"
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
 	irepo "github.com/good-fish-man/agent-runtime-client/domain/irepository/runtime"
@@ -42,10 +46,12 @@ type RuntimeService struct {
 	memorySvc  *memorysvc.Service
 	mediaRepo  irepo.MediaJobRepository
 	controlHub *controlsvc.Hub
+	deployment *deploymentsvc.Service
 	chat       *chatRecorder
 }
 
-func (s *RuntimeService) SetControlHub(hub *controlsvc.Hub) { s.controlHub = hub }
+func (s *RuntimeService) SetControlHub(hub *controlsvc.Hub)                 { s.controlHub = hub }
+func (s *RuntimeService) SetDeploymentService(value *deploymentsvc.Service) { s.deployment = value }
 
 func (s *RuntimeService) ListCapabilities(ctx context.Context) ([]entity.CapabilityDefinition, error) {
 	result, err := s.svc.ListCapabilities(ctx, traceID(ctx))
@@ -90,6 +96,9 @@ func (s *RuntimeService) Run(ctx context.Context, req *dto.RunReq) (*entity.Comp
 	if err := s.hydrateSubAgentModels(ctx, in.SubAgents); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.Run.hydrateSubAgentModels")
 	}
+	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, in.KnowledgeBases, in.Options); err != nil {
+		return nil, log.WrapError(err, "RuntimeService.Run.attachRunManifest")
+	}
 	result, err := s.svc.Run(ctx, in)
 	if err == nil && result != nil {
 		s.storeMemories(ctx, in.Context, result.Memories)
@@ -124,6 +133,9 @@ func (s *RuntimeService) RunStream(ctx context.Context, req *dto.RunReq, emit St
 	if err := s.hydrateSubAgentModels(ctx, in.SubAgents); err != nil {
 		return log.WrapError(err, "RuntimeService.RunStream.hydrateSubAgentModels")
 	}
+	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, in.KnowledgeBases, in.Options); err != nil {
+		return log.WrapError(err, "RuntimeService.RunStream.attachRunManifest")
+	}
 	capture := newStreamCapture()
 	err := s.runControlLoop(ctx, in, req.DeviceID, s.memoryAwareEmitter(ctx, in.Context, capture.Wrap(emit)))
 	s.recordStream(ctx, in.Context, in.Models, in.Prompt, capture, err)
@@ -147,6 +159,9 @@ func (s *RuntimeService) RunAgent(ctx context.Context, req *dto.AgentReq) (*enti
 	}
 	if err := s.hydrateModels(ctx, in.Models); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.RunAgent.hydrateModels")
+	}
+	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, nil, nil); err != nil {
+		return nil, log.WrapError(err, "RuntimeService.RunAgent.attachRunManifest")
 	}
 	value, err := s.svc.RunAgent(ctx, in)
 	if value != nil {
@@ -175,6 +190,9 @@ func (s *RuntimeService) RunAgentStream(ctx context.Context, req *dto.AgentReq, 
 	}
 	if err := s.hydrateModels(ctx, in.Models); err != nil {
 		return log.WrapError(err, "RuntimeService.RunAgentStream.hydrateModels")
+	}
+	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, nil, nil); err != nil {
+		return log.WrapError(err, "RuntimeService.RunAgentStream.attachRunManifest")
 	}
 	capture := newStreamCapture()
 	err := s.runAgentControlLoop(ctx, in, req.DeviceID, s.memoryAwareEmitter(ctx, in.Context, capture.Wrap(emit)))
@@ -906,6 +924,107 @@ func agentIDFromContext(ctx map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func (s *RuntimeService) attachRunManifest(ctx context.Context, values map[string]any, taskID, deviceID string, models map[string]entity.ModelConfig, capabilities []entity.CapabilityConfig, knowledge []entity.KnowledgeBaseConfig, options *entity.RunOptions) error {
+	if s.deployment == nil {
+		return nil
+	}
+	ownerID := authctx.UserID(ctx)
+	agentID := agentIDFromContext(values)
+	if agentID == "" {
+		agentID = "direct"
+	}
+	if strings.TrimSpace(taskID) == "" {
+		return fmt.Errorf("run manifest requires request_id")
+	}
+	promptVersion := contextString(values, "prompt_template_version")
+	if _, err := s.deployment.EnsureBaselineBuild(ctx, ownerID, ownerID, agentID, promptVersion); err != nil {
+		return log.WrapError(err, "RuntimeService.attachRunManifest.ensureBaselineBuild")
+	}
+	modelFingerprint := make(map[string]map[string]any, len(models))
+	for role, model := range models {
+		modelFingerprint[role] = map[string]any{
+			"provider": model.Provider, "name": model.Name, "api_base": model.APIBase,
+			"temperature": model.Temperature, "max_tokens": model.MaxTokens, "top_p": model.TopP,
+		}
+	}
+	capabilityInstances := make([]string, 0, len(capabilities)+1)
+	for _, capability := range capabilities {
+		if strings.TrimSpace(capability.ID) != "" {
+			capabilityInstances = append(capabilityInstances, capability.ID)
+		}
+	}
+	if value := contextString(values, "capability_instance_id"); value != "" {
+		capabilityInstances = append(capabilityInstances, value)
+	}
+	knowledgeFingerprint := make([]map[string]any, 0, len(knowledge))
+	for _, item := range knowledge {
+		knowledgeFingerprint = append(knowledgeFingerprint, map[string]any{"id": item.ID, "name": item.Name, "retrieval_url": item.RetrievalURL, "top_k": item.TopK})
+	}
+	manifest, err := s.deployment.CreateRunManifest(ctx, ownerID, deploymentsvc.RunManifestInput{
+		TaskID: taskID, AgentID: agentID, ModelConfigVersion: hashValue(modelFingerprint),
+		CapabilityInstances: capabilityInstances, DeviceID: deviceID,
+		WorldRevision: contextInt64(values, "world_revision"), KnowledgeSnapshot: hashValue(knowledgeFingerprint),
+		Budget: runBudget(options), FeatureFlags: map[string]bool{"deployment_manifest": true},
+	})
+	if err != nil {
+		return err
+	}
+	if values != nil {
+		values["agent_build_id"] = manifest.AgentBuildID
+		values["run_manifest_id"] = manifest.ManifestID
+		if manifest.ExposureID != "" {
+			values["exposure_id"] = manifest.ExposureID
+		}
+	}
+	return nil
+}
+
+func runBudget(options *entity.RunOptions) deploymententity.RunBudget {
+	budget := deploymententity.RunBudget{MaxTokens: 65536, MaxCostMicros: 1_000_000, MaxDurationMS: 120000, MaxActions: 32}
+	if options == nil {
+		return budget
+	}
+	if options.MaxTotalTokens > 0 {
+		budget.MaxTokens = int(options.MaxTotalTokens)
+	} else if options.MaxTokens > 0 {
+		budget.MaxTokens = int(options.MaxTokens)
+	}
+	if options.TimeoutMs > 0 {
+		budget.MaxDurationMS = int(options.TimeoutMs)
+	}
+	if options.MaxToolCalls > 0 {
+		budget.MaxActions = int(options.MaxToolCalls)
+	}
+	return budget
+}
+
+func hashValue(value any) string {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		payload = []byte(fmt.Sprintf("%T", value))
+	}
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func contextInt64(values map[string]any, key string) int64 {
+	if values == nil {
+		return 0
+	}
+	switch value := values[key].(type) {
+	case int:
+		return int64(value)
+	case int32:
+		return int64(value)
+	case int64:
+		return value
+	case float64:
+		return int64(value)
+	default:
+		return 0
+	}
 }
 
 func parseStoredAgentConfig(raw string) (*storedAgentConfig, bool) {

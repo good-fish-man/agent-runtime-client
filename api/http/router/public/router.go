@@ -17,6 +17,7 @@ import (
 	commandh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/command"
 	confighh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/config"
 	dashboardh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/dashboard"
+	deploymenth "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/deployment"
 	experienceh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/experience"
 	jobh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/job"
 	kbh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
@@ -48,6 +49,7 @@ type Handlers struct {
 	Command           *commandh.Handler
 	Callback          *callbackh.Handler
 	Dashboard         *dashboardh.Handler
+	Deployment        *deploymenth.Handler
 	Experience        *experienceh.Handler
 	Learning          *learningh.Handler
 	Weixin            *weixinh.Handler
@@ -190,6 +192,25 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		r.PUT("/demonstrations/:id", h.Learning.EditDemonstration)
 		r.POST("/demonstrations/:id/confirm", h.Learning.ConfirmDemonstration)
 		r.POST("/demonstrations/:id/discard", h.Learning.DiscardDemonstration)
+	}
+
+	if h.Deployment != nil {
+		r := g.Group("/deployment")
+		r.POST("/builds", h.Deployment.CreateBuild)
+		r.GET("/builds", h.Deployment.ListBuilds)
+		r.GET("/builds/:id", h.Deployment.FindBuild)
+		r.POST("/promotions", h.Deployment.ProposePromotion)
+		r.GET("/promotions", h.Deployment.ListPromotions)
+		r.POST("/promotions/:id/transition", h.Deployment.TransitionPromotion)
+		r.POST("/promotions/:id/shadow", h.Deployment.RecordShadow)
+		r.GET("/promotions/:id/shadow", h.Deployment.ListShadow)
+		r.POST("/promotions/:id/metrics", h.Deployment.RecordMetric)
+		r.GET("/promotions/:id/metrics", h.Deployment.ListMetrics)
+		r.POST("/promotions/:id/rollback", h.Deployment.Rollback)
+		r.GET("/experiment", h.Deployment.GetExperiment)
+		r.PUT("/experiment", h.Deployment.SetOptOut)
+		r.GET("/manifests", h.Deployment.ListManifests)
+		r.GET("/rollbacks", h.Deployment.ListRollbacks)
 	}
 
 	if h.BrowserCredential != nil {
