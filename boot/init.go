@@ -134,12 +134,16 @@ func Init(cfgPath string) (*App, error) {
 		if err := controlStore.MarkAllDevicesOffline(context.Background(), time.Now().UTC()); err != nil {
 			return nil, err
 		}
+		if err := controlStore.PauseInterruptedTasks(context.Background(), "control plane restarted before the decision loop completed"); err != nil {
+			return nil, err
+		}
 		controlHub = controlsvc.NewHub(controlStore)
 	} else {
 		controlHub = controlsvc.NewHub()
 	}
 	appService.SetControlHub(controlHub)
 	controlhandler.NewHandler(controlHub, cfg.Control.DeviceToken).Register(engine, pub.Auth, cfg.Server.PublicPrefix)
+	controlHub.Start(context.Background())
 
 	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store, Control: controlHub}, nil
 }
@@ -189,6 +193,9 @@ func (a *App) PingRuntime() (*entity.HealthStatus, error) {
 
 // Close releases resources (the gRPC connection).
 func (a *App) Close() error {
+	if a.Control != nil {
+		a.Control.Stop()
+	}
 	if a.client != nil {
 		return a.client.Close()
 	}

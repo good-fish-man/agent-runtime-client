@@ -5,6 +5,7 @@ import (
 	"context"
 
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	modelentity "github.com/good-fish-man/agent-runtime-client/domain/entity/model"
@@ -37,6 +38,9 @@ const (
 // InitTables creates or updates every table used by agent-runtime-client.
 func InitTables(ctx context.Context, d *data.Data) error {
 	db := d.DB(ctx)
+	if err := migrateControlV4TableNames(db); err != nil {
+		return err
+	}
 	if err := db.AutoMigrate(
 		&userpo.SysUser{},
 		&userpo.SysUserSession{},
@@ -56,14 +60,29 @@ func InitTables(ctx context.Context, d *data.Data) error {
 		&chatpo.ChatApproval{},
 		&chatpo.ChatTokenStats{},
 		&controlpo.Device{},
+		&controlpo.CapabilityDefinition{},
+		&controlpo.CapabilityInstance{},
+		&controlpo.DeviceCapability{},
 		&controlpo.Task{},
+		&controlpo.Step{},
 		&controlpo.Action{},
+		&controlpo.Approval{},
 		&controlpo.Observation{},
+		&controlpo.Artifact{},
+		&controlpo.Event{},
+		&controlpo.Outbox{},
+		&controlpo.WorldState{},
+		&controlpo.WorldEntity{},
+		&controlpo.WorldRelation{},
+		&controlpo.WorldEvidenceRef{},
 		&memorypo.AgentMemory{},
 		&jobpo.JobExecutionPO{},
 		&runtimepo.MediaGenerationJob{},
 		&scheduledtaskpo.ScheduledTask{},
 	); err != nil {
+		return err
+	}
+	if err := migrateControlV3(ctx, db); err != nil {
 		return err
 	}
 
@@ -81,6 +100,20 @@ func InitTables(ctx context.Context, d *data.Data) error {
 		return err
 	}
 	return seedPublicAgents(ctx, d)
+}
+
+// migrateControlV4TableNames preserves data created by early v0.2 snapshots
+// before the canonical os_task_* names were frozen in Athena Protocol v4.
+func migrateControlV4TableNames(db *gorm.DB) error {
+	for _, pair := range [][2]string{{"os_step", "os_task_step"}, {"os_event", "os_task_event"}} {
+		if !db.Migrator().HasTable(pair[0]) || db.Migrator().HasTable(pair[1]) {
+			continue
+		}
+		if err := db.Migrator().RenameTable(pair[0], pair[1]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func seedAdministrator(ctx context.Context, d *data.Data) error {

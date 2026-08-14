@@ -12,8 +12,9 @@ func TestObservationAttachmentValidationAndSanitization(t *testing.T) {
 	data := []byte("bounded-image")
 	sum := sha256.Sum256(data)
 	observation := Observation{
-		Protocol: Protocol, Type: TypeObservation, TaskID: "task-1", ActionID: "action-1",
-		Sequence: 1, Status: ObservationSucceeded, ObservedAt: time.Now().UTC(),
+		Protocol: Protocol, Type: TypeObservation, ObservationID: "observation-1",
+		TaskID: "task-1", StepID: "step-1", ActionID: "action-1",
+		Sequence: 1, Revision: 1, Status: ObservationSucceeded, ObservedAt: time.Now().UTC(),
 		Attachments: []Attachment{{
 			ID: "artifact-1", Kind: "image", MIMEType: "image/png", Size: int64(len(data)),
 			SHA256: hex.EncodeToString(sum[:]), Encoding: AttachmentEncodingBase64,
@@ -30,9 +31,10 @@ func TestObservationAttachmentValidationAndSanitization(t *testing.T) {
 }
 
 func TestActionValidateRequiresFrozenEnvelope(t *testing.T) {
+	now := time.Now().UTC()
 	action := Action{
-		Protocol: Protocol, Type: TypeAction, TaskID: "task-1", ActionID: "action-1",
-		Sequence: 1, IdempotencyKey: "task-1:1", Deadline: time.Now().Add(time.Second),
+		Protocol: Protocol, Type: TypeAction, TaskID: "task-1", StepID: "step-1", ActionID: "action-1",
+		Sequence: 1, Revision: 1, IdempotencyKey: "task-1:1", IssuedAt: now, Deadline: now.Add(time.Second),
 		Capability: "browser.open", Policy: Policy{Risk: RiskLow, Decision: Allow},
 	}
 	if err := action.Validate(); err != nil {
@@ -46,8 +48,9 @@ func TestActionValidateRequiresFrozenEnvelope(t *testing.T) {
 
 func TestObservationValidateRejectsUnknownStatus(t *testing.T) {
 	observation := Observation{
-		Protocol: Protocol, Type: TypeObservation, TaskID: "task-1", ActionID: "action-1",
-		Sequence: 1, Status: "MAYBE", ObservedAt: time.Now().UTC(),
+		Protocol: Protocol, Type: TypeObservation, ObservationID: "observation-1",
+		TaskID: "task-1", StepID: "step-1", ActionID: "action-1",
+		Sequence: 1, Revision: 1, Status: "MAYBE", ObservedAt: time.Now().UTC(),
 	}
 	if err := observation.Validate(); err == nil {
 		t.Fatal("unknown observation status was accepted")

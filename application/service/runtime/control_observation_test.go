@@ -114,7 +114,7 @@ func TestNextDeviceObservationPromptWarnsAboutBrowserChallenge(t *testing.T) {
 func TestFailedControlObservationCarriesActionAndFriendlyOfflineMessage(t *testing.T) {
 	action := &controlentity.Action{
 		Protocol: controlentity.Protocol, Type: controlentity.TypeAction, TaskID: "task-1", ActionID: "action-1",
-		SessionID: "athena-existing", Sequence: 2, Capability: "browser.open",
+		TraceID: "trace-control-1", SessionID: "athena-existing", Sequence: 2, Capability: "browser.open",
 	}
 	message := desktopOfflineMessage(action.Capability, "device-1")
 	observation := failedControlObservation(action, message, map[string]any{"connected": false})
@@ -124,6 +124,9 @@ func TestFailedControlObservationCarriesActionAndFriendlyOfflineMessage(t *testi
 	}
 	if observation.TaskID != action.TaskID || observation.ActionID != action.ActionID || observation.Sequence != action.Sequence {
 		t.Fatalf("observation did not preserve action identity: %+v", observation)
+	}
+	if observation.TraceID != action.TraceID {
+		t.Fatalf("observation trace_id = %q, want %q", observation.TraceID, action.TraceID)
 	}
 	if observation.State["connected"] != false {
 		t.Fatalf("state = %#v", observation.State)

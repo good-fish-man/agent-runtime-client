@@ -16,6 +16,17 @@ import (
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
 )
 
+func protocolTestAction(taskID, actionID, capability string) entity.Action {
+	now := time.Now().UTC()
+	stepID := "step-" + actionID
+	return entity.Action{
+		Protocol: entity.Protocol, Type: entity.TypeAction, TaskID: taskID, StepID: stepID, ActionID: actionID,
+		Sequence: 1, Revision: 1, IdempotencyKey: taskID + ":" + stepID + ":" + actionID,
+		IssuedAt: now, Deadline: now.Add(5 * time.Second), Capability: capability,
+		Policy: entity.Policy{Risk: entity.RiskLow, Decision: entity.Allow},
+	}
+}
+
 func TestDeviceWebSocketActionObservationRoundTrip(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	hub := service.NewHub()
@@ -51,12 +62,7 @@ func TestDeviceWebSocketActionObservationRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	action := entity.Action{
-		Protocol: entity.Protocol, Type: entity.TypeAction,
-		TaskID: "task-1", ActionID: "action-1", Sequence: 1,
-		IdempotencyKey: "task-1:action-1", Capability: "browser.open",
-		Deadline: time.Now().Add(5 * time.Second), Policy: entity.Policy{Risk: entity.RiskLow, Decision: entity.Allow},
-	}
+	action := protocolTestAction("task-1", "action-1", "browser.open")
 	observationChannel := make(chan *entity.Observation, 1)
 	errorChannel := make(chan error, 1)
 	go func() {
@@ -76,8 +82,9 @@ func TestDeviceWebSocketActionObservationRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected action: %#v", received)
 	}
 	if err := websocket.JSON.Send(socket, entity.Observation{
-		Protocol: entity.Protocol, Type: entity.TypeObservation, TaskID: action.TaskID,
-		ActionID: action.ActionID, Sequence: action.Sequence, Status: "SUCCEEDED",
+		Protocol: entity.Protocol, Type: entity.TypeObservation, ObservationID: entity.NewID("observation"),
+		TaskID: action.TaskID, StepID: action.StepID, ActionID: action.ActionID,
+		Sequence: action.Sequence, Revision: action.Revision, Status: "SUCCEEDED",
 		ObservedAt: time.Now().UTC(), State: map[string]any{"url": "https://youtube.com"},
 	}); err != nil {
 		t.Fatal(err)
@@ -130,12 +137,8 @@ func TestDeviceWebSocketAcceptsProgressBeforeObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	action := entity.Action{
-		Protocol: entity.Protocol, Type: entity.TypeAction,
-		TaskID: "task-1", ActionID: "action-1", Sequence: 1,
-		IdempotencyKey: "task-1:action-1", Capability: "browser.download",
-		Deadline: time.Now().Add(5 * time.Second), Policy: entity.Policy{Risk: entity.RiskMedium, Decision: entity.Allow},
-	}
+	action := protocolTestAction("task-1", "action-1", "browser.download")
+	action.Policy.Risk = entity.RiskMedium
 	progressChannel := make(chan entity.Progress, 1)
 	observationChannel := make(chan *entity.Observation, 1)
 	errorChannel := make(chan error, 1)
@@ -156,8 +159,8 @@ func TestDeviceWebSocketAcceptsProgressBeforeObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := websocket.JSON.Send(socket, entity.Progress{
-		Protocol: entity.Protocol, Type: entity.TypeProgress, TaskID: action.TaskID,
-		ActionID: action.ActionID, Sequence: action.Sequence, Stage: "downloading", Progress: 55,
+		Protocol: entity.Protocol, Type: entity.TypeProgress, TaskID: action.TaskID, StepID: action.StepID,
+		ActionID: action.ActionID, Sequence: action.Sequence, Revision: action.Revision, Stage: "downloading", Progress: 55,
 		SentAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
@@ -175,8 +178,9 @@ func TestDeviceWebSocketAcceptsProgressBeforeObservation(t *testing.T) {
 		t.Fatal("timed out waiting for progress")
 	}
 	if err := websocket.JSON.Send(socket, entity.Observation{
-		Protocol: entity.Protocol, Type: entity.TypeObservation, TaskID: action.TaskID,
-		ActionID: action.ActionID, Sequence: action.Sequence, Status: "SUCCEEDED",
+		Protocol: entity.Protocol, Type: entity.TypeObservation, ObservationID: entity.NewID("observation"),
+		TaskID: action.TaskID, StepID: action.StepID, ActionID: action.ActionID,
+		Sequence: action.Sequence, Revision: action.Revision, Status: "SUCCEEDED",
 		ObservedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)

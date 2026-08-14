@@ -291,9 +291,11 @@ func (s *RuntimeService) runControlStep(ctx context.Context, taskID string, sequ
 		}
 		if ok {
 			action.TaskID, action.Sequence = taskID, sequence
-			action.IdempotencyKey = taskID + ":" + action.ActionID
+			action.TraceID = traceID(ctx)
+			action.Revision = 1
+			action.IdempotencyKey = taskID + ":" + action.StepID + ":" + action.ActionID
 			pending = &action
-			return emit(&entity.StreamEvent{Seq: event.Seq, EmittedAt: event.EmittedAt, TraceID: event.TraceID, Type: entity.StreamTypeAction, Action: &action})
+			return nil
 		}
 		if pending != nil && event != nil && event.Type == entity.StreamTypeDone {
 			return nil
@@ -311,7 +313,7 @@ func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDev
 		return nil, apierror.ErrRuntimeUnavailable.WithMessage("desktop control plane is unavailable")
 	}
 	userID := authctx.UserID(ctx)
-	deviceID, err := s.controlHub.ResolveDevice(ctx, userID, requestedDevice, action.Capability)
+	deviceID, capabilityInstanceID, err := s.controlHub.ResolveCapability(ctx, userID, requestedDevice, action.Capability, action.CapabilityInstanceID)
 	if err != nil {
 		diagnostics := s.controlHub.Diagnostics(userID, action.Capability)
 		log.WarnwCtx(ctx, "desktop control device resolution failed",
@@ -353,6 +355,19 @@ func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDev
 	}
 	if err := s.controlHub.BeginTask(ctx, taskID, userID, conversationID, deviceID); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.beginControlTask")
+	}
+	if task, ok, taskErr := s.controlHub.Task(ctx, taskID); taskErr != nil {
+		return nil, log.WrapError(taskErr, "RuntimeService.loadControlTaskRevision")
+	} else if ok {
+		action.Revision = task.Revision
+	}
+	action.DeviceID = deviceID
+	action.CapabilityInstanceID = capabilityInstanceID
+	if action.Policy.Decision == controlentity.AskUser && action.Policy.ApprovalID == "" {
+		action.Policy.ApprovalID = controlentity.NewID("approval")
+	}
+	if err := emitControlAction(ctx, emit, action); err != nil {
+		return nil, err
 	}
 	observation, err := s.controlHub.Dispatch(ctx, deviceID, *action, func(progress controlentity.Progress) error {
 		return emitControlProgress(ctx, emit, &progress)
@@ -416,15 +431,18 @@ func failedControlObservation(action *controlentity.Action, message string, stat
 	if action == nil {
 		return &controlentity.Observation{
 			Protocol: controlentity.Protocol, Type: controlentity.TypeObservation,
-			Status: controlentity.ObservationFailed, ObservedAt: time.Now().UTC(),
-			State: state, Error: message,
+			ObservationID: controlentity.NewID("observation"), Revision: 1,
+			Status: controlentity.ObservationFailed, FinishedAt: time.Now().UTC(), ObservedAt: time.Now().UTC(),
+			State: state, Error: message, ErrorDetail: &controlentity.ErrorDetail{Code: "CONTROL_ACTION_FAILED", Message: message},
 		}
 	}
 	return &controlentity.Observation{
 		Protocol: controlentity.Protocol, Type: controlentity.TypeObservation,
-		TaskID: action.TaskID, ActionID: action.ActionID, SessionID: action.SessionID,
-		Sequence: action.Sequence, Status: controlentity.ObservationFailed, ObservedAt: time.Now().UTC(),
-		State: state, Error: message,
+		ObservationID: controlentity.NewID("observation"), TaskID: action.TaskID, StepID: action.StepID,
+		ActionID: action.ActionID, TraceID: action.TraceID, DeviceID: action.DeviceID, SessionID: action.SessionID,
+		Sequence: action.Sequence, Revision: action.Revision, Status: controlentity.ObservationFailed,
+		FinishedAt: time.Now().UTC(), ObservedAt: time.Now().UTC(), State: state, Error: message,
+		ErrorDetail: &controlentity.ErrorDetail{Code: "CONTROL_ACTION_FAILED", Message: message},
 	}
 }
 
@@ -434,6 +452,13 @@ func emitControlObservation(ctx context.Context, emit StreamFunc, observation *c
 	}
 	safe := observation.WithoutAttachmentData()
 	return emit(&entity.StreamEvent{EmittedAt: time.Now().UTC(), TraceID: traceID(ctx), Type: entity.StreamTypeObservation, Observation: &safe})
+}
+
+func emitControlAction(ctx context.Context, emit StreamFunc, action *controlentity.Action) error {
+	if action == nil {
+		return nil
+	}
+	return emit(&entity.StreamEvent{EmittedAt: time.Now().UTC(), TraceID: traceID(ctx), Type: entity.StreamTypeAction, Action: action})
 }
 
 func emitControlProgress(ctx context.Context, emit StreamFunc, progress *controlentity.Progress) error {
