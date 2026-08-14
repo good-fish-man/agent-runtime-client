@@ -24,6 +24,7 @@ import (
 	memorypo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/memory"
 	modelpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/model"
 	orchestrationpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/orchestration"
+	pluginpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/plugin"
 	runtimepo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/runtime"
 	scheduledtaskpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/scheduledtask"
 	skillpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/skill"
@@ -119,6 +120,7 @@ func InitTables(ctx context.Context, d *data.Data) error {
 		&orchestrationpo.SpecialistRun{},
 		&orchestrationpo.GoalCheckpoint{},
 		&orchestrationpo.ScheduleTrigger{},
+		&pluginpo.Provider{},
 		&memorypo.AgentMemory{},
 		&jobpo.JobExecutionPO{},
 		&runtimepo.MediaGenerationJob{},

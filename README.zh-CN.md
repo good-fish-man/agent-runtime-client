@@ -27,6 +27,7 @@ Agent Runtime Client 是 Athena 的控制面和公共 HTTP API。它负责用户
 - 带源码位置的错误链，并只在 HTTP 边界集中输出一次。
 - 面向桌面设备的 WebSocket Action/Observation 控制面与能力协商（[协议文档](docs/action-observation-protocol.md)）。
 - 经过脱敏的任务经验、用户级保留/删除控制、失败分类与确定性离线评测（[架构文档](docs/experience-evaluation.zh-CN.md)）。
+- 私有签名 Capability Provider Registry，支持不可变版本、公共发布评审门禁、撤销、Runtime 重载和调用审计。
 
 ## 系统架构
 
@@ -142,6 +143,7 @@ Runtime 执行接口位于根路径：
 | `/scheduled-task` | 用户隔离的持久化监控任务、执行记录与结果复核 |
 | `/goals` | 有界长期 Goal、Specialist 任务、Checkpoint、暂停与恢复 |
 | `/experience`、`/evaluation` | 脱敏历史证据、保留控制与离线回归套件 |
+| `/plugins` | 签名 Provider 安装/列表、评审、启用/停用/撤销、Runtime 重载和调用审计 |
 | `/memory` | 用户/Agent 长期记忆 |
 | `/skill` | 内置/自定义 Skill 管理与 ZIP 上传 |
 | `/knowledge_base` | 检索配置与召回测试 |
@@ -176,6 +178,12 @@ paths:
   app_config_file: ""
   skills_config_file: ""
   uploads_dir: ""
+
+plugins:
+  directory: ""
+  registry_path: ""
+  trust_store_path: ""
+  audit_path: ""
 ```
 
 常用环境变量：
@@ -193,11 +201,21 @@ paths:
 | `ARC_ORCHESTRATION_MAX_CONCURRENT_RUNS` | 全局 Specialist 并发上限，默认 `2` |
 | `ATHENA_INTERNAL_SERVICE_TOKEN` | 内部定时任务接口校验的本机共享令牌 |
 | `ATHENA_DEVICE_TOKEN` | 桌面 Action/Observation WebSocket 使用的 Bearer Token |
+| `ATHENA_PLUGINS_DIR` | 不可变签名 Provider 包目录 |
+| `ATHENA_PLUGIN_REGISTRY_PATH`、`ATHENA_PLUGIN_TRUST_STORE_PATH`、`ATHENA_PLUGIN_AUDIT_PATH` | 共享 Registry、信任库和 Runtime 调用审计路径 |
 
 `db_host` 和 `db_name` 都不为空时启用数据库。模型供应商密钥应保存到模型 Key 表，不应提交到源码或在公共 API 中返回。
 
 执行、恢复、安全边界与回滚说明见
 [持久化 Goal 与 Supervisor v0.7](docs/durable-goals-v0.7.zh-CN.md)。
+
+### Provider 治理
+
+管理员通过 `POST /plugins/install` 提交精确的 `plugin.json`、
+`SIGNATURE` 和 `SBOM`，已安装版本不可原地覆盖。私有 Provider 在签名
+与 Schema 校验通过后可以启用；公共 Provider 必须先通过安全扫描并完成人工
+审批。某个版本一旦撤销便不能重新启用。状态变更使用乐观 Revision，避免多个
+管理员静默覆盖；只有显式重载后，Runtime 的 Capability 集合才会变化。
 
 ## 开发
 

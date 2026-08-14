@@ -25,6 +25,13 @@ orchestration:
   scan_interval_sec: 3
   max_concurrent_runs: 2
 
+plugins:
+  # Signed, immutable Capability Provider packages. Empty values use ~/.athena/plugins.
+  directory: ""
+  registry_path: ""
+  trust_store_path: ""
+  audit_path: ""
+
 log:
   level: "debug"
 

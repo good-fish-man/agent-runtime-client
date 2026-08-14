@@ -26,6 +26,14 @@ type Config struct {
 	Control       ControlConfig       `yaml:"control"`
 	ScheduledTask ScheduledTaskConfig `yaml:"scheduled_task"`
 	Orchestration OrchestrationConfig `yaml:"orchestration"`
+	Plugins       PluginsConfig       `yaml:"plugins"`
+}
+
+type PluginsConfig struct {
+	Directory      string `yaml:"directory"`
+	RegistryPath   string `yaml:"registry_path"`
+	TrustStorePath string `yaml:"trust_store_path"`
+	AuditPath      string `yaml:"audit_path"`
 }
 
 type ControlConfig struct {
@@ -103,6 +111,7 @@ type ModelConfig struct {
 
 // Default returns a Config with sane defaults.
 func Default() *Config {
+	pluginRoot := defaultPluginRoot()
 	return &Config{
 		Server: ServerConfig{
 			Name:         consts.ServiceName,
@@ -128,7 +137,19 @@ func Default() *Config {
 		},
 		ScheduledTask: ScheduledTaskConfig{ScanIntervalSec: consts.DefaultScheduledTaskScanIntervalSec},
 		Orchestration: OrchestrationConfig{Enabled: true, ScanIntervalSec: consts.DefaultOrchestrationScanIntervalSec, MaxConcurrentRuns: consts.DefaultOrchestrationConcurrency},
+		Plugins: PluginsConfig{
+			Directory: filepath.Join(pluginRoot, "packages"), RegistryPath: filepath.Join(pluginRoot, "registry.json"),
+			TrustStorePath: filepath.Join(pluginRoot, "trust-store.json"), AuditPath: filepath.Join(pluginRoot, "logs", "invocations.jsonl"),
+		},
 	}
+}
+
+func defaultPluginRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return filepath.Clean(".athena/plugins")
+	}
+	return filepath.Join(home, ".athena", "plugins")
 }
 
 // Load reads config from path (falling back to $ARC_CONFIG_PATH, then defaults)
@@ -167,6 +188,18 @@ func ResolvePath(path string) string {
 }
 
 func applyEnvOverrides(cfg *Config) {
+	if v := os.Getenv("ATHENA_PLUGINS_DIR"); v != "" {
+		cfg.Plugins.Directory = v
+	}
+	if v := os.Getenv("ATHENA_PLUGIN_REGISTRY_PATH"); v != "" {
+		cfg.Plugins.RegistryPath = v
+	}
+	if v := os.Getenv("ATHENA_PLUGIN_TRUST_STORE_PATH"); v != "" {
+		cfg.Plugins.TrustStorePath = v
+	}
+	if v := os.Getenv("ATHENA_PLUGIN_AUDIT_PATH"); v != "" {
+		cfg.Plugins.AuditPath = v
+	}
 	if v := os.Getenv("ATHENA_DEVICE_TOKEN"); v != "" {
 		cfg.Control.DeviceToken = v
 	}
@@ -267,5 +300,18 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if cfg.Orchestration.MaxConcurrentRuns <= 0 {
 		cfg.Orchestration.MaxConcurrentRuns = consts.DefaultOrchestrationConcurrency
+	}
+	defaults := Default().Plugins
+	if strings.TrimSpace(cfg.Plugins.Directory) == "" {
+		cfg.Plugins.Directory = defaults.Directory
+	}
+	if strings.TrimSpace(cfg.Plugins.RegistryPath) == "" {
+		cfg.Plugins.RegistryPath = defaults.RegistryPath
+	}
+	if strings.TrimSpace(cfg.Plugins.TrustStorePath) == "" {
+		cfg.Plugins.TrustStorePath = defaults.TrustStorePath
+	}
+	if strings.TrimSpace(cfg.Plugins.AuditPath) == "" {
+		cfg.Plugins.AuditPath = defaults.AuditPath
 	}
 }

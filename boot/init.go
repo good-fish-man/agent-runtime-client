@@ -16,6 +16,7 @@ import (
 	deploymenthandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/deployment"
 	knowledgehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge"
 	orchestrationhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/orchestration"
+	pluginregistryhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/pluginregistry"
 	handler "github.com/good-fish-man/agent-runtime-client/api/http/handler/runtime"
 	"github.com/good-fish-man/agent-runtime-client/api/http/middleware"
 	"github.com/good-fish-man/agent-runtime-client/api/http/router/public"
@@ -25,6 +26,7 @@ import (
 	knowledgesvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge"
 	learningsvc "github.com/good-fish-man/agent-runtime-client/application/service/learning"
 	orchestrationsvc "github.com/good-fish-man/agent-runtime-client/application/service/orchestration"
+	pluginregistrysvc "github.com/good-fish-man/agent-runtime-client/application/service/pluginregistry"
 	appsvc "github.com/good-fish-man/agent-runtime-client/application/service/runtime"
 	"github.com/good-fish-man/agent-runtime-client/config"
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
@@ -220,6 +222,7 @@ func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *a
 		pub.Deployment = deploymenthandler.NewHandler(deploymentService)
 		pub.Knowledge = knowledgehandler.NewHandler(knowledgeService)
 		pub.Orchestration = orchestrationhandler.NewHandler(orchestrationService)
+		pub.PluginRegistry = pluginregistryhandler.NewHandler(pluginregistrysvc.NewService(store, cfg.Plugins).WithRuntime(cfg.Runtime.HTTPAddr))
 		pub.BrowserCredential = browsercredentialhandler.NewHandler(browsercredentialsvc.NewService(store))
 		scheduledService := scheduledtasksvc.NewService(store, runtimeService, time.Duration(cfg.ScheduledTask.ScanIntervalSec)*time.Second).WithControlPlane(controlHub, orchestrationService)
 		scheduledService.Start(context.Background())

@@ -43,6 +43,7 @@ var (
 	ErrUnauthorized         = New(401, 401001000, "unauthorized")
 	ErrForbidden            = New(403, 403001000, "forbidden")
 	ErrNotFound             = New(404, 404001000, "not found")
+	ErrConflict             = New(409, 409001000, "conflict")
 	ErrTimeout              = New(504, 504001000, "request timed out")
 	ErrUpstream             = New(502, 502001000, "upstream error")
 	ErrRuntimeUnavailable   = New(503, 503001000, "agent-runtime unavailable")

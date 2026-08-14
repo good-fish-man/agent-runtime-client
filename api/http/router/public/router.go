@@ -26,6 +26,7 @@ import (
 	memoryh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/memory"
 	modelh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
 	orchestrationh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/orchestration"
+	pluginregistryh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/pluginregistry"
 	scheduledtaskh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/scheduledtask"
 	skillh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/skill"
 	userh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/user"
@@ -56,6 +57,7 @@ type Handlers struct {
 	Experience        *experienceh.Handler
 	Learning          *learningh.Handler
 	Orchestration     *orchestrationh.Handler
+	PluginRegistry    *pluginregistryh.Handler
 	Weixin            *weixinh.Handler
 	Job               *jobh.Handler
 	Workspace         *workspaceh.Handler
@@ -218,6 +220,16 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		r.PUT("/experiment", h.Deployment.SetOptOut)
 		r.GET("/manifests", h.Deployment.ListManifests)
 		r.GET("/rollbacks", h.Deployment.ListRollbacks)
+	}
+
+	if h.PluginRegistry != nil {
+		r := g.Group("/plugins")
+		r.GET("", h.PluginRegistry.List)
+		r.GET("/audit", h.PluginRegistry.Audit)
+		r.POST("/reload", h.PluginRegistry.Reload)
+		r.POST("/install", h.PluginRegistry.Install)
+		r.PUT("/:provider/:version/status", h.PluginRegistry.Transition)
+		r.PUT("/:provider/:version/review", h.PluginRegistry.Review)
 	}
 
 	if h.Knowledge != nil {

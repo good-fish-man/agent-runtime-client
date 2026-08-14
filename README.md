@@ -27,6 +27,8 @@ The authenticated dashboard is backed by this service's agent, task, token, appr
 - Source-aware error chains logged once at the HTTP boundary.
 - WebSocket Action/Observation control plane for capability-aware desktop devices ([protocol](docs/action-observation-protocol.md)).
 - Sanitized task Experience, per-user retention/deletion controls, failure taxonomy, and deterministic offline evaluation ([architecture](docs/experience-evaluation.md)).
+- Private signed Capability Provider Registry with immutable versions, public
+  review gates, revocation, Runtime reload, and invocation audit inspection.
 
 ## System Architecture
 
@@ -142,6 +144,7 @@ Management routes are mounted under `server.public_prefix`:
 | `/scheduled-task` | Durable user-owned monitoring tasks, execution history, and result review |
 | `/goals` | Bounded long-running goals, specialist tasks, checkpoints, pause, and resume |
 | `/experience`, `/evaluation` | Sanitized historical evidence, retention controls, and offline regression suites |
+| `/plugins` | Signed Provider install/list, review, activate/disable/revoke, Runtime reload, and invocation audit |
 | `/memory` | User/agent long-term memory |
 | `/skill` | Built-in/custom skill management and ZIP upload |
 | `/knowledge_base` | Retrieval configuration and recall testing |
@@ -176,6 +179,12 @@ paths:
   app_config_file: ""
   skills_config_file: ""
   uploads_dir: ""
+
+plugins:
+  directory: ""
+  registry_path: ""
+  trust_store_path: ""
+  audit_path: ""
 ```
 
 Important environment overrides:
@@ -193,11 +202,23 @@ Important environment overrides:
 | `ARC_ORCHESTRATION_MAX_CONCURRENT_RUNS` | Global concurrent specialist limit, default `2` |
 | `ATHENA_INTERNAL_SERVICE_TOKEN` | Shared local token accepted by the internal scheduled-task endpoint |
 | `ATHENA_DEVICE_TOKEN` | Bearer token accepted by the desktop Action/Observation WebSocket |
+| `ATHENA_PLUGINS_DIR` | Immutable signed Provider package root |
+| `ATHENA_PLUGIN_REGISTRY_PATH`, `ATHENA_PLUGIN_TRUST_STORE_PATH`, `ATHENA_PLUGIN_AUDIT_PATH` | Shared Registry, trust store, and Runtime invocation audit |
 
 The database is enabled when both `db_host` and `db_name` are non-empty. Keep model provider secrets in model-key records, not in source control or public API responses.
 
 See [Durable Goals and Supervisor v0.7](docs/durable-goals-v0.7.md) for the
 execution, recovery, safety, and rollback model.
+
+### Provider governance
+
+An administrator installs the exact `plugin.json`, `SIGNATURE`, and `SBOM`
+documents through `POST /plugins/install`. Versions are immutable. Private
+Providers may be activated after signature and schema verification; public
+Providers remain disabled until their scan is `PASSED` and human review is
+`APPROVED`. Revocation is terminal for that version. Status transitions use
+optimistic revisions so two administrators cannot silently overwrite each
+other. Runtime capabilities change only after the explicit reload operation.
 
 ## Development
 
