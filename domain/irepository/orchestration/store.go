@@ -9,6 +9,7 @@ import (
 type Store interface {
 	CreateGoal(context.Context, entity.PersistentGoal, entity.GoalCheckpoint) error
 	CreatePlannedGoal(context.Context, entity.PersistentGoal, []entity.SpecialistTask, entity.GoalCheckpoint) error
+	CreateScheduledGoal(context.Context, entity.PersistentGoal, []entity.SpecialistTask, entity.GoalCheckpoint, entity.ScheduleTrigger) error
 	FindGoal(context.Context, string, string) (*entity.PersistentGoal, error)
 	ListGoals(context.Context, string, entity.GoalFilter) ([]entity.PersistentGoal, error)
 	ListRunnableGoals(context.Context, int) ([]entity.PersistentGoal, error)
@@ -19,4 +20,6 @@ type Store interface {
 	SaveState(context.Context, entity.PersistentGoal, []entity.SpecialistTask, *entity.SpecialistResult, entity.GoalCheckpoint, int64) error
 	CreateScheduleTrigger(context.Context, string, entity.ScheduleTrigger) error
 	UpdateScheduleTrigger(context.Context, string, entity.ScheduleTrigger) error
+	FindScheduleTriggerByKey(context.Context, string, string) (*entity.ScheduleTrigger, error)
+	ListScheduleTriggers(context.Context, string, string, int) ([]entity.ScheduleTrigger, error)
 }

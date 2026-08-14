@@ -63,6 +63,15 @@ func (h *Handler) ListGoals(c *gin.Context) {
 	response.Ok(c, gin.H{"items": items})
 }
 
+func (h *Handler) ListScheduleTriggers(c *gin.Context) {
+	items, err := h.service.ListScheduleTriggers(c.Request.Context(), userID(c), strings.TrimSpace(c.Query("schedule_id")), queryInt(c, "limit", 100))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, gin.H{"items": items})
+}
+
 func (h *Handler) GetGoal(c *gin.Context) {
 	value, err := h.service.GetGoal(c.Request.Context(), userID(c), c.Param("id"))
 	if err != nil {

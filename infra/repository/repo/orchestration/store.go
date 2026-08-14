@@ -13,6 +13,7 @@ import (
 	repository "github.com/good-fish-man/agent-runtime-client/domain/irepository/orchestration"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/orchestration"
+	orchestrationv1 "github.com/good-fish-man/athena-protocol/protocol/orchestration/v1"
 	log "github.com/good-fish-man/logx"
 )
 
@@ -65,6 +66,39 @@ func (s *Store) CreatePlannedGoal(ctx context.Context, goal entity.PersistentGoa
 		}
 		return tx.Create(&checkpointValue).Error
 	}), "OrchestrationStore.CreatePlannedGoal")
+}
+
+func (s *Store) CreateScheduledGoal(ctx context.Context, goal entity.PersistentGoal, tasks []entity.SpecialistTask, checkpoint entity.GoalCheckpoint, trigger entity.ScheduleTrigger) error {
+	goalValue, err := goalRow(goal)
+	if err != nil {
+		return err
+	}
+	checkpointValue, err := checkpointRow(checkpoint)
+	if err != nil {
+		return err
+	}
+	triggerValue, err := scheduleTriggerRow(trigger)
+	if err != nil {
+		return err
+	}
+	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&goalValue).Error; err != nil {
+			return err
+		}
+		for _, task := range tasks {
+			row, rowErr := taskRow(goal.OwnerID, task)
+			if rowErr != nil {
+				return rowErr
+			}
+			if err := tx.Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Create(&checkpointValue).Error; err != nil {
+			return err
+		}
+		return tx.Create(&triggerValue).Error
+	}), "OrchestrationStore.CreateScheduledGoal")
 }
 
 func (s *Store) FindGoal(ctx context.Context, ownerID, goalID string) (*entity.PersistentGoal, error) {
@@ -172,16 +206,23 @@ func (s *Store) SaveState(ctx context.Context, goal entity.PersistentGoal, tasks
 				return err
 			}
 		}
+		if goal.Trigger.Type == orchestrationv1.TriggerSchedule {
+			if err := updateScheduleTriggerState(tx, goal, tasks, result); err != nil {
+				return err
+			}
+		}
 		return tx.Create(&checkpointValue).Error
 	}), "OrchestrationStore.SaveState")
 }
 
 func (s *Store) CreateScheduleTrigger(ctx context.Context, ownerID string, value entity.ScheduleTrigger) error {
-	content, err := encode(value)
+	if value.OwnerID == "" {
+		value.OwnerID = ownerID
+	}
+	row, err := scheduleTriggerRow(value)
 	if err != nil {
 		return err
 	}
-	row := po.ScheduleTrigger{TriggerID: value.TriggerID, ScheduleID: value.ScheduleID, TaskID: value.TaskID, OwnerID: ownerID, Status: value.Status, ScheduledAt: millis(value.ScheduledAt), Content: content}
 	return log.WrapError(s.data.DB(ctx).Create(&row).Error, "OrchestrationStore.CreateScheduleTrigger")
 }
 
@@ -190,7 +231,7 @@ func (s *Store) UpdateScheduleTrigger(ctx context.Context, ownerID string, value
 	if err != nil {
 		return err
 	}
-	result := s.data.DB(ctx).Model(&po.ScheduleTrigger{}).Where("trigger_id = ? AND owner_id = ?", value.TriggerID, ownerID).Updates(map[string]any{"status": value.Status, "content": content})
+	result := s.data.DB(ctx).Model(&po.ScheduleTrigger{}).Where("trigger_id = ? AND owner_id = ?", value.TriggerID, ownerID).Updates(map[string]any{"status": value.Status, "updated_at": millis(value.UpdatedAt), "content": content})
 	if result.Error != nil {
 		return log.WrapError(result.Error, "OrchestrationStore.UpdateScheduleTrigger")
 	}
@@ -198,6 +239,30 @@ func (s *Store) UpdateScheduleTrigger(ctx context.Context, ownerID string, value
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+func (s *Store) FindScheduleTriggerByKey(ctx context.Context, ownerID, key string) (*entity.ScheduleTrigger, error) {
+	var row po.ScheduleTrigger
+	result := s.data.DB(ctx).Where("owner_id = ? AND idempotency_key = ?", ownerID, key).Limit(1).Find(&row)
+	if result.Error != nil {
+		return nil, log.WrapError(result.Error, "OrchestrationStore.FindScheduleTriggerByKey")
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil
+	}
+	return decode[entity.ScheduleTrigger](row.Content, "OrchestrationStore.FindScheduleTriggerByKey.decode")
+}
+
+func (s *Store) ListScheduleTriggers(ctx context.Context, ownerID, scheduleID string, limit int) ([]entity.ScheduleTrigger, error) {
+	db := s.data.DB(ctx).Where("owner_id = ?", ownerID)
+	if scheduleID != "" {
+		db = db.Where("schedule_id = ?", scheduleID)
+	}
+	var rows []po.ScheduleTrigger
+	if err := db.Order("scheduled_at DESC").Limit(normalizeLimit(limit, 200)).Find(&rows).Error; err != nil {
+		return nil, log.WrapError(err, "OrchestrationStore.ListScheduleTriggers")
+	}
+	return decodeRows[entity.ScheduleTrigger](rows, func(row po.ScheduleTrigger) string { return row.Content }, "OrchestrationStore.ListScheduleTriggers.decode")
 }
 
 func goalRow(value entity.PersistentGoal) (po.Goal, error) {
@@ -222,6 +287,76 @@ func checkpointRow(value entity.GoalCheckpoint) (po.GoalCheckpoint, error) {
 		return po.GoalCheckpoint{}, err
 	}
 	return po.GoalCheckpoint{CheckpointID: value.CheckpointID, GoalID: value.GoalID, OwnerID: value.OwnerID, Sequence: value.Sequence, Status: value.Status, Checksum: value.Checksum, Content: content, CreatedAt: millis(value.CreatedAt)}, nil
+}
+
+func scheduleTriggerRow(value entity.ScheduleTrigger) (po.ScheduleTrigger, error) {
+	content, err := encode(value)
+	if err != nil {
+		return po.ScheduleTrigger{}, err
+	}
+	return po.ScheduleTrigger{TriggerID: value.TriggerID, ScheduleID: value.ScheduleID, GoalID: value.GoalID, TaskID: value.TaskID, OwnerID: value.OwnerID, IdempotencyKey: value.IdempotencyKey, Status: value.Status, ScheduledAt: millis(value.ScheduledAt), UpdatedAt: millis(value.UpdatedAt), Content: content}, nil
+}
+
+func updateScheduleTriggerState(tx *gorm.DB, goal entity.PersistentGoal, tasks []entity.SpecialistTask, result *entity.SpecialistResult) error {
+	var row po.ScheduleTrigger
+	query := tx.Where("trigger_id = ? AND owner_id = ?", goal.Trigger.TriggerID, goal.OwnerID).Limit(1).Find(&row)
+	if query.Error != nil {
+		return query.Error
+	}
+	if query.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	trigger, err := decode[entity.ScheduleTrigger](row.Content, "OrchestrationStore.updateScheduleTriggerState.decode")
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, task := range tasks {
+		if task.TaskID != trigger.TaskID {
+			continue
+		}
+		trigger.Attempt = task.Attempt
+		switch task.Status {
+		case orchestrationv1.TaskPending, orchestrationv1.TaskReady:
+			trigger.Status = orchestrationv1.ScheduleTriggerQueued
+		case orchestrationv1.TaskRunning:
+			trigger.Status = orchestrationv1.ScheduleTriggerRunning
+			if trigger.StartedAt.IsZero() {
+				trigger.StartedAt = now
+			}
+		case orchestrationv1.TaskWaitingDevice:
+			trigger.Status = orchestrationv1.ScheduleTriggerWaitingDevice
+		case orchestrationv1.TaskWaitingUser:
+			trigger.Status = orchestrationv1.ScheduleTriggerWaitingUser
+		case orchestrationv1.TaskCompleted:
+			trigger.Status, trigger.FinishedAt = orchestrationv1.ScheduleTriggerCompleted, now
+		case orchestrationv1.TaskFailed:
+			trigger.Status, trigger.FinishedAt = orchestrationv1.ScheduleTriggerFailed, now
+		}
+		break
+	}
+	switch goal.Status {
+	case orchestrationv1.GoalCompleted:
+		trigger.Status, trigger.FinishedAt = orchestrationv1.ScheduleTriggerCompleted, now
+	case orchestrationv1.GoalWaitingUser, orchestrationv1.GoalPaused:
+		trigger.Status, trigger.FinishedAt = orchestrationv1.ScheduleTriggerWaitingUser, time.Time{}
+	case orchestrationv1.GoalCancelled:
+		trigger.Status, trigger.FinishedAt = orchestrationv1.ScheduleTriggerCancelled, now
+	case orchestrationv1.GoalFailed:
+		trigger.Status, trigger.FinishedAt = orchestrationv1.ScheduleTriggerFailed, now
+	}
+	if result != nil {
+		trigger.RunID, trigger.Summary = result.RunID, result.Summary
+		if result.Status == orchestrationv1.TaskFailed {
+			trigger.Error = result.Summary
+		}
+	}
+	trigger.UpdatedAt = now
+	content, err := encode(*trigger)
+	if err != nil {
+		return err
+	}
+	return tx.Model(&po.ScheduleTrigger{}).Where("trigger_id = ? AND owner_id = ?", trigger.TriggerID, goal.OwnerID).Updates(map[string]any{"status": trigger.Status, "updated_at": millis(trigger.UpdatedAt), "content": content}).Error
 }
 
 func encode(value any) (string, error) {

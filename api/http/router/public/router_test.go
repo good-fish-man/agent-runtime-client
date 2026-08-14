@@ -138,6 +138,7 @@ func TestRegisterNoConflicts(t *testing.T) {
 		"POST " + prefix + "/goals",
 		"POST " + prefix + "/internal/goals",
 		"GET " + prefix + "/goals",
+		"GET " + prefix + "/goals/schedule-triggers",
 		"GET " + prefix + "/goals/:id",
 		"POST " + prefix + "/goals/:id/plan",
 		"POST " + prefix + "/goals/:id/tasks/:taskID/start",

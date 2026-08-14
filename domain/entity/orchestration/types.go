@@ -9,6 +9,7 @@ type GoalBudget = orchestrationv1.GoalBudget
 type BudgetUsage = orchestrationv1.BudgetUsage
 type SuccessCriterion = orchestrationv1.SuccessCriterion
 type ApprovalPolicy = orchestrationv1.ApprovalPolicy
+type GoalTrigger = orchestrationv1.GoalTrigger
 type TaskBudget = orchestrationv1.TaskBudget
 type SpecialistTask = orchestrationv1.SpecialistTask
 type TaskGraph = orchestrationv1.TaskGraph

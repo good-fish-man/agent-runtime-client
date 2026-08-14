@@ -166,6 +166,21 @@ func TestAttachControlDeploymentProvenanceRequiresCompletePair(t *testing.T) {
 	}
 }
 
+func TestPersistentGoalActionIdempotencySurvivesGeneratedActionIDs(t *testing.T) {
+	values := map[string]any{"idempotency_scope": "goal-1:browser-task"}
+	first := controlentity.Action{ActionID: "model-action-a", StepID: "step-a", Capability: "browser.click", Operation: "click", Target: map[string]any{"semantic_id": "video-2"}, Arguments: map[string]any{"button": "left"}}
+	second := first
+	second.ActionID, second.StepID = "model-action-after-restart", "different-step"
+	firstKey := controlActionIdempotencyKey(values, "execution-a", 2, first)
+	secondKey := controlActionIdempotencyKey(values, "execution-b", 2, second)
+	if firstKey != secondKey {
+		t.Fatalf("same durable effect received different keys: %q != %q", firstKey, secondKey)
+	}
+	if third := controlActionIdempotencyKey(values, "execution-c", 3, second); third == firstKey {
+		t.Fatal("a distinct action occurrence reused an idempotency key")
+	}
+}
+
 func TestDesktopBoundToAnotherUserMessageDoesNotClaimOffline(t *testing.T) {
 	message := desktopBoundToAnotherUserMessage("browser.open", "device-1")
 	for _, want := range []string{"is connected", "bound to another user", "browser.open", "device-1"} {

@@ -271,6 +271,7 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		r := g.Group("/goals")
 		r.POST("", h.Orchestration.CreateGoal)
 		r.GET("", h.Orchestration.ListGoals)
+		r.GET("/schedule-triggers", h.Orchestration.ListScheduleTriggers)
 		r.GET("/:id", h.Orchestration.GetGoal)
 		r.POST("/:id/plan", h.Orchestration.PlanGoal)
 		r.POST("/:id/tasks/:taskID/start", h.Orchestration.StartTask)

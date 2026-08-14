@@ -73,6 +73,12 @@ func (s *Supervisor) Start(parent context.Context) error {
 	if s == nil || s.goals == nil || s.runtime == nil {
 		return fmt.Errorf("orchestration supervisor is not configured")
 	}
+	s.mu.Lock()
+	if s.cancel != nil {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
 	if err := s.goals.RecoverInterruptedGoals(parent); err != nil {
 		return log.WrapError(err, "OrchestrationSupervisor.Start.recover")
 	}
@@ -152,6 +158,9 @@ func (s *Supervisor) dispatchGoal(ctx context.Context, goal orchestrationentity.
 		if task.Status != protocol.TaskReady && task.Status != protocol.TaskWaitingDevice {
 			continue
 		}
+		if !task.NextAttemptAt.IsZero() && time.Now().UTC().Before(task.NextAttemptAt) {
+			continue
+		}
 		if !s.reserve(task.TaskID) {
 			continue
 		}
@@ -224,6 +233,7 @@ func (s *Supervisor) execute(parent context.Context, goal orchestrationentity.Pe
 		"user_id": goal.OwnerID, "agent_id": goal.AgentID, "session_id": goal.ConversationID,
 		"goal_id": goal.GoalID, "task_id": task.TaskID, "specialist": task.Specialist,
 		"persistent_goal_execution": true, "world_slice": world,
+		"execution_id": task.ExecutionID, "idempotency_scope": task.IdempotencyScope,
 		"confirmed_effect_keys": confirmedEffects(s.goals, ctx, goal.OwnerID, goal.GoalID),
 		"goal_budget":           goal.Budget, "task_budget": task.Budget,
 	}
@@ -235,7 +245,7 @@ func (s *Supervisor) execute(parent context.Context, goal orchestrationentity.Pe
 			Stream: true, TimeoutMs: boundedInt32(task.Budget.MaxDurationMS), MaxIterations: 12,
 			MaxToolCalls: boundedInt32(int64(task.Budget.MaxActions)), MaxTotalTokens: boundedInt32(task.Budget.MaxTokens),
 		},
-		RequestID: task.TaskID,
+		RequestID: task.ExecutionID,
 		DeviceID:  task.DeviceID,
 	}
 	capture := newSupervisorCapture()
@@ -251,7 +261,7 @@ func (s *Supervisor) execute(parent context.Context, goal orchestrationentity.Pe
 }
 
 func (s *Supervisor) recordFailure(ctx context.Context, goal orchestrationentity.PersistentGoal, task orchestrationentity.SpecialistTask, revision int64, runErr error) {
-	result := orchestrationentity.SpecialistResult{Status: protocol.TaskFailed, Summary: runErr.Error(), Output: map[string]any{"error": runErr.Error()}, Provenance: orchestrationentity.Provenance{RunManifestID: "not-started", AgentBuildID: "not-started", ModelConfigVersion: "not-started", DeviceID: task.DeviceID, TraceID: fmt.Sprintf("goal-%s-%s-%d", goal.GoalID, task.TaskID, task.Attempt), ProducedAt: time.Now().UTC()}}
+	result := orchestrationentity.SpecialistResult{ExecutionID: task.ExecutionID, Status: protocol.TaskFailed, Summary: runErr.Error(), Output: map[string]any{"error": runErr.Error()}, Provenance: orchestrationentity.Provenance{RunManifestID: "not-started", AgentBuildID: "not-started", ModelConfigVersion: "not-started", DeviceID: task.DeviceID, TraceID: fmt.Sprintf("goal-%s-%s-%d", goal.GoalID, task.TaskID, task.Attempt), ProducedAt: time.Now().UTC()}}
 	_ = s.recordWithRetry(context.WithoutCancel(ctx), goal.OwnerID, goal.GoalID, task.TaskID, revision, result, RecordResultRequest{})
 }
 
@@ -298,6 +308,7 @@ type supervisorCapture struct {
 	confirmedEffects []string
 	pendingApprovals []string
 	evidence         []string
+	observations     []string
 	world            map[string]map[string]any
 	searchQueries    int
 	pages            int
@@ -342,6 +353,9 @@ func (c *supervisorCapture) emit(event *runtimeentity.StreamEvent) error {
 	case runtimeentity.StreamTypeObservation:
 		if event.Observation != nil {
 			c.lastObservation = event.Observation
+			if event.Observation.ObservationID != "" {
+				c.observations = append(c.observations, event.Observation.ObservationID)
+			}
 			if event.Observation.Status == controlentity.ObservationSucceeded {
 				if key := c.actions[event.Observation.ActionID]; key != "" {
 					c.confirmedEffects = append(c.confirmedEffects, key)
@@ -401,7 +415,7 @@ func (c *supervisorCapture) result(goal orchestrationentity.PersistentGoal, task
 	c.evidence = append(c.evidence, resultURLPattern.FindAllString(content, -1)...)
 	criteria := verifiedCriteriaFromContent(content, goal.SuccessCriteria)
 	result := orchestrationentity.SpecialistResult{
-		Status: status, Summary: content, EvidenceRefs: uniqueStrings(c.evidence), Usage: usage,
+		ExecutionID: task.ExecutionID, Status: status, Summary: content, EvidenceRefs: uniqueStrings(c.evidence), ObservationRefs: uniqueStrings(c.observations), ConfirmedEffectKeys: uniqueStrings(c.confirmedEffects), Usage: usage,
 		Output: map[string]any{"content": content, "finish_reason": finishReason},
 		Provenance: orchestrationentity.Provenance{
 			RunManifestID: stringValue(values["run_manifest_id"]), AgentBuildID: stringValue(values["agent_build_id"]),

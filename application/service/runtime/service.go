@@ -239,7 +239,7 @@ func (s *RuntimeService) runControlLoop(ctx context.Context, in *entity.RunInput
 		taskID = traceID(ctx)
 	}
 	for iteration := int64(1); iteration <= maxDeviceActionIterations; iteration++ {
-		pending, err := s.runControlStep(ctx, taskID, iteration, emit, func(wrapped StreamFunc) error {
+		pending, err := s.runControlStep(ctx, taskID, iteration, in.Context, emit, func(wrapped StreamFunc) error {
 			return s.svc.RunStream(ctx, in, wrapped)
 		})
 		if err != nil || pending == nil {
@@ -287,7 +287,7 @@ func (s *RuntimeService) runAgentControlLoop(ctx context.Context, in *entity.Age
 		taskID = traceID(ctx)
 	}
 	for iteration := int64(1); iteration <= maxDeviceActionIterations; iteration++ {
-		pending, err := s.runControlStep(ctx, taskID, iteration, emit, func(wrapped StreamFunc) error { return s.svc.RunAgentStream(ctx, in, wrapped) })
+		pending, err := s.runControlStep(ctx, taskID, iteration, in.Context, emit, func(wrapped StreamFunc) error { return s.svc.RunAgentStream(ctx, in, wrapped) })
 		if err != nil {
 			if s.controlHub != nil {
 				_ = s.controlHub.SetTaskStatus(context.WithoutCancel(ctx), taskID, controlentity.StatusFailed)
@@ -325,7 +325,7 @@ func (s *RuntimeService) runAgentControlLoop(ctx context.Context, in *entity.Age
 	return apierror.ErrInternal.WithMessage("device action iteration limit reached")
 }
 
-func (s *RuntimeService) runControlStep(ctx context.Context, taskID string, sequence int64, emit StreamFunc, run func(StreamFunc) error) (*controlentity.Action, error) {
+func (s *RuntimeService) runControlStep(ctx context.Context, taskID string, sequence int64, values map[string]any, emit StreamFunc, run func(StreamFunc) error) (*controlentity.Action, error) {
 	var pending *controlentity.Action
 	wrapped := func(event *entity.StreamEvent) error {
 		action, ok, parseErr := actionFromStreamEvent(event)
@@ -336,7 +336,7 @@ func (s *RuntimeService) runControlStep(ctx context.Context, taskID string, sequ
 			action.TaskID, action.Sequence = taskID, sequence
 			action.TraceID = traceID(ctx)
 			action.Revision = 1
-			action.IdempotencyKey = taskID + ":" + action.StepID + ":" + action.ActionID
+			action.IdempotencyKey = controlActionIdempotencyKey(values, taskID, sequence, action)
 			pending = &action
 			return nil
 		}
@@ -349,6 +349,26 @@ func (s *RuntimeService) runControlStep(ctx context.Context, taskID string, sequ
 		return nil, err
 	}
 	return pending, nil
+}
+
+func controlActionIdempotencyKey(values map[string]any, taskID string, sequence int64, action controlentity.Action) string {
+	scope := runtimeContextString(values, "idempotency_scope")
+	if scope == "" {
+		return taskID + ":" + action.StepID + ":" + action.ActionID
+	}
+	payload := struct {
+		Sequence   int64          `json:"sequence"`
+		Capability string         `json:"capability"`
+		Operation  string         `json:"operation"`
+		Target     map[string]any `json:"target,omitempty"`
+		Arguments  map[string]any `json:"arguments,omitempty"`
+	}{Sequence: sequence, Capability: action.Capability, Operation: action.Operation, Target: action.Target, Arguments: action.Arguments}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return scope + ":" + fmt.Sprint(sequence)
+	}
+	sum := sha256.Sum256(body)
+	return scope + ":" + hex.EncodeToString(sum[:])
 }
 
 func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDevice, taskID, conversationID, goal string, values map[string]any, action *controlentity.Action, emit StreamFunc) (*controlentity.Observation, error) {

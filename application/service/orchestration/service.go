@@ -33,6 +33,7 @@ type CreateGoalRequest struct {
 	Budget          entity.GoalBudget         `json:"budget"`
 	Deadline        time.Time                 `json:"deadline"`
 	ApprovalPolicy  entity.ApprovalPolicy     `json:"approval_policy"`
+	Trigger         entity.GoalTrigger        `json:"trigger"`
 }
 
 type PlanTaskRequest struct {
@@ -55,6 +56,24 @@ type PlanGoalRequest struct {
 type CreatePlannedGoalRequest struct {
 	CreateGoalRequest
 	Tasks []PlanTaskRequest `json:"tasks"`
+}
+
+type CreateScheduledGoalRequest struct {
+	CreateGoalRequest
+	ScheduleID        string                      `json:"schedule_id"`
+	Slot              string                      `json:"slot"`
+	ScheduledAt       time.Time                   `json:"scheduled_at"`
+	Retry             orchestrationv1.RetryPolicy `json:"retry"`
+	Notify            bool                        `json:"notify"`
+	RequireApproval   bool                        `json:"require_approval"`
+	PendingApprovalID string                      `json:"pending_approval_id,omitempty"`
+	Task              PlanTaskRequest             `json:"task"`
+}
+
+type ScheduledGoalState struct {
+	State    *GoalState             `json:"state"`
+	Trigger  entity.ScheduleTrigger `json:"trigger"`
+	Existing bool                   `json:"existing"`
 }
 
 type StartTaskRequest struct {
@@ -108,7 +127,7 @@ func (s *Service) CreateGoal(ctx context.Context, ownerID string, request Create
 			criteria[index].CriterionID = ulid.New()
 		}
 	}
-	goal := entity.PersistentGoal{Schema: entity.Schema, GoalID: ulid.New(), OwnerID: ownerID, AgentID: strings.TrimSpace(request.AgentID), ConversationID: strings.TrimSpace(request.ConversationID), Objective: strings.TrimSpace(request.Objective), Constraints: compact(request.Constraints), SuccessCriteria: criteria, Budget: budget, Deadline: request.Deadline, ApprovalPolicy: request.ApprovalPolicy, Status: orchestrationv1.GoalDraft, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	goal := entity.PersistentGoal{Schema: entity.Schema, GoalID: ulid.New(), OwnerID: ownerID, AgentID: strings.TrimSpace(request.AgentID), ConversationID: strings.TrimSpace(request.ConversationID), Objective: strings.TrimSpace(request.Objective), Constraints: compact(request.Constraints), SuccessCriteria: criteria, Budget: budget, Deadline: request.Deadline, ApprovalPolicy: request.ApprovalPolicy, Trigger: normalizedGoalTrigger(request.Trigger), Status: orchestrationv1.GoalDraft, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	if err := goal.Validate(); err != nil {
 		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
 	}
@@ -132,46 +151,81 @@ func (s *Service) CreatePlannedGoal(ctx context.Context, ownerID string, request
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("orchestration service is not configured")
 	}
-	now := time.Now().UTC()
-	budget := request.Budget
-	if budget.MaxConcurrentSpecialists == 0 {
-		budget = defaultBudget
-	}
-	criteria := append([]entity.SuccessCriterion(nil), request.SuccessCriteria...)
-	for index := range criteria {
-		if criteria[index].CriterionID == "" {
-			criteria[index].CriterionID = ulid.New()
-		}
-	}
-	goal := entity.PersistentGoal{Schema: entity.Schema, GoalID: ulid.New(), OwnerID: ownerID, AgentID: strings.TrimSpace(request.AgentID), ConversationID: strings.TrimSpace(request.ConversationID), Objective: strings.TrimSpace(request.Objective), Constraints: compact(request.Constraints), SuccessCriteria: criteria, Budget: budget, Deadline: request.Deadline, ApprovalPolicy: request.ApprovalPolicy, Status: orchestrationv1.GoalPlanned, Revision: 1, CreatedAt: now, UpdatedAt: now}
-	tasks := make([]entity.SpecialistTask, 0, len(request.Tasks))
-	for _, item := range request.Tasks {
-		id := strings.TrimSpace(item.TaskID)
-		if id == "" {
-			id = ulid.New()
-		}
-		status := orchestrationv1.TaskPending
-		if len(item.DependsOn) == 0 {
-			status = orchestrationv1.TaskReady
-		}
-		tasks = append(tasks, entity.SpecialistTask{TaskID: id, GoalID: goal.GoalID, ParentTaskID: strings.TrimSpace(item.ParentTaskID), Depth: item.Depth, Specialist: item.Specialist, Objective: strings.TrimSpace(item.Objective), DependsOn: unique(item.DependsOn), RequiredCapabilities: unique(item.RequiredCapabilities), WorldSliceRefs: unique(item.WorldSliceRefs), Budget: normalizedTaskBudget(item.Budget, goal.Budget, len(request.Tasks)), Status: status, CreatedAt: now, UpdatedAt: now})
-	}
-	graph := entity.TaskGraph{Schema: entity.Schema, GoalID: goal.GoalID, PlanRevision: 1, Nodes: tasks, CreatedAt: now}
-	if err := goal.Validate(); err != nil {
-		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
-	}
-	if err := graph.Validate(goal.Budget); err != nil {
-		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
-	}
-	checkpoint, err := newCheckpoint(goal, tasks, nil, "goal and finite task graph created", nil, nil, 1)
+	goal, tasks, checkpoint, err := preparePlannedGoal(ownerID, request, orchestrationv1.GoalPlanned, "goal and finite task graph created")
 	if err != nil {
 		return nil, err
 	}
-	goal.LatestCheckpointID = checkpoint.CheckpointID
 	if err := s.store.CreatePlannedGoal(ctx, goal, tasks, checkpoint); err != nil {
 		return nil, log.WrapError(err, "OrchestrationService.CreatePlannedGoal.persist")
 	}
 	return s.GetGoal(ctx, ownerID, goal.GoalID)
+}
+
+func (s *Service) CreateScheduledGoal(ctx context.Context, ownerID string, request CreateScheduledGoalRequest) (*ScheduledGoalState, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("orchestration service is not configured")
+	}
+	request.ScheduleID, request.Slot = strings.TrimSpace(request.ScheduleID), strings.TrimSpace(request.Slot)
+	if request.ScheduleID == "" || request.Slot == "" || request.ScheduledAt.IsZero() {
+		return nil, apierror.ErrBadRequest.WithMessage("schedule_id, slot, and scheduled_at are required")
+	}
+	key := request.ScheduleID + ":" + request.Slot
+	if existing, err := s.store.FindScheduleTriggerByKey(ctx, ownerID, key); err != nil {
+		return nil, err
+	} else if existing != nil {
+		state, getErr := s.GetGoal(ctx, ownerID, existing.GoalID)
+		return &ScheduledGoalState{State: state, Trigger: *existing, Existing: true}, getErr
+	}
+	triggerID := ulid.New()
+	retry := request.Retry
+	if retry.MaxAttempts < 1 {
+		retry.MaxAttempts = 1
+	}
+	request.Trigger = entity.GoalTrigger{Type: orchestrationv1.TriggerSchedule, TriggerID: triggerID, ScheduleID: request.ScheduleID, ScheduledAt: request.ScheduledAt.UTC(), MaxAttempts: retry.MaxAttempts, RetryBackoffMS: retry.BackoffMS}
+	initialStatus := orchestrationv1.GoalPlanned
+	if request.RequireApproval {
+		initialStatus = orchestrationv1.GoalWaitingUser
+	}
+	goal, tasks, checkpoint, err := preparePlannedGoal(ownerID, CreatePlannedGoalRequest{CreateGoalRequest: request.CreateGoalRequest, Tasks: []PlanTaskRequest{request.Task}}, initialStatus, "scheduled trigger created a standard durable task")
+	if err != nil {
+		return nil, err
+	}
+	if len(tasks) != 1 {
+		return nil, fmt.Errorf("scheduled goal must contain exactly one task")
+	}
+	if request.RequireApproval {
+		if strings.TrimSpace(request.PendingApprovalID) == "" {
+			return nil, apierror.ErrBadRequest.WithMessage("pending_approval_id is required for a pre-execution approval")
+		}
+		tasks[0].Status = orchestrationv1.TaskWaitingUser
+		checkpoint.TaskStates = append([]entity.SpecialistTask(nil), tasks...)
+		checkpoint.PendingApprovalIDs = []string{strings.TrimSpace(request.PendingApprovalID)}
+		checkpoint.Checksum, err = checkpointChecksum(checkpoint)
+		if err != nil {
+			return nil, err
+		}
+	}
+	now := time.Now().UTC()
+	notifyStatus := orchestrationv1.NotificationDisabled
+	if request.Notify {
+		notifyStatus = orchestrationv1.NotificationPending
+	}
+	trigger := entity.ScheduleTrigger{Schema: entity.Schema, TriggerID: triggerID, ScheduleID: request.ScheduleID, OwnerID: ownerID, GoalID: goal.GoalID, TaskID: tasks[0].TaskID, IdempotencyKey: key, ScheduledAt: request.ScheduledAt.UTC(), MaxAttempts: retry.MaxAttempts, RetryBackoffMS: retry.BackoffMS, Status: orchestrationv1.ScheduleTriggerQueued, Notify: request.Notify, NotificationStatus: notifyStatus, CreatedAt: now, UpdatedAt: now}
+	if request.RequireApproval {
+		trigger.Status = orchestrationv1.ScheduleTriggerWaitingUser
+	}
+	if err := trigger.Validate(); err != nil {
+		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
+	}
+	if err := s.store.CreateScheduledGoal(ctx, goal, tasks, checkpoint, trigger); err != nil {
+		if existing, findErr := s.store.FindScheduleTriggerByKey(ctx, ownerID, key); findErr == nil && existing != nil {
+			state, getErr := s.GetGoal(ctx, ownerID, existing.GoalID)
+			return &ScheduledGoalState{State: state, Trigger: *existing, Existing: true}, getErr
+		}
+		return nil, log.WrapError(err, "OrchestrationService.CreateScheduledGoal.persist")
+	}
+	state, err := s.GetGoal(ctx, ownerID, goal.GoalID)
+	return &ScheduledGoalState{State: state, Trigger: trigger}, err
 }
 
 func (s *Service) GetGoal(ctx context.Context, ownerID, goalID string) (*GoalState, error) {
@@ -193,6 +247,11 @@ func (s *Service) GetGoal(ctx context.Context, ownerID, goalID string) (*GoalSta
 	checkpoint, err := s.store.LatestCheckpoint(ctx, ownerID, goalID)
 	if err != nil {
 		return nil, err
+	}
+	if checkpoint != nil {
+		if err := verifyCheckpoint(*checkpoint); err != nil {
+			return nil, err
+		}
 	}
 	return &GoalState{Goal: *goal, Tasks: tasks, Results: results, Checkpoint: checkpoint}, nil
 }
@@ -227,7 +286,7 @@ func (s *Service) PlanGoal(ctx context.Context, ownerID, goalID string, request 
 		if len(item.DependsOn) == 0 {
 			status = orchestrationv1.TaskReady
 		}
-		tasks = append(tasks, entity.SpecialistTask{TaskID: id, GoalID: goal.GoalID, ParentTaskID: strings.TrimSpace(item.ParentTaskID), Depth: item.Depth, Specialist: item.Specialist, Objective: strings.TrimSpace(item.Objective), DependsOn: unique(item.DependsOn), RequiredCapabilities: unique(item.RequiredCapabilities), WorldSliceRefs: unique(item.WorldSliceRefs), Budget: normalizedTaskBudget(item.Budget, goal.Budget, len(request.Tasks)), Status: status, CreatedAt: now, UpdatedAt: now})
+		tasks = append(tasks, entity.SpecialistTask{TaskID: id, GoalID: goal.GoalID, ParentTaskID: strings.TrimSpace(item.ParentTaskID), Depth: item.Depth, Specialist: item.Specialist, Objective: strings.TrimSpace(item.Objective), DependsOn: unique(item.DependsOn), RequiredCapabilities: unique(item.RequiredCapabilities), WorldSliceRefs: unique(item.WorldSliceRefs), IdempotencyScope: goal.GoalID + ":" + id, Budget: normalizedTaskBudget(item.Budget, goal.Budget, len(request.Tasks)), Status: status, CreatedAt: now, UpdatedAt: now})
 	}
 	graph := entity.TaskGraph{Schema: entity.Schema, GoalID: goal.GoalID, PlanRevision: goal.Revision + 1, Nodes: tasks, CreatedAt: now}
 	if err := graph.Validate(goal.Budget); err != nil {
@@ -266,6 +325,9 @@ func (s *Service) StartTask(ctx context.Context, ownerID, goalID, taskID string,
 	if tasks[index].Status != orchestrationv1.TaskReady && tasks[index].Status != orchestrationv1.TaskWaitingDevice {
 		return nil, nil, apierror.ErrBadRequest.WithMessage("task is not ready")
 	}
+	if !tasks[index].NextAttemptAt.IsZero() && time.Now().UTC().Before(tasks[index].NextAttemptAt) {
+		return nil, nil, apierror.ErrBadRequest.WithMessage("task retry backoff has not elapsed")
+	}
 	if !dependenciesComplete(tasks[index], tasks) {
 		return nil, nil, apierror.ErrBadRequest.WithMessage("task dependencies are incomplete")
 	}
@@ -291,6 +353,8 @@ func (s *Service) StartTask(ctx context.Context, ownerID, goalID, taskID string,
 	tasks[index].Status, tasks[index].DeviceID, tasks[index].UpdatedAt = decision.Status, decision.DeviceID, now
 	if decision.Status == orchestrationv1.TaskRunning {
 		tasks[index].Attempt++
+		tasks[index].ExecutionID = ulid.New()
+		tasks[index].StartedAt, tasks[index].CompletedAt, tasks[index].NextAttemptAt = now, time.Time{}, time.Time{}
 		goal.Status = orchestrationv1.GoalRunning
 	} else {
 		goal.Status = orchestrationv1.GoalWaitingUser
@@ -331,6 +395,12 @@ func (s *Service) RecordResult(ctx context.Context, ownerID, goalID, taskID stri
 	}
 	result := request.Result
 	result.Schema, result.GoalID, result.TaskID, result.Specialist = entity.Schema, goalID, taskID, tasks[index].Specialist
+	if result.ExecutionID != "" && result.ExecutionID != tasks[index].ExecutionID {
+		return nil, apierror.ErrBadRequest.WithMessage("specialist result execution_id does not match the running task")
+	}
+	result.ExecutionID = tasks[index].ExecutionID
+	result.ConfirmedEffectKeys = unique(request.ConfirmedEffectKeys)
+	result.Provenance.DeviceID = tasks[index].DeviceID
 	if result.RunID == "" {
 		result.RunID = ulid.New()
 	}
@@ -344,12 +414,16 @@ func (s *Service) RecordResult(ctx context.Context, ownerID, goalID, taskID stri
 		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
 	}
 	now, expected := time.Now().UTC(), request.ExpectedRevision
-	tasks[index].Status, tasks[index].UpdatedAt = result.Status, now
+	tasks[index].Status, tasks[index].UpdatedAt, tasks[index].CompletedAt = result.Status, now, now
 	goal.Usage = addUsage(goal.Usage, result.Usage)
 	verifyCriteria(goal.SuccessCriteria, request.VerifiedCriteriaIDs, result.EvidenceRefs)
 	refreshReadyTasks(tasks)
 	goal.ActiveTaskIDs = runningTaskIDs(tasks)
 	switch {
+	case result.Status == orchestrationv1.TaskFailed && goal.Trigger.Type == orchestrationv1.TriggerSchedule && tasks[index].Attempt < goal.Trigger.MaxAttempts:
+		tasks[index].Status, tasks[index].DeviceID = orchestrationv1.TaskReady, ""
+		tasks[index].NextAttemptAt = now.Add(time.Duration(goal.Trigger.RetryBackoffMS*int64(tasks[index].Attempt)) * time.Millisecond)
+		goal.Status = orchestrationv1.GoalRunning
 	case result.Status == orchestrationv1.TaskFailed:
 		goal.Status = orchestrationv1.GoalWaitingUser
 	case result.Status == orchestrationv1.TaskWaitingUser || result.Status == orchestrationv1.TaskWaitingDevice:
@@ -364,7 +438,7 @@ func (s *Service) RecordResult(ctx context.Context, ownerID, goalID, taskID stri
 		goal.Status = orchestrationv1.GoalRunning
 	}
 	goal.Revision, goal.UpdatedAt = expected+1, now
-	effects := union(previous.ConfirmedEffectKeys, request.ConfirmedEffectKeys)
+	effects := union(previous.ConfirmedEffectKeys, result.ConfirmedEffectKeys)
 	world := mergeWorldSlices(previous.WorldSlicesByDevice, request.WorldSlicesByDevice)
 	approvals := previous.PendingApprovalIDs
 	if len(request.PendingApprovalIDs) > 0 {
@@ -439,6 +513,17 @@ func (s *Service) Pause(ctx context.Context, ownerID, goalID, reason string, exp
 }
 
 func (s *Service) Resume(ctx context.Context, ownerID, goalID string, expectedRevision int64) (*ResumePlan, error) {
+	return s.resume(ctx, ownerID, goalID, "", expectedRevision)
+}
+
+// ResumeApproved is intentionally not exposed by the public Goal handler. The
+// approval service calls it only after verifying the approval belongs to the
+// same user and atomically claiming the pending approval record.
+func (s *Service) ResumeApproved(ctx context.Context, ownerID, goalID, approvalID string, expectedRevision int64) (*ResumePlan, error) {
+	return s.resume(ctx, ownerID, goalID, strings.TrimSpace(approvalID), expectedRevision)
+}
+
+func (s *Service) resume(ctx context.Context, ownerID, goalID, approvedID string, expectedRevision int64) (*ResumePlan, error) {
 	goal, tasks, previous, err := s.load(ctx, ownerID, goalID)
 	if err != nil {
 		return nil, err
@@ -452,6 +537,13 @@ func (s *Service) Resume(ctx context.Context, ownerID, goalID string, expectedRe
 	if budgetExhausted(*goal) {
 		return nil, apierror.ErrBadRequest.WithMessage("increase the goal budget or deadline before resuming")
 	}
+	pendingApprovals := append([]string(nil), previous.PendingApprovalIDs...)
+	if len(pendingApprovals) > 0 {
+		if approvedID == "" || !contains(pendingApprovals, approvedID) {
+			return nil, apierror.ErrBadRequest.WithMessage("goal has a pending approval and cannot be resumed directly")
+		}
+		pendingApprovals = without(pendingApprovals, approvedID)
+	}
 	for index := range tasks {
 		if tasks[index].Status == orchestrationv1.TaskWaitingDevice || tasks[index].Status == orchestrationv1.TaskWaitingUser || tasks[index].Status == orchestrationv1.TaskFailed {
 			tasks[index].Status, tasks[index].DeviceID = orchestrationv1.TaskReady, ""
@@ -459,7 +551,7 @@ func (s *Service) Resume(ctx context.Context, ownerID, goalID string, expectedRe
 	}
 	refreshReadyTasks(tasks)
 	goal.Status, goal.Revision, goal.UpdatedAt = orchestrationv1.GoalRunning, expectedRevision+1, time.Now().UTC()
-	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, "goal resumed from durable checkpoint", previous.ConfirmedEffectKeys, nil, previous.WorldSlicesByDevice)
+	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, "goal resumed from durable checkpoint", previous.ConfirmedEffectKeys, pendingApprovals, previous.WorldSlicesByDevice)
 	if err != nil {
 		return nil, err
 	}
@@ -475,6 +567,40 @@ func (s *Service) Resume(ctx context.Context, ownerID, goalID string, expectedRe
 		}
 	}
 	return &ResumePlan{Goal: *goal, PendingTasks: pending, ConfirmedEffectKeys: append([]string(nil), checkpoint.ConfirmedEffectKeys...), WorldSlicesByDevice: cloneWorldSlices(checkpoint.WorldSlicesByDevice)}, nil
+}
+
+// RejectApproval terminates one scheduled occurrence. Rejecting an occurrence
+// must not leave a WAITING_USER trigger consuming the schedule concurrency
+// budget forever.
+func (s *Service) RejectApproval(ctx context.Context, ownerID, goalID, approvalID, reason string, expectedRevision int64) (*GoalState, error) {
+	goal, tasks, previous, err := s.load(ctx, ownerID, goalID)
+	if err != nil {
+		return nil, err
+	}
+	approvalID = strings.TrimSpace(approvalID)
+	if approvalID == "" || !contains(previous.PendingApprovalIDs, approvalID) {
+		return nil, apierror.ErrBadRequest.WithMessage("approval is not pending for this goal")
+	}
+	if expectedRevision == 0 {
+		expectedRevision = goal.Revision
+	}
+	now := time.Now().UTC()
+	for index := range tasks {
+		if tasks[index].Status != orchestrationv1.TaskCompleted {
+			tasks[index].Status, tasks[index].DeviceID, tasks[index].UpdatedAt, tasks[index].CompletedAt = orchestrationv1.TaskCancelled, "", now, now
+		}
+	}
+	goal.Status, goal.ActiveTaskIDs, goal.Revision, goal.UpdatedAt = orchestrationv1.GoalCancelled, nil, expectedRevision+1, now
+	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, nonEmpty(reason, "scheduled execution rejected by user"), previous.ConfirmedEffectKeys, without(previous.PendingApprovalIDs, approvalID), previous.WorldSlicesByDevice)
+	if err != nil {
+		return nil, err
+	}
+	goal.LatestCheckpointID, checkpoint.GoalRevision = checkpoint.CheckpointID, goal.Revision
+	checkpoint.Checksum, _ = checkpointChecksum(checkpoint)
+	if err := s.store.SaveState(ctx, *goal, tasks, nil, checkpoint, expectedRevision); err != nil {
+		return nil, log.WrapError(err, "OrchestrationService.RejectApproval.persist")
+	}
+	return s.GetGoal(ctx, ownerID, goalID)
 }
 
 // RecoverInterruptedGoals converts orphan RUNNING tasks into retryable READY
@@ -523,7 +649,35 @@ func (s *Service) ListCheckpoints(ctx context.Context, ownerID, goalID string, l
 		}
 		return nil, apierror.ErrNotFound.WithMessage("goal not found")
 	}
-	return s.store.ListCheckpoints(ctx, ownerID, goalID, limit)
+	values, err := s.store.ListCheckpoints(ctx, ownerID, goalID, limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, checkpoint := range values {
+		if err := verifyCheckpoint(checkpoint); err != nil {
+			return nil, err
+		}
+	}
+	for index := 0; index+1 < len(values); index++ {
+		newer, older := values[index], values[index+1]
+		if newer.Sequence != older.Sequence+1 || newer.PreviousChecksum != older.Checksum {
+			return nil, fmt.Errorf("checkpoint chain broken between sequence %d and %d", newer.Sequence, older.Sequence)
+		}
+	}
+	return values, nil
+}
+
+func (s *Service) ListScheduleTriggers(ctx context.Context, ownerID, scheduleID string, limit int) ([]entity.ScheduleTrigger, error) {
+	values, err := s.store.ListScheduleTriggers(ctx, ownerID, strings.TrimSpace(scheduleID), limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, trigger := range values {
+		if err := trigger.Validate(); err != nil {
+			return nil, log.WrapError(err, "OrchestrationService.ListScheduleTriggers.validate")
+		}
+	}
+	return values, nil
 }
 
 func (s *Service) WorldSlice(ctx context.Context, ownerID, goalID, taskID string) (map[string]map[string]any, error) {
@@ -558,19 +712,20 @@ func (s *Service) WorldSlice(ctx context.Context, ownerID, goalID, taskID string
 	return result, nil
 }
 
-func (s *Service) CreateScheduleTrigger(ctx context.Context, ownerID, scheduleID, taskID string, scheduledAt time.Time) (*entity.ScheduleTrigger, error) {
-	trigger := entity.ScheduleTrigger{TriggerID: ulid.New(), ScheduleID: scheduleID, TaskID: taskID, ScheduledAt: scheduledAt.UTC(), Attempt: 1, Status: "RUNNING"}
-	if err := s.store.CreateScheduleTrigger(ctx, ownerID, trigger); err != nil {
-		return nil, err
+func (s *Service) MarkScheduleTriggerReconciled(ctx context.Context, ownerID string, trigger entity.ScheduleTrigger, notificationStatus, notificationError string) error {
+	now := time.Now().UTC()
+	trigger.ReconciledAt, trigger.UpdatedAt = now, now
+	if trigger.Notify {
+		trigger.NotificationStatus = notificationStatus
+		if notificationStatus == orchestrationv1.NotificationSent {
+			trigger.NotifiedAt = now
+		}
+		if notificationStatus == orchestrationv1.NotificationFailed {
+			trigger.Error = nonEmpty(notificationError, trigger.Error)
+		}
 	}
-	return &trigger, nil
-}
-
-func (s *Service) FinishScheduleTrigger(ctx context.Context, ownerID string, trigger entity.ScheduleTrigger, runErr error) error {
-	trigger.FinishedAt = time.Now().UTC()
-	trigger.Status = "COMPLETED"
-	if runErr != nil {
-		trigger.Status, trigger.Error = "FAILED", runErr.Error()
+	if err := trigger.Validate(); err != nil {
+		return apierror.ErrBadRequest.WithMessage(err.Error())
 	}
 	return s.store.UpdateScheduleTrigger(ctx, ownerID, trigger)
 }
@@ -594,6 +749,9 @@ func (s *Service) load(ctx context.Context, ownerID, goalID string) (*entity.Per
 	if checkpoint == nil {
 		return nil, nil, nil, fmt.Errorf("goal %s has no durable checkpoint", goalID)
 	}
+	if err := verifyCheckpoint(*checkpoint); err != nil {
+		return nil, nil, nil, err
+	}
 	return goal, tasks, checkpoint, nil
 }
 
@@ -604,9 +762,20 @@ func (s *Service) nextCheckpoint(ctx context.Context, goal entity.PersistentGoal
 	}
 	sequence := int64(1)
 	if latest != nil {
+		if err := verifyCheckpoint(*latest); err != nil {
+			return entity.GoalCheckpoint{}, err
+		}
 		sequence = latest.Sequence + 1
 	}
-	return newCheckpoint(goal, tasks, world, nonEmpty(reason, "state transition"), effects, approvals, sequence)
+	checkpoint, err := newCheckpoint(goal, tasks, world, nonEmpty(reason, "state transition"), effects, approvals, sequence)
+	if err != nil {
+		return entity.GoalCheckpoint{}, err
+	}
+	if latest != nil {
+		checkpoint.PreviousChecksum = latest.Checksum
+		checkpoint.Checksum, err = checkpointChecksum(checkpoint)
+	}
+	return checkpoint, err
 }
 
 func newCheckpoint(goal entity.PersistentGoal, tasks []entity.SpecialistTask, world map[string]map[string]any, reason string, effects, approvals []string, sequence int64) (entity.GoalCheckpoint, error) {
@@ -624,6 +793,20 @@ func checkpointChecksum(value entity.GoalCheckpoint) (string, error) {
 	}
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func verifyCheckpoint(value entity.GoalCheckpoint) error {
+	if err := value.Validate(); err != nil {
+		return log.WrapError(err, "OrchestrationService.verifyCheckpoint.contract")
+	}
+	want, err := checkpointChecksum(value)
+	if err != nil {
+		return err
+	}
+	if value.Checksum != want {
+		return fmt.Errorf("checkpoint %s checksum mismatch", value.CheckpointID)
+	}
+	return nil
 }
 
 func taskIndex(tasks []entity.SpecialistTask, taskID string) int {
@@ -737,6 +920,9 @@ func addUsage(left, right entity.BudgetUsage) entity.BudgetUsage {
 }
 
 func verifyCriteria(values []entity.SuccessCriterion, ids, evidence []string) {
+	if len(evidence) == 0 {
+		return
+	}
 	wanted := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		wanted[id] = struct{}{}
@@ -744,11 +930,58 @@ func verifyCriteria(values []entity.SuccessCriterion, ids, evidence []string) {
 	for index := range values {
 		if _, ok := wanted[values[index].CriterionID]; ok {
 			values[index].Verified = true
-			if len(evidence) > 0 {
-				values[index].EvidenceRef = evidence[0]
-			}
+			values[index].EvidenceRef = evidence[0]
 		}
 	}
+}
+
+func normalizedGoalTrigger(value entity.GoalTrigger) entity.GoalTrigger {
+	if value.Type == "" {
+		return entity.GoalTrigger{Type: orchestrationv1.TriggerInteractive}
+	}
+	return value
+}
+
+func preparePlannedGoal(ownerID string, request CreatePlannedGoalRequest, initialStatus, reason string) (entity.PersistentGoal, []entity.SpecialistTask, entity.GoalCheckpoint, error) {
+	now := time.Now().UTC()
+	budget := request.Budget
+	if budget.MaxConcurrentSpecialists == 0 {
+		budget = defaultBudget
+	}
+	criteria := append([]entity.SuccessCriterion(nil), request.SuccessCriteria...)
+	for index := range criteria {
+		if criteria[index].CriterionID == "" {
+			criteria[index].CriterionID = ulid.New()
+		}
+	}
+	goal := entity.PersistentGoal{Schema: entity.Schema, GoalID: ulid.New(), OwnerID: ownerID, AgentID: strings.TrimSpace(request.AgentID), ConversationID: strings.TrimSpace(request.ConversationID), Objective: strings.TrimSpace(request.Objective), Constraints: compact(request.Constraints), SuccessCriteria: criteria, Budget: budget, Deadline: request.Deadline, ApprovalPolicy: request.ApprovalPolicy, Trigger: normalizedGoalTrigger(request.Trigger), Status: initialStatus, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	tasks := make([]entity.SpecialistTask, 0, len(request.Tasks))
+	for _, item := range request.Tasks {
+		id := strings.TrimSpace(item.TaskID)
+		if id == "" {
+			id = ulid.New()
+		}
+		status := orchestrationv1.TaskPending
+		if len(item.DependsOn) == 0 {
+			status = orchestrationv1.TaskReady
+		}
+		tasks = append(tasks, entity.SpecialistTask{TaskID: id, GoalID: goal.GoalID, ParentTaskID: strings.TrimSpace(item.ParentTaskID), Depth: item.Depth, Specialist: item.Specialist, Objective: strings.TrimSpace(item.Objective), DependsOn: unique(item.DependsOn), RequiredCapabilities: unique(item.RequiredCapabilities), WorldSliceRefs: unique(item.WorldSliceRefs), IdempotencyScope: goal.GoalID + ":" + id, Budget: normalizedTaskBudget(item.Budget, goal.Budget, len(request.Tasks)), Status: status, CreatedAt: now, UpdatedAt: now})
+	}
+	graph := entity.TaskGraph{Schema: entity.Schema, GoalID: goal.GoalID, PlanRevision: 1, Nodes: tasks, CreatedAt: now}
+	if err := goal.Validate(); err != nil {
+		return entity.PersistentGoal{}, nil, entity.GoalCheckpoint{}, apierror.ErrBadRequest.WithMessage(err.Error())
+	}
+	if err := graph.Validate(goal.Budget); err != nil {
+		return entity.PersistentGoal{}, nil, entity.GoalCheckpoint{}, apierror.ErrBadRequest.WithMessage(err.Error())
+	}
+	checkpoint, err := newCheckpoint(goal, tasks, nil, reason, nil, nil, 1)
+	if err != nil {
+		return entity.PersistentGoal{}, nil, entity.GoalCheckpoint{}, err
+	}
+	goal.LatestCheckpointID = checkpoint.CheckpointID
+	checkpoint.GoalRevision = goal.Revision
+	checkpoint.Checksum, err = checkpointChecksum(checkpoint)
+	return goal, tasks, checkpoint, err
 }
 
 func compact(values []string) []string {
@@ -772,6 +1005,25 @@ func unique(values []string) []string {
 		}
 		seen[value] = struct{}{}
 		result = append(result, value)
+	}
+	return result
+}
+
+func contains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func without(values []string, removed string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != removed {
+			result = append(result, value)
+		}
 	}
 	return result
 }

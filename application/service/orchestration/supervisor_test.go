@@ -27,7 +27,7 @@ func (f *fakeSupervisorRuntime) RunStream(_ context.Context, request *runtimedto
 	request.Context["agent_build_id"] = "build-1"
 	request.Context["model_config_version"] = "model-1"
 	return emit(&runtimeentity.StreamEvent{Type: runtimeentity.StreamTypeDone, Done: &runtimeentity.DoneEvent{
-		Content: "verified output\n{\"verified_criteria_ids\":[\"criterion-1\"]}", FinishReason: "stop", TotalTokens: 42, FinishedAt: time.Now().UTC(),
+		Content: "verified output https://example.com/source\n{\"verified_criteria_ids\":[\"criterion-1\"]}", FinishReason: "stop", TotalTokens: 42, FinishedAt: time.Now().UTC(),
 	}})
 }
 
@@ -120,5 +120,63 @@ func TestRecoverInterruptedGoalPreservesCheckpointAndRetriesTask(t *testing.T) {
 	current, err := service.GetGoal(context.Background(), "owner-1", state.Goal.GoalID)
 	if err != nil || current.Tasks[0].Status != protocol.TaskReady || len(current.Checkpoint.ConfirmedEffectKeys) != 1 {
 		t.Fatalf("interrupted goal was not recovered safely: state=%+v err=%v", current, err)
+	}
+}
+
+func TestSupervisorStartIsIdempotentAndDoesNotRecoverItsOwnRunningTask(t *testing.T) {
+	service := newService(t)
+	state, err := service.CreatePlannedGoal(context.Background(), "owner-1", CreatePlannedGoalRequest{
+		CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "do not reset", SuccessCriteria: []orchestrationentity.SuccessCriterion{{Description: "done", Required: true}}},
+		Tasks:             []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: protocol.SpecialistResearch, Objective: "work"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, state, err = service.StartTask(context.Background(), "owner-1", state.Goal.GoalID, "research", StartTaskRequest{ExpectedRevision: state.Goal.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &blockingSupervisorRuntime{started: make(chan struct{}), release: make(chan struct{})}
+	supervisor := NewSupervisor(service, runtime, nil, SupervisorConfig{ScanInterval: time.Hour, MaxConcurrentRuns: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := supervisor.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runtime.started:
+	case <-time.After(time.Second):
+		t.Fatal("supervisor did not dispatch recovered task")
+	}
+	if err := supervisor.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	current, err := service.GetGoal(context.Background(), "owner-1", state.Goal.GoalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Tasks[0].Status != protocol.TaskRunning || current.Tasks[0].ExecutionID == "" {
+		t.Fatalf("duplicate Start reset a running task: %+v", current.Tasks[0])
+	}
+	close(runtime.release)
+	supervisor.Stop()
+}
+
+type blockingSupervisorRuntime struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingSupervisorRuntime) RunStream(ctx context.Context, _ *runtimedto.RunReq, _ runtimesvc.StreamFunc) error {
+	select {
+	case <-b.started:
+	default:
+		close(b.started)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-b.release:
+		return nil
 	}
 }

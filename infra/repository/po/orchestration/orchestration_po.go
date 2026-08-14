@@ -55,13 +55,16 @@ type GoalCheckpoint struct {
 func (GoalCheckpoint) TableName() string { return "os_goal_checkpoint" }
 
 type ScheduleTrigger struct {
-	TriggerID   string `gorm:"column:trigger_id;primaryKey;size:64"`
-	ScheduleID  string `gorm:"column:schedule_id;size:64;not null;index"`
-	TaskID      string `gorm:"column:task_id;size:64;not null;index"`
-	OwnerID     string `gorm:"column:owner_id;size:64;not null;index"`
-	Status      string `gorm:"column:status;size:24;not null;index"`
-	ScheduledAt int64  `gorm:"column:scheduled_at;not null;index"`
-	Content     string `gorm:"column:content;type:text;not null"`
+	TriggerID      string `gorm:"column:trigger_id;primaryKey;size:64"`
+	ScheduleID     string `gorm:"column:schedule_id;size:64;not null;index"`
+	GoalID         string `gorm:"column:goal_id;size:64;not null;index"`
+	TaskID         string `gorm:"column:task_id;size:64;not null;index"`
+	OwnerID        string `gorm:"column:owner_id;size:64;not null;index"`
+	IdempotencyKey string `gorm:"column:idempotency_key;size:192;not null;uniqueIndex"`
+	Status         string `gorm:"column:status;size:24;not null;index"`
+	ScheduledAt    int64  `gorm:"column:scheduled_at;not null;index"`
+	UpdatedAt      int64  `gorm:"column:updated_at;not null;index"`
+	Content        string `gorm:"column:content;type:text;not null"`
 }
 
 func (ScheduleTrigger) TableName() string { return "os_schedule_trigger" }
