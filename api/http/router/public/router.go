@@ -25,6 +25,7 @@ import (
 	learningh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/learning"
 	memoryh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/memory"
 	modelh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
+	operationsh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/operations"
 	orchestrationh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/orchestration"
 	pluginregistryh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/pluginregistry"
 	scheduledtaskh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/scheduledtask"
@@ -57,6 +58,7 @@ type Handlers struct {
 	Experience        *experienceh.Handler
 	Learning          *learningh.Handler
 	Orchestration     *orchestrationh.Handler
+	Operations        *operationsh.Handler
 	PluginRegistry    *pluginregistryh.Handler
 	Weixin            *weixinh.Handler
 	Job               *jobh.Handler
@@ -84,8 +86,19 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 	if h.Orchestration != nil {
 		g.POST("/internal/goals", h.Orchestration.CreateInternal)
 	}
+	if h.Operations != nil {
+		g.POST("/internal/operations/backups", h.Operations.CreateBackupInternal)
+	}
 	if h.Auth != nil {
 		g.Use(h.Auth)
+	}
+	if h.Operations != nil {
+		g.GET("/operations/health", h.Operations.Snapshot)
+		g.GET("/operations/slo", h.Operations.Snapshot)
+		g.GET("/operations/backups", h.Operations.ListBackups)
+		g.POST("/operations/backups", h.Operations.CreateBackup)
+		g.POST("/operations/backups/:backup_id/verify", h.Operations.VerifyBackup)
+		g.POST("/operations/backups/:backup_id/restore", h.Operations.RestoreBackup)
 	}
 	if h.User != nil {
 		g.GET("/auth/me", h.User.Me)

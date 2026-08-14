@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ var (
 const (
 	completedObservationLimit = 4096
 	defaultApprovalTTL        = 15 * time.Minute
+	deviceLeaseTTL            = 45 * time.Second
 )
 
 var inlineSecretPattern = regexp.MustCompile(`(?i)((?:password|passwd|secret|access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|cookie|credential)\s*[:=]\s*)[^\s,;}&]+`)
@@ -46,6 +48,9 @@ type Device struct {
 	ConnectedAt         time.Time                   `json:"connected_at"`
 	LastSeenAt          time.Time                   `json:"last_seen_at"`
 	Online              bool                        `json:"online"`
+	LeaseOwner          string                      `json:"lease_owner,omitempty"`
+	FencingToken        uint64                      `json:"fencing_token,omitempty"`
+	LeaseExpiresAt      time.Time                   `json:"lease_expires_at,omitempty"`
 	conn                Connection
 }
 
@@ -83,6 +88,7 @@ type Hub struct {
 	workerWG     sync.WaitGroup
 	terminalMu   sync.RWMutex
 	terminal     []func(context.Context, string)
+	instanceID   string
 }
 
 type pendingAction struct {
@@ -97,7 +103,21 @@ func NewHub(stores ...irepository.Store) *Hub {
 	if len(stores) > 0 {
 		store = stores[0]
 	}
-	return &Hub{devices: make(map[string]*Device), pending: make(map[string]*pendingAction), completed: make(map[string]entity.Observation), sessions: make(map[string]*entity.TaskSession), active: make(map[string]map[string]string), store: store, subscribers: make(map[string]map[chan entity.EventEnvelope]struct{})}
+	return &Hub{devices: make(map[string]*Device), pending: make(map[string]*pendingAction), completed: make(map[string]entity.Observation), sessions: make(map[string]*entity.TaskSession), active: make(map[string]map[string]string), store: store, subscribers: make(map[string]map[chan entity.EventEnvelope]struct{}), instanceID: controlPlaneInstanceID()}
+}
+
+func controlPlaneInstanceID() string {
+	host, _ := os.Hostname()
+	if strings.TrimSpace(host) == "" {
+		host = "localhost"
+	}
+	return fmt.Sprintf("%s-%d-%d", host, os.Getpid(), time.Now().UnixNano())
+}
+
+type deviceLeaseStore interface {
+	AcquireDeviceLease(context.Context, *entity.RegisteredDevice, string, time.Time) (*entity.RegisteredDevice, error)
+	RenewDeviceLease(context.Context, string, string, uint64, time.Time) error
+	ReleaseDeviceLease(context.Context, string, string, uint64, time.Time) error
 }
 
 type outboxStore interface {
@@ -242,15 +262,31 @@ func (h *Hub) Register(ctx context.Context, message entity.DeviceMessage, conn C
 		if stored != nil {
 			userID = stored.UserID
 		}
-		if err := h.store.UpsertDevice(ctx, &entity.RegisteredDevice{
+		candidate := &entity.RegisteredDevice{
 			DeviceID: message.DeviceID, UserID: userID, Name: message.Name, Platform: message.Platform, Architecture: message.Architecture,
 			Capabilities: message.Capabilities, CapabilityInstances: instances,
 			Online: true, ConnectedAt: now, LastSeenAt: now,
-		}); err != nil {
+		}
+		if leaseStore, ok := h.store.(deviceLeaseStore); ok {
+			leased, err := leaseStore.AcquireDeviceLease(ctx, candidate, h.instanceID, now)
+			if err != nil {
+				return err
+			}
+			candidate = leased
+		} else if err := h.store.UpsertDevice(ctx, candidate); err != nil {
 			return err
 		}
+		userID = candidate.UserID
+		device := &Device{ID: message.DeviceID, UserID: userID, Name: message.Name, Platform: message.Platform, Architecture: message.Architecture, Capabilities: append([]string(nil), message.Capabilities...), CapabilityInstances: append([]entity.CapabilityInstance(nil), instances...), ConnectedAt: now, LastSeenAt: now, Online: true, LeaseOwner: candidate.LeaseOwner, FencingToken: candidate.FencingToken, LeaseExpiresAt: candidate.LeaseExpiresAt, conn: conn}
+		h.installDevice(ctx, device, conn)
+		return nil
 	}
 	device := &Device{ID: message.DeviceID, UserID: userID, Name: message.Name, Platform: message.Platform, Architecture: message.Architecture, Capabilities: append([]string(nil), message.Capabilities...), CapabilityInstances: append([]entity.CapabilityInstance(nil), instances...), ConnectedAt: now, LastSeenAt: now, Online: true, conn: conn}
+	h.installDevice(ctx, device, conn)
+	return nil
+}
+
+func (h *Hub) installDevice(ctx context.Context, device *Device, conn Connection) {
 	h.mu.Lock()
 	old := h.devices[device.ID]
 	h.devices[device.ID] = device
@@ -259,7 +295,6 @@ func (h *Hub) Register(ctx context.Context, message entity.DeviceMessage, conn C
 		_ = old.conn.Close()
 	}
 	go h.recoverDeviceActions(context.WithoutCancel(ctx), device)
-	return nil
 }
 
 func (h *Hub) recoverDeviceActions(ctx context.Context, device *Device) {
@@ -288,26 +323,52 @@ func (h *Hub) recoverDeviceActions(ctx context.Context, device *Device) {
 
 func (h *Hub) Unregister(ctx context.Context, deviceID string, conn Connection) {
 	removed := false
+	leaseOwner := ""
+	var fencingToken uint64
 	h.mu.Lock()
 	if current := h.devices[deviceID]; current != nil && current.conn == conn {
+		leaseOwner, fencingToken = current.LeaseOwner, current.FencingToken
 		delete(h.devices, deviceID)
 		removed = true
 	}
 	h.mu.Unlock()
 	if removed && h.store != nil {
-		_ = h.store.SetDeviceOnline(ctx, deviceID, false, time.Now().UTC())
+		if leaseStore, ok := h.store.(deviceLeaseStore); ok {
+			_ = leaseStore.ReleaseDeviceLease(ctx, deviceID, leaseOwner, fencingToken, time.Now().UTC())
+		} else {
+			_ = h.store.SetDeviceOnline(ctx, deviceID, false, time.Now().UTC())
+		}
 	}
 }
 
 func (h *Hub) Touch(ctx context.Context, deviceID string) {
 	now := time.Now().UTC()
+	var owner string
+	var token uint64
+	var conn Connection
 	h.mu.Lock()
 	if device := h.devices[deviceID]; device != nil {
 		device.LastSeenAt = now
+		owner, token, conn = device.LeaseOwner, device.FencingToken, device.conn
+		device.LeaseExpiresAt = now.Add(deviceLeaseTTL)
 	}
 	h.mu.Unlock()
 	if h.store != nil {
-		_ = h.store.SetDeviceOnline(ctx, deviceID, true, now)
+		if leaseStore, ok := h.store.(deviceLeaseStore); ok && token > 0 {
+			if err := leaseStore.RenewDeviceLease(ctx, deviceID, owner, token, now); err != nil {
+				h.mu.Lock()
+				if current := h.devices[deviceID]; current != nil && current.FencingToken == token {
+					delete(h.devices, deviceID)
+				}
+				h.mu.Unlock()
+				if conn != nil {
+					_ = conn.Close()
+				}
+				log.WarnwCtx(ctx, "device lease renewal rejected", "device_id", shortDeviceID(deviceID), "fencing_token", token, "error_chain", log.FormatError(err))
+			}
+		} else {
+			_ = h.store.SetDeviceOnline(ctx, deviceID, true, now)
+		}
 	}
 }
 
@@ -319,7 +380,7 @@ func (h *Hub) Devices(ctx context.Context, userID string) ([]Device, error) {
 		}
 		result := make([]Device, 0, len(stored))
 		for _, device := range stored {
-			result = append(result, Device{ID: device.DeviceID, UserID: device.UserID, Name: device.Name, Platform: device.Platform, Architecture: device.Architecture, Capabilities: device.Capabilities, CapabilityInstances: device.CapabilityInstances, ConnectedAt: device.ConnectedAt, LastSeenAt: device.LastSeenAt, Online: device.Online})
+			result = append(result, Device{ID: device.DeviceID, UserID: device.UserID, Name: device.Name, Platform: device.Platform, Architecture: device.Architecture, Capabilities: device.Capabilities, CapabilityInstances: device.CapabilityInstances, ConnectedAt: device.ConnectedAt, LastSeenAt: device.LastSeenAt, Online: device.Online, LeaseOwner: device.LeaseOwner, FencingToken: device.FencingToken, LeaseExpiresAt: device.LeaseExpiresAt})
 		}
 		return result, nil
 	}

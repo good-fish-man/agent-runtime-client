@@ -32,6 +32,15 @@ plugins:
   trust_store_path: ""
   audit_path: ""
 
+operations:
+  # Launcher fills these paths for managed local installations. Server
+  # administrators can set them explicitly for remote deployments.
+  backup_dir: ""
+  encryption_key_file: ""
+  pg_dump_path: "pg_dump"
+  pg_restore_path: "pg_restore"
+  max_backups: 10
+
 log:
   level: "debug"
 

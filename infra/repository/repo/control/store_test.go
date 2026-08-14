@@ -1,12 +1,57 @@
 package control
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
+	"github.com/good-fish-man/agent-runtime-client/infra/data"
+	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/control"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
+
+func TestDeviceLeaseIsExclusiveAndFenced(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.TempDir()+"/control.db?_busy_timeout=5000"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&po.Device{}, &po.CapabilityDefinition{}, &po.CapabilityInstance{}, &po.DeviceCapability{}); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(data.New(db))
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	device := &entity.RegisteredDevice{DeviceID: "device-1", Name: "Desktop", Capabilities: []string{"browser.open"}}
+	first, err := store.AcquireDeviceLease(context.Background(), device, "client-a", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.FencingToken != 1 || first.LeaseOwner != "client-a" {
+		t.Fatalf("first lease = %+v", first)
+	}
+	if _, err := store.AcquireDeviceLease(context.Background(), device, "client-b", now.Add(time.Second)); !errors.Is(err, ErrDeviceLeaseOwned) {
+		t.Fatalf("second owner error = %v, want ErrDeviceLeaseOwned", err)
+	}
+	if err := db.Model(&po.Device{}).Where("device_id = ?", device.DeviceID).Update("lease_expires_at", now.Add(-time.Second).UnixMilli()).Error; err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.AcquireDeviceLease(context.Background(), device, "client-b", now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.FencingToken != 2 || second.LeaseOwner != "client-b" {
+		t.Fatalf("takeover lease = %+v", second)
+	}
+	if err := store.RenewDeviceLease(context.Background(), device.DeviceID, "client-a", first.FencingToken, now.Add(3*time.Second)); err == nil {
+		t.Fatal("stale lease renewed after takeover")
+	}
+	if err := store.ReleaseDeviceLease(context.Background(), device.DeviceID, "client-a", first.FencingToken, now.Add(3*time.Second)); err == nil {
+		t.Fatal("stale lease released the current owner")
+	}
+}
 
 func TestApplyWorldPatchSupportsSetMergeRemoveAndEscapedPointers(t *testing.T) {
 	state := map[string]any{

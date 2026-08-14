@@ -27,6 +27,15 @@ type Config struct {
 	ScheduledTask ScheduledTaskConfig `yaml:"scheduled_task"`
 	Orchestration OrchestrationConfig `yaml:"orchestration"`
 	Plugins       PluginsConfig       `yaml:"plugins"`
+	Operations    OperationsConfig    `yaml:"operations"`
+}
+
+type OperationsConfig struct {
+	BackupDir         string `yaml:"backup_dir"`
+	EncryptionKeyFile string `yaml:"encryption_key_file"`
+	PGDumpPath        string `yaml:"pg_dump_path"`
+	PGRestorePath     string `yaml:"pg_restore_path"`
+	MaxBackups        int    `yaml:"max_backups"`
 }
 
 type PluginsConfig struct {
@@ -141,6 +150,7 @@ func Default() *Config {
 			Directory: filepath.Join(pluginRoot, "packages"), RegistryPath: filepath.Join(pluginRoot, "registry.json"),
 			TrustStorePath: filepath.Join(pluginRoot, "trust-store.json"), AuditPath: filepath.Join(pluginRoot, "logs", "invocations.jsonl"),
 		},
+		Operations: OperationsConfig{PGDumpPath: "pg_dump", PGRestorePath: "pg_restore", MaxBackups: 10},
 	}
 }
 
@@ -199,6 +209,18 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("ATHENA_PLUGIN_AUDIT_PATH"); v != "" {
 		cfg.Plugins.AuditPath = v
+	}
+	if v := os.Getenv("ATHENA_BACKUP_DIR"); v != "" {
+		cfg.Operations.BackupDir = v
+	}
+	if v := os.Getenv("ATHENA_BACKUP_KEY_FILE"); v != "" {
+		cfg.Operations.EncryptionKeyFile = v
+	}
+	if v := os.Getenv("ATHENA_PG_DUMP_PATH"); v != "" {
+		cfg.Operations.PGDumpPath = v
+	}
+	if v := os.Getenv("ATHENA_PG_RESTORE_PATH"); v != "" {
+		cfg.Operations.PGRestorePath = v
 	}
 	if v := os.Getenv("ATHENA_DEVICE_TOKEN"); v != "" {
 		cfg.Control.DeviceToken = v
@@ -313,5 +335,14 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if strings.TrimSpace(cfg.Plugins.AuditPath) == "" {
 		cfg.Plugins.AuditPath = defaults.AuditPath
+	}
+	if strings.TrimSpace(cfg.Operations.PGDumpPath) == "" {
+		cfg.Operations.PGDumpPath = "pg_dump"
+	}
+	if strings.TrimSpace(cfg.Operations.PGRestorePath) == "" {
+		cfg.Operations.PGRestorePath = "pg_restore"
+	}
+	if cfg.Operations.MaxBackups <= 0 {
+		cfg.Operations.MaxBackups = 10
 	}
 }

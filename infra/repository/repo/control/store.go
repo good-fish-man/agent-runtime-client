@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ import (
 )
 
 const deviceLeaseDuration = 45 * time.Second
+
+var ErrDeviceLeaseOwned = errors.New("device lease is owned by another control-plane instance")
 
 type Store struct{ data *data.Data }
 
@@ -43,7 +46,11 @@ func (s *Store) UpsertDevice(ctx context.Context, device *entity.RegisteredDevic
 		DeviceID: device.DeviceID, UserID: device.UserID, Protocol: entity.Protocol,
 		Name: device.Name, Platform: device.Platform, Architecture: device.Architecture,
 		Capabilities: capabilities, CapabilityInstances: instances, Online: device.Online, Revision: 1,
-		ConnectedAt: millis(device.ConnectedAt), LastSeenAt: millis(seenAt), LeaseExpiresAt: millis(seenAt.Add(deviceLeaseDuration)),
+		LeaseOwner: device.LeaseOwner, FencingToken: device.FencingToken,
+		ConnectedAt: millis(device.ConnectedAt), LastSeenAt: millis(seenAt), LeaseExpiresAt: millis(device.LeaseExpiresAt),
+	}
+	if value.LeaseExpiresAt == 0 {
+		value.LeaseExpiresAt = millis(seenAt.Add(deviceLeaseDuration))
 	}
 	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.OnConflict{
@@ -53,6 +60,7 @@ func (s *Store) UpsertDevice(ctx context.Context, device *entity.RegisteredDevic
 				"architecture": value.Architecture, "capabilities": value.Capabilities,
 				"capability_instances": value.CapabilityInstances, "online": value.Online,
 				"connected_at": value.ConnectedAt, "last_seen_at": value.LastSeenAt,
+				"lease_owner": value.LeaseOwner, "fencing_token": value.FencingToken,
 				"lease_expires_at": value.LeaseExpiresAt, "revision": gorm.Expr("revision + 1"),
 			}),
 		}).Create(value).Error; err != nil {
@@ -60,6 +68,99 @@ func (s *Store) UpsertDevice(ctx context.Context, device *entity.RegisteredDevic
 		}
 		return syncCapabilityInventory(tx, device, seenAt)
 	}), "ControlStore.UpsertDevice")
+}
+
+// AcquireDeviceLease atomically gives one control-plane instance exclusive
+// ownership of a device. Every accepted connection receives a new fencing
+// token so delayed heartbeats from an older socket cannot mutate the lease.
+func (s *Store) AcquireDeviceLease(ctx context.Context, device *entity.RegisteredDevice, owner string, seenAt time.Time) (*entity.RegisteredDevice, error) {
+	if device == nil || strings.TrimSpace(device.DeviceID) == "" || strings.TrimSpace(owner) == "" {
+		return nil, fmt.Errorf("device and lease owner are required")
+	}
+	capabilities, err := encodeJSON(device.Capabilities)
+	if err != nil {
+		return nil, err
+	}
+	instances, err := encodeJSON(device.CapabilityInstances)
+	if err != nil {
+		return nil, err
+	}
+	if seenAt.IsZero() {
+		seenAt = time.Now().UTC()
+	}
+	expiresAt := seenAt.Add(deviceLeaseDuration)
+	var acquired po.Device
+	err = s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
+		seed := &po.Device{
+			DeviceID: device.DeviceID, UserID: device.UserID, Protocol: entity.Protocol,
+			Name: device.Name, Platform: device.Platform, Architecture: device.Architecture,
+			Capabilities: capabilities, CapabilityInstances: instances, Online: false,
+			ConnectedAt: millis(seenAt), LastSeenAt: millis(seenAt), LeaseExpiresAt: 0,
+		}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(seed).Error; err != nil {
+			return err
+		}
+		result := tx.Model(&po.Device{}).
+			Where("device_id = ? AND (lease_owner = '' OR lease_owner = ? OR lease_expires_at <= ?)", device.DeviceID, owner, millis(seenAt)).
+			Updates(map[string]any{
+				"protocol": entity.Protocol, "name": device.Name, "platform": device.Platform,
+				"architecture": device.Architecture, "capabilities": capabilities,
+				"capability_instances": instances, "online": true, "lease_owner": owner,
+				"fencing_token": gorm.Expr("fencing_token + 1"), "connected_at": millis(seenAt),
+				"last_seen_at": millis(seenAt), "lease_expires_at": millis(expiresAt),
+				"revision": gorm.Expr("revision + 1"),
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrDeviceLeaseOwned
+		}
+		if err := tx.Where("device_id = ?", device.DeviceID).Limit(1).Take(&acquired).Error; err != nil {
+			return err
+		}
+		leased := *device
+		leased.LeaseOwner = owner
+		leased.FencingToken = acquired.FencingToken
+		leased.LeaseExpiresAt = expiresAt
+		leased.Online = true
+		leased.ConnectedAt = seenAt
+		leased.LastSeenAt = seenAt
+		return syncCapabilityInventory(tx, &leased, seenAt)
+	})
+	if err != nil {
+		return nil, log.WrapError(err, "ControlStore.AcquireDeviceLease")
+	}
+	return deviceToEntity(&acquired), nil
+}
+
+func (s *Store) RenewDeviceLease(ctx context.Context, deviceID, owner string, token uint64, seenAt time.Time) error {
+	result := s.data.DB(ctx).Model(&po.Device{}).
+		Where("device_id = ? AND lease_owner = ? AND fencing_token = ?", deviceID, owner, token).
+		Updates(map[string]any{"online": true, "last_seen_at": millis(seenAt), "lease_expires_at": millis(seenAt.Add(deviceLeaseDuration)), "revision": gorm.Expr("revision + 1")})
+	if result.Error != nil {
+		return log.WrapError(result.Error, "ControlStore.RenewDeviceLease")
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("renew device %s lease: fencing token is stale", deviceID)
+	}
+	return nil
+}
+
+func (s *Store) ReleaseDeviceLease(ctx context.Context, deviceID, owner string, token uint64, seenAt time.Time) error {
+	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&po.Device{}).
+			Where("device_id = ? AND lease_owner = ? AND fencing_token = ?", deviceID, owner, token).
+			Updates(map[string]any{"online": false, "lease_owner": "", "lease_expires_at": millis(seenAt), "last_seen_at": millis(seenAt), "revision": gorm.Expr("revision + 1")})
+		if result.Error != nil || result.RowsAffected == 0 {
+			if result.Error != nil {
+				return result.Error
+			}
+			return fmt.Errorf("release device %s lease: fencing token is stale", deviceID)
+		}
+		return tx.Model(&po.CapabilityInstance{}).Where("device_id = ?", deviceID).
+			Updates(map[string]any{"online": false, "revision": gorm.Expr("revision + 1"), "updated_at": millis(seenAt)}).Error
+	}), "ControlStore.ReleaseDeviceLease")
 }
 
 func (s *Store) BindDevice(ctx context.Context, deviceID, userID string) error {
@@ -100,8 +201,8 @@ func (s *Store) SetDeviceOnline(ctx context.Context, deviceID string, online boo
 
 func (s *Store) MarkAllDevicesOffline(ctx context.Context, seenAt time.Time) error {
 	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&po.Device{}).Where("online = ? OR lease_expires_at < ?", true, millis(seenAt)).
-			Updates(map[string]any{"online": false, "last_seen_at": millis(seenAt), "revision": gorm.Expr("revision + 1")}).Error; err != nil {
+		if err := tx.Model(&po.Device{}).Where("online = ? AND lease_expires_at < ?", true, millis(seenAt)).
+			Updates(map[string]any{"online": false, "lease_owner": "", "last_seen_at": millis(seenAt), "revision": gorm.Expr("revision + 1")}).Error; err != nil {
 			return err
 		}
 		return tx.Model(&po.CapabilityInstance{}).Where("online = ?", true).
@@ -1321,7 +1422,8 @@ func nestedMap(parent map[string]any, key string) map[string]any {
 func deviceToEntity(value *po.Device) *entity.RegisteredDevice {
 	device := &entity.RegisteredDevice{
 		DeviceID: value.DeviceID, UserID: value.UserID, Name: value.Name, Platform: value.Platform,
-		Architecture: value.Architecture, Online: value.Online, ConnectedAt: fromMillis(value.ConnectedAt), LastSeenAt: fromMillis(value.LastSeenAt),
+		Architecture: value.Architecture, Online: value.Online, LeaseOwner: value.LeaseOwner, FencingToken: value.FencingToken,
+		LeaseExpiresAt: fromMillis(value.LeaseExpiresAt), ConnectedAt: fromMillis(value.ConnectedAt), LastSeenAt: fromMillis(value.LastSeenAt),
 	}
 	decodeJSON(value.Capabilities, &device.Capabilities)
 	decodeJSON(value.CapabilityInstances, &device.CapabilityInstances)

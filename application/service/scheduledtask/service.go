@@ -2,10 +2,8 @@ package scheduledtask
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +23,6 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
 	"github.com/good-fish-man/agent-runtime-client/pkg/ulid"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
-	"github.com/good-fish-man/agent-runtime-client/types/consts"
 	orchestrationv1 "github.com/good-fish-man/athena-protocol/protocol/orchestration/v1"
 	log "github.com/good-fish-man/logx"
 )
@@ -89,12 +86,6 @@ func NewService(d *data.Data, runtime *runtimesvc.RuntimeService, scanInterval .
 		interval = scanInterval[0]
 	}
 	return &Service{data: d, runtime: runtime, sem: make(chan struct{}, maxConcurrentRuns), scanInterval: interval, active: make(map[string]int)}
-}
-
-func InternalTokenValid(value string) bool {
-	want := strings.TrimSpace(os.Getenv(consts.EnvInternalServiceToken))
-	value = strings.TrimSpace(value)
-	return want != "" && len(value) == len(want) && subtle.ConstantTimeCompare([]byte(value), []byte(want)) == 1
 }
 
 func (s *Service) Create(ctx context.Context, req CreateRequest) (*po.ScheduledTask, error) {

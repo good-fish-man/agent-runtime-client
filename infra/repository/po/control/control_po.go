@@ -10,6 +10,8 @@ type Device struct {
 	Capabilities        string `gorm:"column:capabilities;type:text"`
 	CapabilityInstances string `gorm:"column:capability_instances;type:text"`
 	Online              bool   `gorm:"column:online;not null;default:false;index"`
+	LeaseOwner          string `gorm:"column:lease_owner;type:varchar(160);index"`
+	FencingToken        uint64 `gorm:"column:fencing_token;type:bigint;not null;default:0"`
 	Revision            int64  `gorm:"column:revision;type:bigint;not null;default:1"`
 	ConnectedAt         int64  `gorm:"column:connected_at;type:bigint;default:0"`
 	LastSeenAt          int64  `gorm:"column:last_seen_at;type:bigint;default:0;index"`

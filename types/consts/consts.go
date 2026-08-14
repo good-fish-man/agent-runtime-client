@@ -5,6 +5,7 @@ package consts
 const (
 	// ServiceName identifies this service in logs and health responses.
 	ServiceName = "agent-runtime-client"
+	Version     = "0.9.0"
 
 	// ---- HTTP routes (v1 slice) ----
 	RouteHealth      = "/healthz"

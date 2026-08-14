@@ -1,14 +1,13 @@
 package orchestration
 
 import (
-	"crypto/subtle"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/good-fish-man/agent-runtime-client/api/http/middleware"
 	service "github.com/good-fish-man/agent-runtime-client/application/service/orchestration"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
@@ -20,7 +19,7 @@ type Handler struct{ service *service.Service }
 func NewHandler(value *service.Service) *Handler { return &Handler{service: value} }
 
 func (h *Handler) CreateInternal(c *gin.Context) {
-	if !internalTokenValid(c.GetHeader(consts.HeaderAthenaInternalToken)) {
+	if !middleware.InternalTokenValid(c.GetHeader(consts.HeaderAthenaInternalToken)) {
 		_ = c.Error(apierror.ErrUnauthorized)
 		return
 	}
@@ -181,11 +180,6 @@ func (h *Handler) WorldSlice(c *gin.Context) {
 }
 
 func userID(c *gin.Context) string { return c.GetString(consts.CtxKeyUserID) }
-func internalTokenValid(value string) bool {
-	want := strings.TrimSpace(os.Getenv(consts.EnvInternalServiceToken))
-	value = strings.TrimSpace(value)
-	return want != "" && len(value) == len(want) && subtle.ConstantTimeCompare([]byte(value), []byte(want)) == 1
-}
 func split(value string) []string {
 	values := []string{}
 	for _, item := range strings.Split(value, ",") {

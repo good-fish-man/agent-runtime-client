@@ -15,6 +15,7 @@ import (
 	controlhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/control"
 	deploymenthandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/deployment"
 	knowledgehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge"
+	operationshandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/operations"
 	orchestrationhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/orchestration"
 	pluginregistryhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/pluginregistry"
 	handler "github.com/good-fish-man/agent-runtime-client/api/http/handler/runtime"
@@ -25,6 +26,7 @@ import (
 	experiencesvc "github.com/good-fish-man/agent-runtime-client/application/service/experience"
 	knowledgesvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge"
 	learningsvc "github.com/good-fish-man/agent-runtime-client/application/service/learning"
+	operationssvc "github.com/good-fish-man/agent-runtime-client/application/service/operations"
 	orchestrationsvc "github.com/good-fish-man/agent-runtime-client/application/service/orchestration"
 	pluginregistrysvc "github.com/good-fish-man/agent-runtime-client/application/service/pluginregistry"
 	appsvc "github.com/good-fish-man/agent-runtime-client/application/service/runtime"
@@ -174,6 +176,15 @@ func Init(cfgPath string) (*App, error) {
 		paths.AppConfigFile = resolvedConfigPath
 	}
 	pub := buildPublicHandlers(cfg, store, appService, experienceService, deploymentService, knowledgeService, orchestrationService, controlHub, paths, restart)
+	var databaseProbe operationssvc.DatabaseProbe
+	if store != nil {
+		databaseProbe = func(ctx context.Context) error { return store.DB(ctx).Exec("SELECT 1").Error }
+	}
+	backupManager, err := operationssvc.NewBackupManager(cfg.Operations, cfg.DB)
+	if err != nil {
+		return nil, err
+	}
+	pub.Operations = operationshandler.NewHandler(operationssvc.New(cfg.Runtime.HTTPAddr, databaseProbe, controlHub).WithBackupManager(backupManager))
 	engine := httpapi.NewEngine(h, pub, cfg.Server.PublicPrefix, cfg.Server.Mode)
 	controlhandler.NewHandler(controlHub, cfg.Control.DeviceToken).Register(engine, pub.Auth, cfg.Server.PublicPrefix)
 	controlHub.Start(context.Background())

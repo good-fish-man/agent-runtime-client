@@ -2,6 +2,7 @@ package scheduledtask
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/good-fish-man/agent-runtime-client/api/http/middleware"
 	service "github.com/good-fish-man/agent-runtime-client/application/service/scheduledtask"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
@@ -14,7 +15,7 @@ type Handler struct{ svc *service.Service }
 func NewHandler(svc *service.Service) *Handler { return &Handler{svc: svc} }
 
 func (h *Handler) CreateInternal(c *gin.Context) {
-	if !service.InternalTokenValid(c.GetHeader(consts.HeaderAthenaInternalToken)) {
+	if !middleware.InternalTokenValid(c.GetHeader(consts.HeaderAthenaInternalToken)) {
 		_ = c.Error(apierror.ErrUnauthorized)
 		return
 	}
