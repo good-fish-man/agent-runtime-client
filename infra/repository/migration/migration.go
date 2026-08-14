@@ -18,6 +18,7 @@ import (
 	deploymentpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/deployment"
 	experiencepo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/experience"
 	jobpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/job"
+	knowledgepo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/knowledge"
 	kbpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/knowledge_base"
 	learningpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/learning"
 	memorypo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/memory"
@@ -104,6 +105,14 @@ func InitTables(ctx context.Context, d *data.Data) error {
 		&deploymentpo.CanaryMetric{},
 		&deploymentpo.Rollback{},
 		&deploymentpo.Compensation{},
+		&knowledgepo.Claim{},
+		&knowledgepo.Evidence{},
+		&knowledgepo.Contradiction{},
+		&knowledgepo.Snapshot{},
+		&knowledgepo.OntologyPack{},
+		&knowledgepo.OntologyVersion{},
+		&knowledgepo.OntologyCandidate{},
+		&knowledgepo.OntologyMigration{},
 		&memorypo.AgentMemory{},
 		&jobpo.JobExecutionPO{},
 		&runtimepo.MediaGenerationJob{},

@@ -14,12 +14,14 @@ import (
 	httpapi "github.com/good-fish-man/agent-runtime-client/api/http"
 	controlhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/control"
 	deploymenthandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/deployment"
+	knowledgehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge"
 	handler "github.com/good-fish-man/agent-runtime-client/api/http/handler/runtime"
 	"github.com/good-fish-man/agent-runtime-client/api/http/middleware"
 	"github.com/good-fish-man/agent-runtime-client/api/http/router/public"
 	controlsvc "github.com/good-fish-man/agent-runtime-client/application/service/control"
 	deploymentsvc "github.com/good-fish-man/agent-runtime-client/application/service/deployment"
 	experiencesvc "github.com/good-fish-man/agent-runtime-client/application/service/experience"
+	knowledgesvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge"
 	learningsvc "github.com/good-fish-man/agent-runtime-client/application/service/learning"
 	appsvc "github.com/good-fish-man/agent-runtime-client/application/service/runtime"
 	"github.com/good-fish-man/agent-runtime-client/config"
@@ -33,6 +35,7 @@ import (
 	controlrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/control"
 	deploymentrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/deployment"
 	experiencerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/experience"
+	knowledgerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/knowledge"
 	learningrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/learning"
 	runtimerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/runtime"
 	inruntime "github.com/good-fish-man/agent-runtime-client/infra/runtime"
@@ -81,6 +84,7 @@ type App struct {
 	Control    *controlsvc.Hub
 	Experience *experiencesvc.Service
 	Deployment *deploymentsvc.Service
+	Knowledge  *knowledgesvc.Service
 }
 
 // Init builds the App from the config at cfgPath (empty uses defaults+env).
@@ -133,6 +137,7 @@ func Init(cfgPath string) (*App, error) {
 	var controlHub *controlsvc.Hub
 	var experienceService *experiencesvc.Service
 	var deploymentService *deploymentsvc.Service
+	var knowledgeService *knowledgesvc.Service
 	if store != nil {
 		controlStore := controlrepo.NewStore(store)
 		if err := controlStore.MarkAllDevicesOffline(context.Background(), time.Now().UTC()); err != nil {
@@ -144,12 +149,14 @@ func Init(cfgPath string) (*App, error) {
 		controlHub = controlsvc.NewHub(controlStore)
 		experienceService = experiencesvc.NewService(experiencerepo.NewStore(store), controlStore)
 		deploymentService = deploymentsvc.NewService(deploymentrepo.NewStore(store))
+		knowledgeService = knowledgesvc.NewService(knowledgerepo.NewStore(store))
 		controlHub.OnTaskTerminal(func(_ context.Context, taskID string) { experienceService.Enqueue(taskID) })
 	} else {
 		controlHub = controlsvc.NewHub()
 	}
 	appService.SetControlHub(controlHub)
 	appService.SetDeploymentService(deploymentService)
+	appService.SetKnowledgeService(knowledgeService)
 	h := handler.NewHandler(appService)
 
 	restart := make(chan struct{}, 1)
@@ -157,7 +164,7 @@ func Init(cfgPath string) (*App, error) {
 	if paths.AppConfigFile == "" && resolvedConfigPath != "" {
 		paths.AppConfigFile = resolvedConfigPath
 	}
-	pub := buildPublicHandlers(cfg, store, appService, experienceService, deploymentService, paths, restart)
+	pub := buildPublicHandlers(cfg, store, appService, experienceService, deploymentService, knowledgeService, paths, restart)
 	engine := httpapi.NewEngine(h, pub, cfg.Server.PublicPrefix, cfg.Server.Mode)
 	controlhandler.NewHandler(controlHub, cfg.Control.DeviceToken).Register(engine, pub.Auth, cfg.Server.PublicPrefix)
 	controlHub.Start(context.Background())
@@ -165,13 +172,13 @@ func Init(cfgPath string) (*App, error) {
 		experienceService.Start(context.Background())
 	}
 
-	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store, Control: controlHub, Experience: experienceService, Deployment: deploymentService}, nil
+	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store, Control: controlHub, Experience: experienceService, Deployment: deploymentService, Knowledge: knowledgeService}, nil
 }
 
 // buildPublicHandlers wires the agent-frame-compatible resource handlers. The
 // DB-backed handlers are only constructed when the shared database is enabled;
 // the file-backed config handler and the channel skeletons are always available.
-func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *appsvc.RuntimeService, experienceService *experiencesvc.Service, deploymentService *deploymentsvc.Service, paths config.PathsConfig, restart chan<- struct{}) *public.Handlers {
+func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *appsvc.RuntimeService, experienceService *experiencesvc.Service, deploymentService *deploymentsvc.Service, knowledgeService *knowledgesvc.Service, paths config.PathsConfig, restart chan<- struct{}) *public.Handlers {
 	pub := &public.Handlers{
 		Config:    confighandler.NewHandler(paths, restart).WithRuntime(cfg.Runtime.HTTPAddr).WithService(cfg.Server.HTTPAddr),
 		Callback:  callbackhandler.NewHandler(),
@@ -192,6 +199,7 @@ func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *a
 		pub.Experience = experiencehandler.NewHandler(experienceService)
 		pub.Learning = learninghandler.NewHandler(learningsvc.NewService(learningrepo.NewStore(store), experiencerepo.NewStore(store), experienceService))
 		pub.Deployment = deploymenthandler.NewHandler(deploymentService)
+		pub.Knowledge = knowledgehandler.NewHandler(knowledgeService)
 		pub.BrowserCredential = browsercredentialhandler.NewHandler(browsercredentialsvc.NewService(store))
 		scheduledService := scheduledtasksvc.NewService(store, runtimeService, time.Duration(cfg.ScheduledTask.ScanIntervalSec)*time.Second)
 		scheduledService.Start(context.Background())

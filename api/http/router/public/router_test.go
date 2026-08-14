@@ -12,6 +12,7 @@ import (
 	deploymenthandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/deployment"
 	experiencehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/experience"
 	jobhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/job"
+	knowledgehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge"
 	kbhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
 	learninghandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/learning"
 	modelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
@@ -24,6 +25,7 @@ import (
 	deploymentsvc "github.com/good-fish-man/agent-runtime-client/application/service/deployment"
 	experiencesvc "github.com/good-fish-man/agent-runtime-client/application/service/experience"
 	jobsvc "github.com/good-fish-man/agent-runtime-client/application/service/job"
+	knowledgesvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge"
 	kbsvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge_base"
 	learningsvc "github.com/good-fish-man/agent-runtime-client/application/service/learning"
 	modelsvc "github.com/good-fish-man/agent-runtime-client/application/service/model"
@@ -49,6 +51,7 @@ func TestRegisterNoConflicts(t *testing.T) {
 		Channel:    channelhandler.NewHandler(channelsvc.NewSysChannelService(nil)),
 		Experience: experiencehandler.NewHandler(experiencesvc.NewService(nil, nil)),
 		Deployment: deploymenthandler.NewHandler(deploymentsvc.NewService(nil)),
+		Knowledge:  knowledgehandler.NewHandler(knowledgesvc.NewService(nil)),
 		Learning:   learninghandler.NewHandler(learningsvc.NewServiceWithDependencies(nil, nil, nil)),
 		Callback:   callbackhandler.NewHandler(),
 		Weixin:     weixinhandler.NewHandler(),
@@ -113,6 +116,17 @@ func TestRegisterNoConflicts(t *testing.T) {
 		"PUT " + prefix + "/deployment/experiment",
 		"GET " + prefix + "/deployment/manifests",
 		"GET " + prefix + "/deployment/rollbacks",
+		"POST " + prefix + "/knowledge/claims",
+		"GET " + prefix + "/knowledge/claims",
+		"GET " + prefix + "/knowledge/evidence",
+		"POST " + prefix + "/knowledge/retrieve",
+		"GET " + prefix + "/knowledge/contradictions",
+		"GET " + prefix + "/knowledge/snapshots",
+		"POST " + prefix + "/knowledge/ontology/packs",
+		"GET " + prefix + "/knowledge/ontology/packs",
+		"POST " + prefix + "/knowledge/ontology/candidates",
+		"POST " + prefix + "/knowledge/ontology/candidates/:id/review",
+		"POST " + prefix + "/knowledge/ontology/migrations",
 	}
 	for _, route := range expected {
 		if _, ok := registered[route]; !ok {

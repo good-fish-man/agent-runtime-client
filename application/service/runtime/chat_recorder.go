@@ -134,7 +134,16 @@ func (s *RuntimeService) recordCompletion(ctx context.Context, values map[string
 }
 
 func (s *RuntimeService) recordStream(ctx context.Context, values map[string]any, models map[string]entity.ModelConfig, prompt string, capture *streamCapture, runErr error) {
-	if s == nil || s.chat == nil || capture == nil {
+	if s == nil || capture == nil {
+		return
+	}
+	if s.knowledge != nil && len(capture.research) > 0 {
+		taskID := firstNonEmpty(contextString(values, "task_id"), firstNonEmpty(contextString(values, "request_id"), contextString(values, "run_manifest_id")))
+		if err := s.knowledge.CaptureResearchEvidence(context.WithoutCancel(ctx), authctx.UserID(ctx), taskID, traceID(ctx), capture.research); err != nil {
+			log.WarnwCtx(ctx, "persist research evidence failed", "error", err)
+		}
+	}
+	if s.chat == nil {
 		return
 	}
 	status := "success"

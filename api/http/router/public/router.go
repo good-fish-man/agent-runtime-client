@@ -20,6 +20,7 @@ import (
 	deploymenth "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/deployment"
 	experienceh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/experience"
 	jobh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/job"
+	knowledgeh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge"
 	kbh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
 	learningh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/learning"
 	memoryh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/memory"
@@ -50,6 +51,7 @@ type Handlers struct {
 	Callback          *callbackh.Handler
 	Dashboard         *dashboardh.Handler
 	Deployment        *deploymenth.Handler
+	Knowledge         *knowledgeh.Handler
 	Experience        *experienceh.Handler
 	Learning          *learningh.Handler
 	Weixin            *weixinh.Handler
@@ -211,6 +213,21 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		r.PUT("/experiment", h.Deployment.SetOptOut)
 		r.GET("/manifests", h.Deployment.ListManifests)
 		r.GET("/rollbacks", h.Deployment.ListRollbacks)
+	}
+
+	if h.Knowledge != nil {
+		r := g.Group("/knowledge")
+		r.POST("/claims", h.Knowledge.CreateClaim)
+		r.GET("/claims", h.Knowledge.ListClaims)
+		r.GET("/evidence", h.Knowledge.ListEvidence)
+		r.POST("/retrieve", h.Knowledge.Retrieve)
+		r.GET("/contradictions", h.Knowledge.ListContradictions)
+		r.GET("/snapshots", h.Knowledge.ListSnapshots)
+		r.POST("/ontology/packs", h.Knowledge.CreateOntologyPack)
+		r.GET("/ontology/packs", h.Knowledge.ListOntologyPacks)
+		r.POST("/ontology/candidates", h.Knowledge.CreateOntologyCandidate)
+		r.POST("/ontology/candidates/:id/review", h.Knowledge.ReviewOntologyCandidate)
+		r.POST("/ontology/migrations", h.Knowledge.CreateOntologyMigration)
 	}
 
 	if h.BrowserCredential != nil {

@@ -17,6 +17,7 @@ import (
 	dto "github.com/good-fish-man/agent-runtime-client/application/dto/runtime"
 	controlsvc "github.com/good-fish-man/agent-runtime-client/application/service/control"
 	deploymentsvc "github.com/good-fish-man/agent-runtime-client/application/service/deployment"
+	knowledgesvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge"
 	memorysvc "github.com/good-fish-man/agent-runtime-client/application/service/memory"
 	agententity "github.com/good-fish-man/agent-runtime-client/domain/entity/agent"
 	controlentity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
@@ -47,11 +48,13 @@ type RuntimeService struct {
 	mediaRepo  irepo.MediaJobRepository
 	controlHub *controlsvc.Hub
 	deployment *deploymentsvc.Service
+	knowledge  *knowledgesvc.Service
 	chat       *chatRecorder
 }
 
 func (s *RuntimeService) SetControlHub(hub *controlsvc.Hub)                 { s.controlHub = hub }
 func (s *RuntimeService) SetDeploymentService(value *deploymentsvc.Service) { s.deployment = value }
+func (s *RuntimeService) SetKnowledgeService(value *knowledgesvc.Service)   { s.knowledge = value }
 
 func (s *RuntimeService) ListCapabilities(ctx context.Context) ([]entity.CapabilityDefinition, error) {
 	result, err := s.svc.ListCapabilities(ctx, traceID(ctx))
