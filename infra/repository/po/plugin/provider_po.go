@@ -10,11 +10,16 @@ type Provider struct {
 	Visibility         string `gorm:"column:visibility;type:varchar(32);not null;default:'private';index" json:"visibility"`
 	Manifest           string `gorm:"column:manifest;type:text;not null" json:"-"`
 	ManifestSHA256     string `gorm:"column:manifest_sha256;type:char(64);not null" json:"manifest_sha256"`
+	PayloadSHA256      string `gorm:"column:payload_sha256;type:char(64);not null" json:"payload_sha256"`
 	Signature          string `gorm:"column:signature;type:text;not null" json:"-"`
 	SBOM               string `gorm:"column:sbom;type:text;not null" json:"-"`
+	PackageAssets      string `gorm:"column:package_assets;type:text;not null" json:"-"`
 	GrantedPermissions string `gorm:"column:granted_permissions;type:text;not null" json:"-"`
 	GrantedResources   string `gorm:"column:granted_resources;type:text;not null" json:"-"`
 	ScanStatus         string `gorm:"column:scan_status;type:varchar(32);not null;default:'PENDING'" json:"scan_status"`
+	ScanReport         string `gorm:"column:scan_report;type:text;not null" json:"-"`
+	ScanReportSHA256   string `gorm:"column:scan_report_sha256;type:char(64);not null" json:"scan_report_sha256"`
+	ScannedAt          int64  `gorm:"column:scanned_at;type:bigint;not null;default:0" json:"scanned_at"`
 	ReviewStatus       string `gorm:"column:review_status;type:varchar(32);not null;default:'PENDING'" json:"review_status"`
 	ReviewNotes        string `gorm:"column:review_notes;type:text" json:"review_notes,omitempty"`
 	ApprovedBy         string `gorm:"column:approved_by;type:varchar(128)" json:"approved_by,omitempty"`

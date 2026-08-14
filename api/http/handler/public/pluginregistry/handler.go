@@ -10,13 +10,19 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
 	"github.com/good-fish-man/agent-runtime-client/types/response"
+	pluginv1 "github.com/good-fish-man/athena-protocol/protocol/plugin/v1"
 )
+
+const maxProviderUploadBytes = pluginv1.MaximumPackageBytes*4/3 + 12<<20
 
 type Handler struct{ service *service.Service }
 
 func NewHandler(value *service.Service) *Handler { return &Handler{service: value} }
 
 func (h *Handler) List(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	items, err := h.service.List(c.Request.Context())
 	if err != nil {
 		_ = c.Error(err)
@@ -29,7 +35,7 @@ func (h *Handler) Install(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
 	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 12<<20)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxProviderUploadBytes)
 	var request service.InstallRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
@@ -77,7 +83,27 @@ func (h *Handler) Review(c *gin.Context) {
 	response.Ok(c, value)
 }
 
+func (h *Handler) Scan(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	var request service.ScanRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
+		return
+	}
+	value, err := h.service.Scan(c.Request.Context(), c.Param("provider"), c.Param("version"), request)
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, value)
+}
+
 func (h *Handler) Audit(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
 	items, err := h.service.Audit(c.Request.Context(), limit)
 	if err != nil {

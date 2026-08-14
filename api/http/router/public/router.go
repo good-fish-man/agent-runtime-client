@@ -246,6 +246,7 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		r.POST("/install", h.PluginRegistry.Install)
 		r.PUT("/:provider/:version/status", h.PluginRegistry.Transition)
 		r.PUT("/:provider/:version/review", h.PluginRegistry.Review)
+		r.POST("/:provider/:version/scan", h.PluginRegistry.Scan)
 	}
 
 	if h.Knowledge != nil {

@@ -29,8 +29,9 @@ The authenticated dashboard is backed by this service's agent, task, token, appr
 - Source-aware error chains logged once at the HTTP boundary.
 - WebSocket Action/Observation control plane for capability-aware desktop devices ([protocol](docs/action-observation-protocol.md)).
 - Sanitized task Experience, per-user retention/deletion controls, failure taxonomy, and deterministic offline evaluation ([architecture](docs/experience-evaluation.md)).
-- Private signed Capability Provider Registry with immutable versions, public
-  review gates, revocation, Runtime reload, and invocation audit inspection.
+- Private signed Capability Provider Registry with immutable full-package
+  verification, trusted machine scans, explicit least-privilege grants, public
+  review gates, quarantine/revocation, Runtime reload, and invocation audit inspection.
 
 ## System Architecture
 
@@ -214,13 +215,17 @@ execution, recovery, safety, and rollback model.
 
 ### Provider governance
 
-An administrator installs the exact `plugin.json`, `SIGNATURE`, and `SBOM`
-documents through `POST /plugins/install`. Versions are immutable. Private
-Providers may be activated after signature and schema verification; public
-Providers remain disabled until their scan is `PASSED` and human review is
-`APPROVED`. Revocation is terminal for that version. Status transitions use
-optimistic revisions so two administrators cannot silently overwrite each
-other. Runtime capabilities change only after the explicit reload operation.
+An administrator installs the exact `plugin.json`, `SIGNATURE`, CycloneDX
+`SBOM`, and every signed declarative package asset through
+`POST /plugins/install`. Versions are immutable. Requested permissions are
+denied by default and activation uses only the explicit Registry grant. The
+trusted scanner verifies the complete package and emits a digest-bound
+`SCAN-REPORT.json`; human review cannot manufacture or override that result.
+Public Providers remain disabled until the machine scan is `PASSED` and review
+is `APPROVED`. `POST /plugins/:provider/:version/scan` re-verifies the package
+on disk and quarantines tampered versions. Revocation is terminal. Status and
+scan transitions use optimistic revisions so administrators cannot silently
+overwrite each other. Runtime capabilities change only after explicit reload.
 
 ## Development
 

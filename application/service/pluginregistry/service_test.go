@@ -20,6 +20,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/plugin"
 	pluginv1 "github.com/good-fish-man/athena-protocol/protocol/plugin/v1"
+	pluginsdk "github.com/good-fish-man/athena-protocol/sdk/plugin"
 )
 
 func TestSignedPrivateProviderLifecycle(t *testing.T) {
@@ -28,7 +29,7 @@ func TestSignedPrivateProviderLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if provider.Status != pluginv1.StatusActive || provider.Revision != 1 {
+	if provider.Status != pluginv1.StatusActive || provider.Revision != 1 || provider.ScanStatus != ScanPassed || provider.ScanReportSHA256 == "" {
 		t.Fatalf("unexpected installed provider: %+v", provider)
 	}
 	items, err := service.List(context.Background())
@@ -54,6 +55,25 @@ func TestSignedPrivateProviderLifecycle(t *testing.T) {
 	}
 }
 
+func TestRescanQuarantinesTamperedPackage(t *testing.T) {
+	service, request := testService(t, VisibilityPrivate)
+	provider, err := service.Install(context.Background(), "admin", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(service.cfg.Directory, provider.ProviderID, provider.Version, "runtime", "spec.json")
+	if err := os.WriteFile(path, []byte(`{"kind":"tampered"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rescanned, err := service.Scan(context.Background(), provider.ProviderID, provider.Version, ScanRequest{ExpectedRevision: provider.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rescanned.ScanStatus != ScanFailed || rescanned.Status != pluginv1.StatusQuarantined || len(rescanned.ScanReport.Findings) == 0 {
+		t.Fatalf("tampered Provider was not quarantined: %+v", rescanned)
+	}
+}
+
 func TestPublicProviderRequiresScanAndReview(t *testing.T) {
 	service, request := testService(t, VisibilityPublic)
 	request.Activate = false
@@ -64,7 +84,7 @@ func TestPublicProviderRequiresScanAndReview(t *testing.T) {
 	if _, err := service.Transition(context.Background(), "admin", provider.ProviderID, provider.Version, StatusRequest{Status: pluginv1.StatusActive, ExpectedRevision: 1}); err == nil {
 		t.Fatal("unreviewed public provider was activated")
 	}
-	reviewed, err := service.Review(context.Background(), "reviewer", provider.ProviderID, provider.Version, ReviewRequest{ScanStatus: ScanPassed, ReviewStatus: ReviewApproved, ExpectedRevision: 1})
+	reviewed, err := service.Review(context.Background(), "reviewer", provider.ProviderID, provider.Version, ReviewRequest{ReviewStatus: ReviewApproved, ExpectedRevision: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +94,26 @@ func TestPublicProviderRequiresScanAndReview(t *testing.T) {
 	}
 	if active.Status != pluginv1.StatusActive || active.ApprovedBy != "admin" {
 		t.Fatalf("reviewed public provider did not activate: %+v", active)
+	}
+}
+
+func TestHumanReviewCannotOverrideFailedMachineScan(t *testing.T) {
+	service, request := testService(t, VisibilityPublic)
+	request.Activate = false
+	provider, err := service.Install(context.Background(), "admin", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(service.cfg.Directory, provider.ProviderID, provider.Version, "runtime", "spec.json")
+	if err := os.WriteFile(path, []byte(`{"kind":"tampered"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rescanned, err := service.Scan(context.Background(), provider.ProviderID, provider.Version, ScanRequest{ExpectedRevision: provider.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Review(context.Background(), "reviewer", provider.ProviderID, provider.Version, ReviewRequest{ReviewStatus: ReviewApproved, ExpectedRevision: rescanned.Revision}); err == nil {
+		t.Fatal("human review overrode a failed machine scan")
 	}
 }
 
@@ -113,11 +153,11 @@ func testService(t *testing.T, visibility string) (*Service, InstallRequest) {
 	}
 	trust := trustStore{Schema: "athena.plugin-trust.v1", Keys: []trustKey{{KeyID: "test", Algorithm: pluginv1.SignatureEd25519, PublicKey: base64.StdEncoding.EncodeToString(publicKey)}}}
 	writeTestJSON(t, cfg.TrustStorePath, trust)
-	manifest := testManifest()
-	manifestBytes, _ := json.Marshal(manifest)
-	sbom := json.RawMessage(`{"bomFormat":"CycloneDX","specVersion":"1.5"}`)
-	signature := ed25519.Sign(privateKey, append(append(append([]byte(nil), manifestBytes...), '\n'), sbom...))
-	request := InstallRequest{Manifest: manifestBytes, SBOM: sbom, Visibility: visibility, Activate: true, Signature: pluginv1.SignatureEnvelope{Algorithm: pluginv1.SignatureEd25519, KeyID: "test", Signature: base64.StdEncoding.EncodeToString(signature)}}
+	providerPackage, err := pluginsdk.Build(testManifest(), map[string]any{"bomFormat": "CycloneDX", "specVersion": "1.5"}, "test", privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := InstallRequest{Manifest: providerPackage.ManifestJSON, SBOM: providerPackage.SBOMJSON, Visibility: visibility, Activate: true, Signature: providerPackage.Signature}
 	return NewService(data.New(db), cfg), request
 }
 
@@ -130,7 +170,7 @@ func testManifest() pluginv1.ProviderManifest {
 		Capabilities: []pluginv1.Capability{{ID: capabilityID, Description: "Read fixture", InputSchema: objectSchema, OutputSchema: objectSchema, ReadOnly: true, Risk: pluginv1.RiskR0, ObservationContract: "fixture.observation.v1"}},
 		Platforms:    []pluginv1.Platform{{OS: "any", Arch: "any"}}, RiskFloor: pluginv1.RiskR0,
 		Resources:   pluginv1.ResourceLimits{MaxExecutionMS: 1000, MaxInputBytes: 1024, MaxOutputBytes: 1024, MaxConcurrency: 1, MaxMemoryMB: 32, MaxCPUMillis: 250},
-		HealthCheck: pluginv1.HealthCheck{Operation: capabilityID, TimeoutMS: 500}, Observation: pluginv1.ObservationContract{Schema: objectSchema},
+		HealthCheck: pluginv1.HealthCheck{Operation: capabilityID, TimeoutMS: 500, Input: map[string]any{}}, Observation: pluginv1.ObservationContract{Schema: objectSchema},
 		Runtime: pluginv1.RuntimeSpec{Kind: pluginv1.RuntimeStaticJSON, StaticResponses: map[string]json.RawMessage{capabilityID: json.RawMessage(`{}`)}},
 		SBOMRef: pluginv1.SBOMFile, IssuedAt: time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC),
 	}
