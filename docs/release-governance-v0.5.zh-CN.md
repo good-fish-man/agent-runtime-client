@@ -4,7 +4,7 @@ Athena v0.5 将不可变行为与单次运行状态分离，并建立从已评�
 
 ## 核心契约
 
-- `AgentBuild` 固定 Kernel、Planner、Policy、Protocol、Prompt、Ontology、评测套件以及精确的 Skill/Strategy 已评审版本，并保存不可变 SHA-256 校验和。
+- `AgentBuild` 固定 Kernel、Planner、Policy、Protocol、Prompt、Ontology、评测套件以及精确的 Skill/Strategy 已评审版本。每个产物都携带不可变 Version ID、Candidate ID、Evaluation Run、评审人、评审时间和校验和，整条溯源链都会进入 Build SHA-256。
 - `RunManifest` 为每次任务记录实际选择的构建校验和、模型配置指纹、能力实例、设备、用户范围、世界版本、知识快照、预算、功能开关及 Canary 分组。
 - 两者都不保存运行时密钥。模型 API Key 和知识库 Token 只参与不可逆配置指纹计算。
 
@@ -18,9 +18,9 @@ PROPOSED -> REVIEWED -> SHADOW -> CANARY -> ACTIVE
                                   ROLLED_BACK -> RETIRED
 ```
 
-只有经过人工评审的提案才能进入 Shadow。离开 Shadow 前，至少需要一条通过的评测结果，并且真实动作数必须为零、无外部副作用。自动 Canary 仅允许可验证、可恢复的 R0/R1 构建；R2/R3 只能通过显式确认从 Shadow 激活。
+只有经过人工评审的提案才能进入 Shadow。调用方只能提交 Task ID 和结构化输入；服务端解析不可变 Control/Candidate Build，把同一个规范化输入摘要交给只读双跑 evaluator，并自行计算 Route、Graph、计划动作、成本、风险和副作用证明。调用方不能提交哈希或 `passed`。离开 Shadow 前，结果必须匹配精确 Build 对，所有必需检查通过，真实动作数为零，且网络、设备、凭据和世界写入计数全部为零。自动 Canary 仅允许可验证、可恢复的 R0/R1 构建；R2/R3 只能通过显式确认从 Shadow 激活。
 
-Canary 激活前，最新指标必须达到最低样本量，并同时满足成功率、延迟、成本、安全和人工干预阈值。任一停止阈值被触发时，指标记录与暂停 Promotion 在同一事务中完成。
+Canary 的公开 API 不接受聚合指标或原始样本。只有受信 Runtime 完成路径会为候选运行生成样本，并绑定唯一 `RunManifest`、候选 Exposure 和精确候选 Build。仓储会锁定 Promotion，在同一事务中写入样本、重算成功率、P95 延迟、平均成本、安全、人工干预率和样本集摘要，并写入聚合指标。任一停止阈值触发时，样本、指标和暂停 Promotion 原子完成。
 
 ## 稳定分组与用户退出
 
@@ -34,7 +34,8 @@ Canary 使用 `owner_id + agent_id + promotion_id` 的稳定哈希分组，不�
 
 - 模型不能通过提示词创建或激活构建；部署接口受认证用户范围约束。
 - 创建构建时拒绝未评审或可变的 Skill/Strategy 版本。
-- Shadow 记录始终声明零真实动作和无外部副作用。
+- Shadow 调用方不能声明结果、哈希、成本、风险或真实动作；若 evaluator 报告任何外部效果，服务端拒绝且不落库。
+- 公开调用方不能创建聚合指标或原始样本；只有受信 Runtime 路径可写入，且数据库强制每个 Manifest 只能产生一个样本。
 - 乐观 Revision 防止并发发布、激活、暂停和回滚互相覆盖。
 - 构建、Promotion、Exposure、Manifest、Metric 和 Rollback 查询必须包含 Owner 条件。
 - 测试明确覆盖 R2/R3 自动 Canary 禁止及密钥不落库。

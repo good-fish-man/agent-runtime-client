@@ -92,13 +92,13 @@ func (h *Handler) TransitionPromotion(c *gin.Context) {
 	response.Ok(c, value)
 }
 
-func (h *Handler) RecordShadow(c *gin.Context) {
+func (h *Handler) EvaluateShadow(c *gin.Context) {
 	var request service.ShadowRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
 		return
 	}
-	value, err := h.service.RecordShadow(c.Request.Context(), userID(c), c.Param("id"), request)
+	value, err := h.service.EvaluateShadow(c.Request.Context(), userID(c), c.Param("id"), request)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -115,18 +115,13 @@ func (h *Handler) ListShadow(c *gin.Context) {
 	response.Ok(c, gin.H{"items": items})
 }
 
-func (h *Handler) RecordMetric(c *gin.Context) {
-	var request service.CanaryMetricRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
-		return
-	}
-	metric, promotion, err := h.service.RecordCanaryMetric(c.Request.Context(), userID(c), c.Param("id"), request)
+func (h *Handler) ListSamples(c *gin.Context) {
+	items, err := h.service.ListCanarySamples(c.Request.Context(), userID(c), c.Param("id"), queryInt(c, "limit", 50))
 	if err != nil {
 		_ = c.Error(err)
 		return
 	}
-	response.OkStatus(c, http.StatusCreated, gin.H{"metric": metric, "promotion": promotion})
+	response.Ok(c, gin.H{"items": items})
 }
 
 func (h *Handler) ListMetrics(c *gin.Context) {

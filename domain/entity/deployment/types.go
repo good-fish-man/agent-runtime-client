@@ -21,12 +21,16 @@ const (
 )
 
 type AgentBuild = deploymentv1.AgentBuild
+type ArtifactApprovalReference = deploymentv1.ArtifactApprovalReference
 type RunBudget = deploymentv1.RunBudget
 type RunManifest = deploymentv1.RunManifest
 type CanaryThresholds = deploymentv1.CanaryThresholds
 type Promotion = deploymentv1.Promotion
 type Exposure = deploymentv1.Exposure
 type ShadowResult = deploymentv1.ShadowResult
+type ShadowSideEffectProof = deploymentv1.ShadowSideEffectProof
+type ShadowCheck = deploymentv1.ShadowCheck
+type CanarySample = deploymentv1.CanarySample
 type CanaryMetric = deploymentv1.CanaryMetric
 type Rollback = deploymentv1.Rollback
 type Compensation = deploymentv1.Compensation
@@ -44,7 +48,6 @@ type PromotionFilter struct {
 	Offset  int
 }
 
-type ArtifactVersions struct {
-	Skills     map[string]string
-	Strategies map[string]string
+type ArtifactApprovals struct {
+	References []ArtifactApprovalReference
 }

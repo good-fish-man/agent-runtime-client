@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -15,6 +16,9 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/deployment"
 	learningpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/learning"
+	"github.com/good-fish-man/agent-runtime-client/pkg/ulid"
+	deploymentv1 "github.com/good-fish-man/athena-protocol/protocol/deployment/v1"
+	learningv1 "github.com/good-fish-man/athena-protocol/protocol/learning/v1"
 	log "github.com/good-fish-man/logx"
 )
 
@@ -31,23 +35,95 @@ func NewStore(value *data.Data) *Store { return &Store{data: value} }
 
 var _ repository.Store = (*Store)(nil)
 
-func (s *Store) ApprovedArtifactVersions(ctx context.Context, ownerID string) (entity.ArtifactVersions, error) {
-	result := entity.ArtifactVersions{Skills: map[string]string{}, Strategies: map[string]string{}}
-	var skills []learningpo.Skill
-	if err := s.data.DB(ctx).Where("status = ? AND deleted_at = 0 AND (owner_id = ? OR visibility = ?)", "APPROVED_FOR_USE", ownerID, "PUBLIC").Find(&skills).Error; err != nil {
-		return result, log.WrapError(err, "DeploymentStore.ApprovedArtifactVersions.skills")
+func (s *Store) ResolveApprovedArtifacts(ctx context.Context, ownerID string, skills, strategies map[string]string) (entity.ArtifactApprovals, error) {
+	result := entity.ArtifactApprovals{References: make([]entity.ArtifactApprovalReference, 0, len(skills)+len(strategies))}
+	for id, version := range skills {
+		reference, err := s.resolveSkillApproval(ctx, ownerID, id, version)
+		if err != nil {
+			return result, err
+		}
+		result.References = append(result.References, *reference)
 	}
-	for _, skill := range skills {
-		result.Skills[skill.SkillID] = skill.LatestVersion
-	}
-	var strategies []learningpo.Strategy
-	if err := s.data.DB(ctx).Where("status = ? AND deleted_at = 0 AND (owner_id = ? OR visibility = ?)", "APPROVED_FOR_USE", ownerID, "PUBLIC").Find(&strategies).Error; err != nil {
-		return result, log.WrapError(err, "DeploymentStore.ApprovedArtifactVersions.strategies")
-	}
-	for _, strategy := range strategies {
-		result.Strategies[strategy.StrategyID] = strategy.LatestVersion
+	for id, version := range strategies {
+		reference, err := s.resolveStrategyApproval(ctx, ownerID, id, version)
+		if err != nil {
+			return result, err
+		}
+		result.References = append(result.References, *reference)
 	}
 	return result, nil
+}
+
+func (s *Store) resolveSkillApproval(ctx context.Context, ownerID, id, version string) (*entity.ArtifactApprovalReference, error) {
+	var artifact learningpo.Skill
+	result := s.data.DB(ctx).Where("skill_id = ? AND status = ? AND deleted_at = 0 AND (owner_id = ? OR visibility = ?)", id, learningv1.LifecycleApproved, ownerID, learningv1.VisibilityPublic).Limit(1).Find(&artifact)
+	if result.Error != nil {
+		return nil, log.WrapError(result.Error, "DeploymentStore.resolveSkillApproval.artifact")
+	}
+	if result.RowsAffected == 0 {
+		return nil, fmt.Errorf("approved skill %s@%s is unavailable", id, version)
+	}
+	var immutable learningpo.SkillVersion
+	result = s.data.DB(ctx).Where("skill_id = ? AND version = ?", id, version).Limit(1).Find(&immutable)
+	if result.Error != nil {
+		return nil, log.WrapError(result.Error, "DeploymentStore.resolveSkillApproval.version")
+	}
+	if result.RowsAffected == 0 {
+		return nil, fmt.Errorf("approved skill %s@%s has no immutable version", id, version)
+	}
+	if immutable.OwnerID != artifact.OwnerID {
+		return nil, fmt.Errorf("approved skill %s@%s crosses owner boundaries", id, version)
+	}
+	return s.resolveCandidateApproval(ctx, "SKILL", id, version, immutable.VersionID, immutable.CandidateID, immutable.OwnerID, immutable.Checksum)
+}
+
+func (s *Store) resolveStrategyApproval(ctx context.Context, ownerID, id, version string) (*entity.ArtifactApprovalReference, error) {
+	var artifact learningpo.Strategy
+	result := s.data.DB(ctx).Where("strategy_id = ? AND status = ? AND deleted_at = 0 AND (owner_id = ? OR visibility = ?)", id, learningv1.LifecycleApproved, ownerID, learningv1.VisibilityPublic).Limit(1).Find(&artifact)
+	if result.Error != nil {
+		return nil, log.WrapError(result.Error, "DeploymentStore.resolveStrategyApproval.artifact")
+	}
+	if result.RowsAffected == 0 {
+		return nil, fmt.Errorf("approved strategy %s@%s is unavailable", id, version)
+	}
+	var immutable learningpo.StrategyVersion
+	result = s.data.DB(ctx).Where("strategy_id = ? AND version = ?", id, version).Limit(1).Find(&immutable)
+	if result.Error != nil {
+		return nil, log.WrapError(result.Error, "DeploymentStore.resolveStrategyApproval.version")
+	}
+	if result.RowsAffected == 0 {
+		return nil, fmt.Errorf("approved strategy %s@%s has no immutable version", id, version)
+	}
+	if immutable.OwnerID != artifact.OwnerID {
+		return nil, fmt.Errorf("approved strategy %s@%s crosses owner boundaries", id, version)
+	}
+	return s.resolveCandidateApproval(ctx, "STRATEGY", id, version, immutable.VersionID, immutable.CandidateID, immutable.OwnerID, immutable.Checksum)
+}
+
+func (s *Store) resolveCandidateApproval(ctx context.Context, kind, id, version, versionID, candidateID, expectedOwnerID, checksum string) (*entity.ArtifactApprovalReference, error) {
+	var candidate learningpo.Candidate
+	result := s.data.DB(ctx).Where("candidate_id = ? AND status = ? AND deleted_at = 0", candidateID, learningv1.LifecycleApproved).Limit(1).Find(&candidate)
+	if result.Error != nil {
+		return nil, log.WrapError(result.Error, "DeploymentStore.resolveCandidateApproval")
+	}
+	if result.RowsAffected == 0 {
+		return nil, fmt.Errorf("%s %s@%s is not backed by an approved candidate", strings.ToLower(kind), id, version)
+	}
+	if candidate.OwnerID != expectedOwnerID || candidate.Kind != kind {
+		return nil, fmt.Errorf("%s %s@%s has mismatched candidate ownership or kind", strings.ToLower(kind), id, version)
+	}
+	var evaluation learningv1.EvaluationSummary
+	if err := json.Unmarshal([]byte(candidate.Evaluation), &evaluation); err != nil {
+		return nil, log.WrapError(err, "DeploymentStore.resolveCandidateApproval.evaluation")
+	}
+	if !evaluation.Passed || evaluation.RunID == "" || candidate.ReviewedBy == "" || candidate.ReviewedAt == 0 {
+		return nil, fmt.Errorf("%s %s@%s is missing evaluation or human review provenance", strings.ToLower(kind), id, version)
+	}
+	return &entity.ArtifactApprovalReference{
+		Kind: kind, ArtifactID: id, Version: version, VersionID: versionID, CandidateID: candidateID,
+		EvaluationRunID: evaluation.RunID, ReviewedBy: candidate.ReviewedBy, ReviewedAt: fromMillis(candidate.ReviewedAt),
+		Checksum: checksum, Verified: true,
+	}, nil
 }
 
 func (s *Store) CreateBuild(ctx context.Context, build entity.AgentBuild) error {
@@ -271,24 +347,88 @@ func (s *Store) ListShadowResults(ctx context.Context, ownerID, promotionID stri
 	return items, nil
 }
 
-func (s *Store) SaveCanaryMetric(ctx context.Context, metric entity.CanaryMetric, promotion *entity.Promotion, expectedRevision int64) error {
-	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
-		row := po.CanaryMetric{MetricID: metric.MetricID, PromotionID: metric.PromotionID, OwnerID: metric.OwnerID, Content: encode(metric), StopTriggered: metric.StopTriggered, CreatedAt: millis(metric.CreatedAt)}
-		if err := tx.Create(&row).Error; err != nil {
-			return err
-		}
-		if promotion == nil {
-			return nil
-		}
-		result := tx.Model(&po.Promotion{}).Where("promotion_id = ? AND owner_id = ? AND revision = ?", promotion.PromotionID, promotion.OwnerID, expectedRevision).Updates(map[string]any{"status": promotion.Status, "revision": promotion.Revision, "updated_at": millis(promotion.UpdatedAt)})
+func (s *Store) AppendCanarySample(ctx context.Context, sample entity.CanarySample, promotion entity.Promotion) (*entity.CanaryMetric, *entity.Promotion, error) {
+	var metric *entity.CanaryMetric
+	var updated *entity.Promotion
+	err := s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
+		var locked po.Promotion
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("promotion_id = ? AND owner_id = ?", promotion.PromotionID, promotion.OwnerID).Limit(1).Find(&locked)
 		if result.Error != nil {
 			return result.Error
 		}
-		if result.RowsAffected != 1 {
+		if result.RowsAffected != 1 || locked.Revision != promotion.Revision || locked.Status != entity.StatusCanary {
 			return ErrRevisionConflict
 		}
+		row := po.CanarySample{
+			SampleID: sample.SampleID, PromotionID: sample.PromotionID, OwnerID: sample.OwnerID,
+			ManifestID: sample.ManifestID, ExposureID: sample.ExposureID, BuildID: sample.AgentBuildID,
+			Content: encode(sample), CreatedAt: millis(sample.CreatedAt),
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			return err
+		}
+		var rows []po.CanarySample
+		if err := tx.Where("owner_id = ? AND promotion_id = ?", promotion.OwnerID, promotion.PromotionID).Order("created_at ASC, sample_id ASC").Find(&rows).Error; err != nil {
+			return err
+		}
+		samples := make([]entity.CanarySample, 0, len(rows))
+		for _, stored := range rows {
+			value, err := decode[entity.CanarySample](stored.Content, "DeploymentStore.AppendCanarySample.decode")
+			if err != nil {
+				return err
+			}
+			samples = append(samples, *value)
+		}
+		aggregated, err := deploymentv1.AggregateCanary(promotion.PromotionID, promotion.OwnerID, ulid.New(), samples)
+		if err != nil {
+			return err
+		}
+		stop, reason := promotion.Thresholds.Evaluate(aggregated)
+		aggregated.StopTriggered, aggregated.StopReason = stop, reason
+		metricRow := po.CanaryMetric{MetricID: aggregated.MetricID, PromotionID: aggregated.PromotionID, OwnerID: aggregated.OwnerID, Content: encode(aggregated), StopTriggered: aggregated.StopTriggered, CreatedAt: millis(aggregated.CreatedAt)}
+		if err := tx.Create(&metricRow).Error; err != nil {
+			return err
+		}
+		metric = &aggregated
+		if !stop {
+			return nil
+		}
+		promotion.Status = entity.StatusPaused
+		promotion.Revision++
+		promotion.UpdatedAt = sample.CreatedAt
+		update := tx.Model(&po.Promotion{}).Where("promotion_id = ? AND owner_id = ? AND revision = ?", promotion.PromotionID, promotion.OwnerID, locked.Revision).Updates(map[string]any{
+			"status": promotion.Status, "revision": promotion.Revision, "updated_at": millis(promotion.UpdatedAt),
+		})
+		if update.Error != nil {
+			return update.Error
+		}
+		if update.RowsAffected != 1 {
+			return ErrRevisionConflict
+		}
+		copy := promotion
+		updated = &copy
 		return nil
-	}), "DeploymentStore.SaveCanaryMetric")
+	})
+	if err != nil {
+		return nil, nil, log.WrapError(err, "DeploymentStore.AppendCanarySample")
+	}
+	return metric, updated, nil
+}
+
+func (s *Store) ListCanarySamples(ctx context.Context, ownerID, promotionID string, limit int) ([]entity.CanarySample, error) {
+	var rows []po.CanarySample
+	if err := s.data.DB(ctx).Where("owner_id = ? AND promotion_id = ?", ownerID, promotionID).Order("created_at DESC").Limit(normalizeLimit(limit)).Find(&rows).Error; err != nil {
+		return nil, log.WrapError(err, "DeploymentStore.ListCanarySamples")
+	}
+	items := make([]entity.CanarySample, 0, len(rows))
+	for _, row := range rows {
+		item, err := decode[entity.CanarySample](row.Content, "DeploymentStore.ListCanarySamples.decode")
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, *item)
+	}
+	return items, nil
 }
 
 func (s *Store) ListCanaryMetrics(ctx context.Context, ownerID, promotionID string, limit int) ([]entity.CanaryMetric, error) {
@@ -310,6 +450,18 @@ func (s *Store) ListCanaryMetrics(ctx context.Context, ownerID, promotionID stri
 func (s *Store) CreateRunManifest(ctx context.Context, manifest entity.RunManifest) error {
 	row := po.RunManifest{ManifestID: manifest.ManifestID, OwnerID: manifest.OwnerID, AgentID: manifest.AgentID, TaskID: manifest.TaskID, BuildID: manifest.AgentBuildID, ExposureID: manifest.ExposureID, Content: encode(manifest), CreatedAt: millis(manifest.CreatedAt)}
 	return log.WrapError(s.data.DB(ctx).Create(&row).Error, "DeploymentStore.CreateRunManifest")
+}
+
+func (s *Store) FindRunManifest(ctx context.Context, ownerID, manifestID string) (*entity.RunManifest, error) {
+	var row po.RunManifest
+	result := s.data.DB(ctx).Where("owner_id = ? AND manifest_id = ?", ownerID, manifestID).Limit(1).Find(&row)
+	if result.Error != nil {
+		return nil, log.WrapError(result.Error, "DeploymentStore.FindRunManifest")
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil
+	}
+	return decode[entity.RunManifest](row.Content, "DeploymentStore.FindRunManifest.decode")
 }
 
 func (s *Store) ListRunManifests(ctx context.Context, ownerID, agentID string, limit int) ([]entity.RunManifest, error) {

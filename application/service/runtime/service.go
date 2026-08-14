@@ -102,6 +102,7 @@ func (s *RuntimeService) Run(ctx context.Context, req *dto.RunReq) (*entity.Comp
 	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, in.KnowledgeBases, in.Options); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.Run.attachRunManifest")
 	}
+	started := time.Now()
 	result, err := s.svc.Run(ctx, in)
 	if err == nil && result != nil {
 		s.storeMemories(ctx, in.Context, result.Memories)
@@ -111,6 +112,7 @@ func (s *RuntimeService) Run(ctx context.Context, req *dto.RunReq) (*entity.Comp
 	} else if err != nil {
 		s.recordCompletion(ctx, in.Context, in.Models, in.Prompt, "", nil, nil, err)
 	}
+	s.recordCanaryOutcome(ctx, in.Context, err == nil && result != nil && len(result.PendingApprovals) == 0, time.Since(started), completionApprovals(result), completionMetadata(result), err)
 	return result, log.WrapError(err, "RuntimeService.Run.gateway")
 }
 
@@ -140,8 +142,10 @@ func (s *RuntimeService) RunStream(ctx context.Context, req *dto.RunReq, emit St
 		return log.WrapError(err, "RuntimeService.RunStream.attachRunManifest")
 	}
 	capture := newStreamCapture()
+	started := time.Now()
 	err := s.runControlLoop(ctx, in, req.DeviceID, s.memoryAwareEmitter(ctx, in.Context, capture.Wrap(emit)))
 	s.recordStream(ctx, in.Context, in.Models, in.Prompt, capture, err)
+	s.recordCanaryOutcome(ctx, in.Context, err == nil && capture.errEvent == nil && capture.done != nil && len(capture.approvals) == 0, time.Since(started), capture.approvals, streamMetadata(capture), err)
 	return log.WrapError(err, "RuntimeService.RunStream.controlLoop")
 }
 
@@ -166,12 +170,14 @@ func (s *RuntimeService) RunAgent(ctx context.Context, req *dto.AgentReq) (*enti
 	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, nil, nil); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.RunAgent.attachRunManifest")
 	}
+	started := time.Now()
 	value, err := s.svc.RunAgent(ctx, in)
 	if value != nil {
 		s.recordCompletion(ctx, in.Context, in.Models, in.Task, value.Content, value.Metadata, nil, err)
 	} else if err != nil {
 		s.recordCompletion(ctx, in.Context, in.Models, in.Task, "", nil, nil, err)
 	}
+	s.recordCanaryOutcome(ctx, in.Context, err == nil && value != nil, time.Since(started), nil, agentMetadata(value), err)
 	return value, log.WrapError(err, "RuntimeService.RunAgent")
 }
 
@@ -198,8 +204,10 @@ func (s *RuntimeService) RunAgentStream(ctx context.Context, req *dto.AgentReq, 
 		return log.WrapError(err, "RuntimeService.RunAgentStream.attachRunManifest")
 	}
 	capture := newStreamCapture()
+	started := time.Now()
 	err := s.runAgentControlLoop(ctx, in, req.DeviceID, s.memoryAwareEmitter(ctx, in.Context, capture.Wrap(emit)))
 	s.recordStream(ctx, in.Context, in.Models, in.Task, capture, err)
+	s.recordCanaryOutcome(ctx, in.Context, err == nil && capture.errEvent == nil && capture.done != nil && len(capture.approvals) == 0, time.Since(started), capture.approvals, streamMetadata(capture), err)
 	return log.WrapError(err, "RuntimeService.RunAgentStream.controlLoop")
 }
 
@@ -999,6 +1007,69 @@ func (s *RuntimeService) attachRunManifest(ctx context.Context, values map[strin
 		}
 	}
 	return nil
+}
+
+func (s *RuntimeService) recordCanaryOutcome(ctx context.Context, values map[string]any, succeeded bool, elapsed time.Duration, approvals []entity.PendingApproval, metadata *entity.ResponseMetadata, runErr error) {
+	if s == nil || s.deployment == nil {
+		return
+	}
+	manifestID := contextString(values, "run_manifest_id")
+	if manifestID == "" {
+		return
+	}
+	latency := elapsed.Milliseconds()
+	if latency < 0 {
+		latency = 0
+	}
+	safety := 1.0
+	detail := ""
+	if runErr != nil {
+		detail = runErr.Error()
+	}
+	if metadata != nil && metadata.Error != "" {
+		detail += " " + metadata.Error
+	}
+	detail = strings.ToLower(detail)
+	for _, marker := range []string{"safety violation", "policy violation", "permission denied", "forbidden action"} {
+		if strings.Contains(detail, marker) {
+			safety = 0
+			break
+		}
+	}
+	_, _, err := s.deployment.RecordRunOutcome(context.WithoutCancel(ctx), authctx.UserID(ctx), manifestID, deploymentsvc.RunOutcome{
+		Succeeded: succeeded, LatencyMS: latency, SafetyScore: safety, Intervention: len(approvals) > 0,
+	})
+	if err != nil {
+		log.WarnwCtx(ctx, "record canary outcome failed", "manifest_id", manifestID, "error", err)
+	}
+}
+
+func completionApprovals(value *entity.Completion) []entity.PendingApproval {
+	if value == nil {
+		return nil
+	}
+	return value.PendingApprovals
+}
+
+func completionMetadata(value *entity.Completion) *entity.ResponseMetadata {
+	if value == nil {
+		return nil
+	}
+	return value.Metadata
+}
+
+func agentMetadata(value *entity.AgentResult) *entity.ResponseMetadata {
+	if value == nil {
+		return nil
+	}
+	return value.Metadata
+}
+
+func streamMetadata(capture *streamCapture) *entity.ResponseMetadata {
+	if capture == nil || capture.done == nil {
+		return nil
+	}
+	return capture.done.Metadata
 }
 
 func runBudget(options *entity.RunOptions) deploymententity.RunBudget {

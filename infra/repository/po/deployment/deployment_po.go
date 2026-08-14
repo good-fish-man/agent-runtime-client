@@ -84,6 +84,19 @@ type CanaryMetric struct {
 
 func (CanaryMetric) TableName() string { return "os_canary_metric" }
 
+type CanarySample struct {
+	SampleID    string `gorm:"column:sample_id;primaryKey;size:64"`
+	PromotionID string `gorm:"column:promotion_id;size:64;not null;index:idx_canary_sample_promotion_created,priority:1"`
+	OwnerID     string `gorm:"column:owner_id;size:64;not null;index"`
+	ManifestID  string `gorm:"column:manifest_id;size:64;not null;uniqueIndex"`
+	ExposureID  string `gorm:"column:exposure_id;size:64;not null;index"`
+	BuildID     string `gorm:"column:build_id;size:64;not null;index"`
+	Content     string `gorm:"column:content;type:text;not null"`
+	CreatedAt   int64  `gorm:"column:created_at;not null;index:idx_canary_sample_promotion_created,priority:2"`
+}
+
+func (CanarySample) TableName() string { return "os_canary_sample" }
+
 type Rollback struct {
 	RollbackID  string `gorm:"column:rollback_id;primaryKey;size:64"`
 	PromotionID string `gorm:"column:promotion_id;size:64;not null;index"`

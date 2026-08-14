@@ -105,6 +105,7 @@ func InitTables(ctx context.Context, d *data.Data) error {
 		&deploymentpo.Exposure{},
 		&deploymentpo.ShadowResult{},
 		&deploymentpo.CanaryMetric{},
+		&deploymentpo.CanarySample{},
 		&deploymentpo.Rollback{},
 		&deploymentpo.Compensation{},
 		&knowledgepo.Claim{},

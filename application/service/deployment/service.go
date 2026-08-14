@@ -3,6 +3,7 @@ package deployment
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,9 +24,21 @@ const (
 	defaultEvaluationSuiteVersion = "evaluation-v1"
 )
 
-type Service struct{ store repository.Store }
+type Service struct {
+	store           repository.Store
+	shadowEvaluator ShadowEvaluator
+}
 
-func NewService(store repository.Store) *Service { return &Service{store: store} }
+func NewService(store repository.Store) *Service {
+	return NewServiceWithShadowEvaluator(store, NewDeclarativeShadowEvaluator())
+}
+
+func NewServiceWithShadowEvaluator(store repository.Store, evaluator ShadowEvaluator) *Service {
+	if evaluator == nil {
+		evaluator = NewDeclarativeShadowEvaluator()
+	}
+	return &Service{store: store, shadowEvaluator: evaluator}
+}
 
 type CreateBuildRequest struct {
 	AgentID                string            `json:"agent_id"`
@@ -46,8 +59,6 @@ type CreatePromotionRequest struct {
 	BuildID       string                  `json:"build_id"`
 	CanaryPercent int                     `json:"canary_percent"`
 	Thresholds    entity.CanaryThresholds `json:"thresholds"`
-	Verified      bool                    `json:"verified"`
-	Recoverable   bool                    `json:"recoverable"`
 }
 
 type TransitionRequest struct {
@@ -57,29 +68,27 @@ type TransitionRequest struct {
 }
 
 type ShadowRequest struct {
-	TaskID                string `json:"task_id"`
-	ProductionRouteHash   string `json:"production_route_hash"`
-	CandidateRouteHash    string `json:"candidate_route_hash"`
-	ProductionGraphHash   string `json:"production_graph_hash"`
-	CandidateGraphHash    string `json:"candidate_graph_hash"`
-	ProductionActionsHash string `json:"production_actions_hash"`
-	CandidateActionsHash  string `json:"candidate_actions_hash"`
-	ProductionCostMicros  int64  `json:"production_cost_micros"`
-	CandidateCostMicros   int64  `json:"candidate_cost_micros"`
-	ProductionRisk        string `json:"production_risk"`
-	CandidateRisk         string `json:"candidate_risk"`
-	LatencyMS             int64  `json:"latency_ms"`
-	Passed                bool   `json:"passed"`
-	Summary               string `json:"summary"`
+	TaskID          string           `json:"task_id"`
+	Input           map[string]any   `json:"input"`
+	CapabilityHints []string         `json:"capability_hints,omitempty"`
+	Budget          entity.RunBudget `json:"budget"`
 }
 
-type CanaryMetricRequest struct {
-	SampleCount       int     `json:"sample_count"`
-	SuccessRate       float64 `json:"success_rate"`
-	P95LatencyMS      int64   `json:"p95_latency_ms"`
-	AverageCostMicros int64   `json:"average_cost_micros"`
-	SafetyScore       float64 `json:"safety_score"`
-	InterventionRate  float64 `json:"intervention_rate"`
+type CanarySampleRequest struct {
+	ManifestID   string  `json:"manifest_id"`
+	Succeeded    bool    `json:"succeeded"`
+	LatencyMS    int64   `json:"latency_ms"`
+	CostMicros   int64   `json:"cost_micros"`
+	SafetyScore  float64 `json:"safety_score"`
+	Intervention bool    `json:"intervention"`
+}
+
+type RunOutcome struct {
+	Succeeded    bool
+	LatencyMS    int64
+	CostMicros   int64
+	SafetyScore  float64
+	Intervention bool
 }
 
 type CompensationRequest struct {
@@ -110,17 +119,11 @@ func (s *Service) CreateBuild(ctx context.Context, ownerID, actorID string, requ
 		return nil, fmt.Errorf("deployment service is not configured")
 	}
 	request = defaults(request)
-	allowed, err := s.store.ApprovedArtifactVersions(ctx, ownerID)
+	approvals, err := s.store.ResolveApprovedArtifacts(ctx, ownerID, request.SkillVersions, request.StrategyVersions)
 	if err != nil {
 		return nil, log.WrapError(err, "DeploymentService.CreateBuild.artifacts")
 	}
-	if err := validateArtifactVersions(request.SkillVersions, allowed.Skills, "skill"); err != nil {
-		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
-	}
-	if err := validateArtifactVersions(request.StrategyVersions, allowed.Strategies, "strategy"); err != nil {
-		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
-	}
-	build, err := makeBuild(ownerID, actorID, request)
+	build, err := makeBuild(ownerID, actorID, traceID(ctx), request, approvals.References)
 	if err != nil {
 		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
 	}
@@ -146,6 +149,9 @@ func (s *Service) ProposePromotion(ctx context.Context, ownerID string, request 
 	if build == nil {
 		return nil, apierror.ErrNotFound.WithMessage("agent build not found")
 	}
+	if err := build.Validate(); err != nil {
+		return nil, apierror.ErrBadRequest.WithMessage("agent build integrity check failed: " + err.Error())
+	}
 	previous, err := s.store.FindActivePromotion(ctx, ownerID, build.AgentID)
 	if err != nil {
 		return nil, err
@@ -158,7 +164,7 @@ func (s *Service) ProposePromotion(ctx context.Context, ownerID string, request 
 		Schema: entity.Schema, PromotionID: ulid.New(), OwnerID: ownerID, AgentID: build.AgentID,
 		BuildID: build.BuildID, Status: entity.StatusProposed, RiskLevel: build.RiskLevel,
 		CanaryPercent: request.CanaryPercent, Thresholds: request.Thresholds,
-		Verified: request.Verified, Recoverable: request.Recoverable, Revision: 1, CreatedAt: now, UpdatedAt: now,
+		Verified: build.Verified, Recoverable: build.Recoverable && previous != nil, Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	if previous != nil {
 		promotion.PreviousBuildID = previous.BuildID
@@ -202,7 +208,13 @@ func (s *Service) TransitionPromotion(ctx context.Context, ownerID, actorID, pro
 		}
 		passed := false
 		for _, result := range results {
-			if result.Passed && result.NoExternalSideEffects && result.ExecutedActionCount == 0 {
+			if result.Passed && result.NoExternalSideEffects && result.ExecutedActionCount == 0 &&
+				result.ProductionBuildID == promotion.PreviousBuildID && result.CandidateBuildID == promotion.BuildID {
+				control, controlErr := s.store.FindBuild(ctx, ownerID, result.ProductionBuildID)
+				candidate, candidateErr := s.store.FindBuild(ctx, ownerID, result.CandidateBuildID)
+				if controlErr != nil || candidateErr != nil || control == nil || candidate == nil || control.Checksum != result.ProductionBuildHash || candidate.Checksum != result.CandidateBuildHash {
+					continue
+				}
 				passed = true
 				break
 			}
@@ -216,7 +228,7 @@ func (s *Service) TransitionPromotion(ctx context.Context, ownerID, actorID, pro
 		if listErr != nil {
 			return nil, listErr
 		}
-		if len(metrics) == 0 || metrics[0].SampleCount < promotion.Thresholds.MinimumSamples || metrics[0].StopTriggered {
+		if len(metrics) == 0 || metrics[0].SampleCount < promotion.Thresholds.MinimumSamples || metrics[0].StopTriggered || metrics[0].LatestSampleID == "" || metrics[0].SamplesDigest == "" {
 			return nil, apierror.ErrBadRequest.WithMessage("promotion needs a healthy canary metric at the minimum sample size")
 		}
 		if stop, _ := promotion.Thresholds.Evaluate(metrics[0]); stop {
@@ -252,7 +264,7 @@ func (s *Service) ListPromotions(ctx context.Context, ownerID string, filter ent
 	return s.store.ListPromotions(ctx, ownerID, filter)
 }
 
-func (s *Service) RecordShadow(ctx context.Context, ownerID, promotionID string, request ShadowRequest) (*entity.ShadowResult, error) {
+func (s *Service) EvaluateShadow(ctx context.Context, ownerID, promotionID string, request ShadowRequest) (*entity.ShadowResult, error) {
 	promotion, err := s.store.FindPromotion(ctx, ownerID, promotionID)
 	if err != nil {
 		return nil, err
@@ -260,21 +272,96 @@ func (s *Service) RecordShadow(ctx context.Context, ownerID, promotionID string,
 	if promotion == nil || promotion.Status != entity.StatusShadow {
 		return nil, apierror.ErrBadRequest.WithMessage("promotion is not in SHADOW")
 	}
+	if strings.TrimSpace(request.TaskID) == "" || len(request.Input) == 0 {
+		return nil, apierror.ErrBadRequest.WithMessage("shadow task_id and structured input are required")
+	}
+	if promotion.PreviousBuildID == "" {
+		return nil, apierror.ErrBadRequest.WithMessage("shadow needs an active control build")
+	}
+	controlBuild, err := s.store.FindBuild(ctx, ownerID, promotion.PreviousBuildID)
+	if err != nil {
+		return nil, log.WrapError(err, "DeploymentService.EvaluateShadow.controlBuild")
+	}
+	candidateBuild, err := s.store.FindBuild(ctx, ownerID, promotion.BuildID)
+	if err != nil {
+		return nil, log.WrapError(err, "DeploymentService.EvaluateShadow.candidateBuild")
+	}
+	if controlBuild == nil || candidateBuild == nil {
+		return nil, apierror.ErrBadRequest.WithMessage("shadow control or candidate build is missing")
+	}
+	request.Budget = defaultShadowBudget(request.Budget)
+	inputDigest, err := digest(request.Input)
+	if err != nil {
+		return nil, apierror.ErrBadRequest.WithMessage("shadow input is not serializable")
+	}
+	started := time.Now()
+	controlPlan, err := s.shadowEvaluator.Evaluate(ctx, ShadowEvaluationInput{
+		TaskID: request.TaskID, InputDigest: inputDigest, Input: request.Input, Build: *controlBuild,
+		Budget: request.Budget, CapabilityHints: unique(request.CapabilityHints),
+	})
+	if err != nil {
+		return nil, log.WrapError(err, "DeploymentService.EvaluateShadow.control")
+	}
+	candidatePlan, err := s.shadowEvaluator.Evaluate(ctx, ShadowEvaluationInput{
+		TaskID: request.TaskID, InputDigest: inputDigest, Input: request.Input, Build: *candidateBuild,
+		Budget: request.Budget, CapabilityHints: unique(request.CapabilityHints),
+	})
+	if err != nil {
+		return nil, log.WrapError(err, "DeploymentService.EvaluateShadow.candidate")
+	}
+	controlRouteHash, _ := digest(controlPlan.Route)
+	candidateRouteHash, _ := digest(candidatePlan.Route)
+	controlGraphHash, _ := digest(controlPlan.Graph)
+	candidateGraphHash, _ := digest(candidatePlan.Graph)
+	controlActionsHash, _ := digest(controlPlan.PlannedActions)
+	candidateActionsHash, _ := digest(candidatePlan.PlannedActions)
+	controlProof, err := proofFor(*controlBuild, inputDigest, controlPlan.Effects)
+	if err != nil {
+		return nil, log.WrapError(err, "DeploymentService.EvaluateShadow.controlProof")
+	}
+	candidateProof, err := proofFor(*candidateBuild, inputDigest, candidatePlan.Effects)
+	if err != nil {
+		return nil, log.WrapError(err, "DeploymentService.EvaluateShadow.candidateProof")
+	}
+	checks := []entity.ShadowCheck{
+		{ID: "same_input", Required: true, Passed: inputDigest != "", Detail: "control and candidate received the same canonical input digest"},
+		{ID: "control_plan_only", Required: true, Passed: noEffects(controlPlan.Effects), Detail: "control evaluator cannot call network, device, credentials, or world writes"},
+		{ID: "candidate_plan_only", Required: true, Passed: noEffects(candidatePlan.Effects), Detail: "candidate evaluator cannot call network, device, credentials, or world writes"},
+		{ID: "candidate_risk_bounded", Required: true, Passed: riskRank(candidatePlan.RiskLevel) <= riskRank(candidateBuild.RiskLevel), Detail: "candidate plan risk must not exceed its reviewed build"},
+		{ID: "cost_budget", Required: true, Passed: candidatePlan.EstimatedCostMicros <= request.Budget.MaxCostMicros, Detail: "candidate estimated cost must remain inside the shadow budget"},
+		{ID: "action_budget", Required: true, Passed: len(candidatePlan.PlannedActions) <= request.Budget.MaxActions, Detail: "candidate planned action count must remain inside the shadow budget"},
+		{ID: "plan_complete", Required: true, Passed: len(controlPlan.Route) > 0 && len(candidatePlan.Route) > 0 && len(controlPlan.Graph) > 0 && len(candidatePlan.Graph) > 0, Detail: "both builds produced a route and graph"},
+	}
+	passed := true
+	for _, check := range checks {
+		if check.Required && !check.Passed {
+			passed = false
+		}
+	}
+	trace := traceID(ctx)
+	if trace == "" {
+		trace = "shadow-" + request.TaskID
+	}
 	shadow := entity.ShadowResult{
-		ShadowID: ulid.New(), PromotionID: promotionID, OwnerID: ownerID, TaskID: request.TaskID,
-		ProductionRouteHash: request.ProductionRouteHash, CandidateRouteHash: request.CandidateRouteHash,
-		ProductionGraphHash: request.ProductionGraphHash, CandidateGraphHash: request.CandidateGraphHash,
-		ProductionActionsHash: request.ProductionActionsHash, CandidateActionsHash: request.CandidateActionsHash,
-		ProductionCostMicros: request.ProductionCostMicros, CandidateCostMicros: request.CandidateCostMicros,
-		ProductionRisk: request.ProductionRisk, CandidateRisk: request.CandidateRisk, LatencyMS: request.LatencyMS,
-		NoExternalSideEffects: true, ExecutedActionCount: 0, Passed: request.Passed,
-		Summary: strings.TrimSpace(request.Summary), CreatedAt: time.Now().UTC(),
+		Schema: entity.Schema, ShadowID: ulid.New(), PromotionID: promotionID, OwnerID: ownerID,
+		TaskID: request.TaskID, TraceID: trace, InputDigest: inputDigest, EvaluatorVersion: s.shadowEvaluator.Version(),
+		ProductionBuildID: controlBuild.BuildID, CandidateBuildID: candidateBuild.BuildID,
+		ProductionBuildHash: controlBuild.Checksum, CandidateBuildHash: candidateBuild.Checksum,
+		ProductionRouteHash: controlRouteHash, CandidateRouteHash: candidateRouteHash,
+		ProductionGraphHash: controlGraphHash, CandidateGraphHash: candidateGraphHash,
+		ProductionActionsHash: controlActionsHash, CandidateActionsHash: candidateActionsHash,
+		ProductionCostMicros: controlPlan.EstimatedCostMicros, CandidateCostMicros: candidatePlan.EstimatedCostMicros,
+		ProductionRisk: controlPlan.RiskLevel, CandidateRisk: candidatePlan.RiskLevel,
+		ProductionPlannedActions: len(controlPlan.PlannedActions), CandidatePlannedActions: len(candidatePlan.PlannedActions),
+		ProductionProof: controlProof, CandidateProof: candidateProof, Checks: checks,
+		LatencyMS: time.Since(started).Milliseconds(), NoExternalSideEffects: noEffects(controlPlan.Effects) && noEffects(candidatePlan.Effects),
+		ExecutedActionCount: 0, Passed: passed, Summary: shadowSummary(controlPlan, candidatePlan, passed), CreatedAt: time.Now().UTC(),
 	}
 	if err := shadow.Validate(); err != nil {
-		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
+		return nil, log.WrapError(err, "DeploymentService.EvaluateShadow.validate")
 	}
 	if err := s.store.CreateShadowResult(ctx, shadow); err != nil {
-		return nil, err
+		return nil, log.WrapError(err, "DeploymentService.EvaluateShadow.persist")
 	}
 	return &shadow, nil
 }
@@ -283,7 +370,7 @@ func (s *Service) ListShadowResults(ctx context.Context, ownerID, promotionID st
 	return s.store.ListShadowResults(ctx, ownerID, promotionID, limit)
 }
 
-func (s *Service) RecordCanaryMetric(ctx context.Context, ownerID, promotionID string, request CanaryMetricRequest) (*entity.CanaryMetric, *entity.Promotion, error) {
+func (s *Service) RecordCanarySample(ctx context.Context, ownerID, promotionID string, request CanarySampleRequest) (*entity.CanaryMetric, *entity.Promotion, error) {
 	promotion, err := s.store.FindPromotion(ctx, ownerID, promotionID)
 	if err != nil {
 		return nil, nil, err
@@ -291,28 +378,65 @@ func (s *Service) RecordCanaryMetric(ctx context.Context, ownerID, promotionID s
 	if promotion == nil || promotion.Status != entity.StatusCanary {
 		return nil, nil, apierror.ErrBadRequest.WithMessage("promotion is not in CANARY")
 	}
-	metric := entity.CanaryMetric{
-		MetricID: ulid.New(), PromotionID: promotionID, OwnerID: ownerID,
-		SampleCount: request.SampleCount, SuccessRate: request.SuccessRate, P95LatencyMS: request.P95LatencyMS,
-		AverageCostMicros: request.AverageCostMicros, SafetyScore: request.SafetyScore,
-		InterventionRate: request.InterventionRate, CreatedAt: time.Now().UTC(),
+	manifest, err := s.store.FindRunManifest(ctx, ownerID, strings.TrimSpace(request.ManifestID))
+	if err != nil {
+		return nil, nil, log.WrapError(err, "DeploymentService.RecordCanarySample.manifest")
 	}
-	stop, reason := promotion.Thresholds.Evaluate(metric)
-	metric.StopTriggered, metric.StopReason = stop, reason
-	var update *entity.Promotion
-	if stop {
-		before := promotion.Revision
-		promotion.Status = entity.StatusPaused
-		promotion.Revision++
-		promotion.UpdatedAt = metric.CreatedAt
-		update = promotion
-		if err := s.store.SaveCanaryMetric(ctx, metric, update, before); err != nil {
-			return nil, nil, err
-		}
-	} else if err := s.store.SaveCanaryMetric(ctx, metric, nil, 0); err != nil {
+	if manifest == nil {
+		return nil, nil, apierror.ErrNotFound.WithMessage("run manifest not found")
+	}
+	exposure, err := s.store.FindExposure(ctx, promotionID, ownerID, promotion.AgentID)
+	if err != nil {
+		return nil, nil, log.WrapError(err, "DeploymentService.RecordCanarySample.exposure")
+	}
+	if exposure == nil || exposure.ExposureID != manifest.ExposureID || exposure.OptedOut || exposure.Variant != entity.VariantCandidate {
+		return nil, nil, apierror.ErrBadRequest.WithMessage("run manifest is not assigned to the candidate canary cohort")
+	}
+	now := time.Now().UTC()
+	trace := traceID(ctx)
+	if trace == "" {
+		trace = "canary-" + manifest.ManifestID
+	}
+	sample := entity.CanarySample{
+		Schema: entity.Schema, SampleID: ulid.New(), PromotionID: promotionID, OwnerID: ownerID,
+		ManifestID: manifest.ManifestID, ExposureID: manifest.ExposureID, AgentBuildID: manifest.AgentBuildID,
+		TaskID: manifest.TaskID, Succeeded: request.Succeeded, LatencyMS: request.LatencyMS,
+		CostMicros: request.CostMicros, SafetyScore: request.SafetyScore, Intervention: request.Intervention,
+		TraceID: trace, CreatedAt: now,
+	}
+	if err := sample.Validate(*manifest, *promotion); err != nil {
+		return nil, nil, apierror.ErrBadRequest.WithMessage(err.Error())
+	}
+	metric, update, err := s.store.AppendCanarySample(ctx, sample, *promotion)
+	if err != nil {
+		return nil, nil, log.WrapError(err, "DeploymentService.RecordCanarySample.persist")
+	}
+	return metric, update, nil
+}
+
+func (s *Service) ListCanarySamples(ctx context.Context, ownerID, promotionID string, limit int) ([]entity.CanarySample, error) {
+	return s.store.ListCanarySamples(ctx, ownerID, promotionID, limit)
+}
+
+// RecordRunOutcome is the trusted Runtime completion path. Control runs and
+// opted-out runs are intentionally ignored; only manifests assigned to the
+// currently active candidate cohort become Canary samples.
+func (s *Service) RecordRunOutcome(ctx context.Context, ownerID, manifestID string, outcome RunOutcome) (*entity.CanaryMetric, *entity.Promotion, error) {
+	manifest, err := s.store.FindRunManifest(ctx, ownerID, strings.TrimSpace(manifestID))
+	if err != nil {
 		return nil, nil, err
 	}
-	return &metric, update, nil
+	if manifest == nil {
+		return nil, nil, apierror.ErrNotFound.WithMessage("run manifest not found")
+	}
+	promotion, err := s.store.FindCanaryPromotion(ctx, ownerID, manifest.AgentID)
+	if err != nil || promotion == nil || promotion.BuildID != manifest.AgentBuildID || manifest.ExposureID == "" {
+		return nil, nil, err
+	}
+	return s.RecordCanarySample(ctx, ownerID, promotion.PromotionID, CanarySampleRequest{
+		ManifestID: manifest.ManifestID, Succeeded: outcome.Succeeded, LatencyMS: outcome.LatencyMS,
+		CostMicros: outcome.CostMicros, SafetyScore: outcome.SafetyScore, Intervention: outcome.Intervention,
+	})
 }
 
 func (s *Service) ListCanaryMetrics(ctx context.Context, ownerID, promotionID string, limit int) ([]entity.CanaryMetric, error) {
@@ -471,7 +595,7 @@ func (s *Service) EnsureBaselineBuild(ctx context.Context, ownerID, actorID, age
 		return s.store.FindBuild(ctx, ownerID, active.BuildID)
 	}
 	request := defaults(CreateBuildRequest{AgentID: agentID, Version: "baseline-v1", RiskLevel: entity.RiskR1, PromptTemplateVersions: map[string]string{"system": firstNonEmpty(promptFingerprint, "current")}})
-	build, err := makeBuild(ownerID, actorID, request)
+	build, err := makeBuild(ownerID, actorID, traceID(ctx), request, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -497,14 +621,26 @@ func (s *Service) ListRollbacks(ctx context.Context, ownerID, agentID string, li
 	return s.store.ListRollbacks(ctx, ownerID, agentID, limit)
 }
 
-func makeBuild(ownerID, actorID string, request CreateBuildRequest) (*entity.AgentBuild, error) {
+func makeBuild(ownerID, actorID, trace string, request CreateBuildRequest, approvals []entity.ArtifactApprovalReference) (*entity.AgentBuild, error) {
 	now := time.Now().UTC()
+	buildID := ulid.New()
+	if strings.TrimSpace(trace) == "" {
+		trace = "build-" + buildID
+	}
+	approvals = append([]entity.ArtifactApprovalReference(nil), approvals...)
+	sort.Slice(approvals, func(i, j int) bool {
+		if approvals[i].Kind == approvals[j].Kind {
+			return approvals[i].ArtifactID < approvals[j].ArtifactID
+		}
+		return approvals[i].Kind < approvals[j].Kind
+	})
 	build := &entity.AgentBuild{
-		Schema: entity.Schema, BuildID: ulid.New(), OwnerID: ownerID, AgentID: strings.TrimSpace(request.AgentID), Version: strings.TrimSpace(request.Version),
+		Schema: entity.Schema, BuildID: buildID, OwnerID: ownerID, AgentID: strings.TrimSpace(request.AgentID), Version: strings.TrimSpace(request.Version),
 		KernelVersion: request.KernelVersion, PlannerVersion: request.PlannerVersion, PolicyVersion: request.PolicyVersion,
 		ProtocolVersion: request.ProtocolVersion, SkillVersions: copyMap(request.SkillVersions), StrategyVersions: copyMap(request.StrategyVersions),
 		OntologyVersion: request.OntologyVersion, PromptTemplateVersions: copyMap(request.PromptTemplateVersions),
-		EvaluationSuiteVersion: request.EvaluationSuiteVersion, RiskLevel: strings.ToUpper(strings.TrimSpace(request.RiskLevel)),
+		EvaluationSuiteVersion: request.EvaluationSuiteVersion, ArtifactApprovals: approvals,
+		RiskLevel: strings.ToUpper(strings.TrimSpace(request.RiskLevel)), Verified: true, Recoverable: true, TraceID: trace,
 		CreatedBy: actorID, CreatedAt: now,
 	}
 	checksum, err := build.ComputeChecksum()
@@ -553,21 +689,41 @@ func defaultThresholds() entity.CanaryThresholds {
 	return entity.CanaryThresholds{MinimumSuccessRate: 0.9, MaximumP95LatencyMS: 15000, MaximumAverageCostMicros: 100000, MinimumSafetyScore: 1, MaximumInterventionRate: 0.1, MinimumSamples: 20}
 }
 
-func validateArtifactVersions(requested, approved map[string]string, kind string) error {
-	for id, version := range requested {
-		if approved[id] != version {
-			return fmt.Errorf("%s %s@%s is not an approved immutable version", kind, id, version)
-		}
-	}
-	return nil
-}
-
 func copyMap(input map[string]string) map[string]string {
 	result := make(map[string]string, len(input))
 	for key, value := range input {
 		result[key] = value
 	}
 	return result
+}
+
+func defaultShadowBudget(value entity.RunBudget) entity.RunBudget {
+	if value.MaxTokens <= 0 {
+		value.MaxTokens = 4000
+	}
+	if value.MaxCostMicros <= 0 {
+		value.MaxCostMicros = 100000
+	}
+	if value.MaxDurationMS <= 0 {
+		value.MaxDurationMS = 30000
+	}
+	if value.MaxActions <= 0 {
+		value.MaxActions = 32
+	}
+	return value
+}
+
+func shadowSummary(control, candidate ShadowPlan, passed bool) string {
+	status := "failed"
+	if passed {
+		status = "passed"
+	}
+	return fmt.Sprintf("server-side shadow %s: control=%d planned actions/%d micros, candidate=%d planned actions/%d micros", status, len(control.PlannedActions), control.EstimatedCostMicros, len(candidate.PlannedActions), candidate.EstimatedCostMicros)
+}
+
+func traceID(ctx context.Context) string {
+	value, _ := ctx.Value(log.ReqIDKey).(string)
+	return strings.TrimSpace(value)
 }
 
 func unique(input []string) []string {

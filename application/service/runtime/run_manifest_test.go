@@ -27,7 +27,7 @@ func TestAttachRunManifestPersistsTraceableSecretFreeSnapshot(t *testing.T) {
 	}
 	if err := db.AutoMigrate(
 		&deploymentpo.AgentBuild{}, &deploymentpo.RunManifest{}, &deploymentpo.Promotion{}, &deploymentpo.Exposure{},
-		&deploymentpo.ShadowResult{}, &deploymentpo.CanaryMetric{}, &deploymentpo.Rollback{}, &deploymentpo.Compensation{},
+		&deploymentpo.ShadowResult{}, &deploymentpo.CanaryMetric{}, &deploymentpo.CanarySample{}, &deploymentpo.Rollback{}, &deploymentpo.Compensation{},
 		&learningpo.Skill{}, &learningpo.Strategy{},
 	); err != nil {
 		t.Fatal(err)
