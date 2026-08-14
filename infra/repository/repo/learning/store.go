@@ -70,7 +70,8 @@ func (s *Store) CreateCandidate(ctx context.Context, candidate entity.Candidate,
 	value := po.Candidate{
 		CandidateID: candidate.CandidateID, OwnerID: candidate.OwnerID, Kind: candidate.Kind, Status: candidate.Status,
 		Definition: definition, Evidence: encodeJSON(candidate.Evidence), Evaluation: encodeJSON(candidate.Evaluation),
-		ReviewNote: candidate.ReviewNote, Revision: candidate.Revision, TraceID: candidate.TraceID,
+		ReviewNote: candidate.ReviewNote, ReviewedBy: candidate.ReviewedBy, ReviewedAt: millis(candidate.ReviewedAt),
+		Revision: candidate.Revision, TraceID: candidate.TraceID,
 		CreatedAt: millis(candidate.CreatedAt), UpdatedAt: millis(candidate.UpdatedAt),
 	}
 	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
@@ -149,7 +150,8 @@ func (s *Store) UpdateCandidate(ctx context.Context, candidate entity.Candidate,
 		Updates(map[string]any{
 			"kind": candidate.Kind, "status": candidate.Status, "definition": definition,
 			"evidence": encodeJSON(candidate.Evidence), "evaluation": encodeJSON(candidate.Evaluation),
-			"review_note": candidate.ReviewNote, "revision": candidate.Revision,
+			"review_note": candidate.ReviewNote, "reviewed_by": candidate.ReviewedBy,
+			"reviewed_at": millis(candidate.ReviewedAt), "revision": candidate.Revision,
 			"trace_id": candidate.TraceID, "updated_at": millis(candidate.UpdatedAt),
 		})
 	if result.Error != nil {
@@ -172,6 +174,7 @@ func (s *Store) SaveCandidateEvaluation(ctx context.Context, candidate entity.Ca
 			Updates(map[string]any{
 				"status": candidate.Status, "definition": definition,
 				"evaluation": encodeJSON(candidate.Evaluation), "review_note": candidate.ReviewNote,
+				"reviewed_by": candidate.ReviewedBy, "reviewed_at": millis(candidate.ReviewedAt),
 				"revision": candidate.Revision, "trace_id": candidate.TraceID,
 				"updated_at": millis(candidate.UpdatedAt),
 			})
@@ -191,6 +194,9 @@ func (s *Store) SaveCandidateEvaluation(ctx context.Context, candidate entity.Ca
 }
 
 func (s *Store) ReviewCandidate(ctx context.Context, ownerID, candidateID, decision, note, reviewerID string, expectedRevision int64) (*entity.Candidate, error) {
+	if strings.TrimSpace(reviewerID) == "" {
+		return nil, fmt.Errorf("reviewer identity is required")
+	}
 	var reviewed *entity.Candidate
 	err := s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
 		var row po.Candidate
@@ -235,14 +241,17 @@ func (s *Store) ReviewCandidate(ctx context.Context, ownerID, candidateID, decis
 			return fmt.Errorf("review decision must be APPROVE or REJECT")
 		}
 		candidate.ReviewNote = strings.TrimSpace(note)
+		candidate.ReviewedBy = reviewerID
 		candidate.Revision++
 		candidate.UpdatedAt = time.Now().UTC()
+		candidate.ReviewedAt = candidate.UpdatedAt
 		definition, err := candidateDefinition(*candidate)
 		if err != nil {
 			return err
 		}
 		if err := tx.Model(&po.Candidate{}).Where("candidate_id = ? AND owner_id = ? AND revision = ?", candidateID, ownerID, expectedRevision).Updates(map[string]any{
 			"status": candidate.Status, "definition": definition, "review_note": candidate.ReviewNote,
+			"reviewed_by": candidate.ReviewedBy, "reviewed_at": millis(candidate.ReviewedAt),
 			"revision": candidate.Revision, "updated_at": millis(candidate.UpdatedAt),
 		}).Error; err != nil {
 			return err
@@ -477,7 +486,8 @@ func (s *Store) TaskActions(ctx context.Context, ownerID, taskID string) ([]enti
 func decodeCandidate(value po.Candidate) (*entity.Candidate, error) {
 	result := &entity.Candidate{
 		Schema: entity.Schema, CandidateID: value.CandidateID, OwnerID: value.OwnerID,
-		Kind: value.Kind, Status: value.Status, ReviewNote: value.ReviewNote, Revision: value.Revision,
+		Kind: value.Kind, Status: value.Status, ReviewNote: value.ReviewNote,
+		ReviewedBy: value.ReviewedBy, ReviewedAt: fromMillis(value.ReviewedAt), Revision: value.Revision,
 		TraceID: value.TraceID, CreatedAt: fromMillis(value.CreatedAt), UpdatedAt: fromMillis(value.UpdatedAt),
 	}
 	if err := json.Unmarshal([]byte(value.Evidence), &result.Evidence); err != nil {

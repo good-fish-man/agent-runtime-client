@@ -9,6 +9,8 @@ type Candidate struct {
 	Evidence    string `gorm:"column:evidence;type:text;not null"`
 	Evaluation  string `gorm:"column:evaluation;type:text;not null"`
 	ReviewNote  string `gorm:"column:review_note;type:text"`
+	ReviewedBy  string `gorm:"column:reviewed_by;type:varchar(128);index"`
+	ReviewedAt  int64  `gorm:"column:reviewed_at;type:bigint;not null;default:0;index"`
 	Revision    int64  `gorm:"column:revision;type:bigint;not null;default:1"`
 	TraceID     string `gorm:"column:trace_id;type:varchar(128);index"`
 	CreatedAt   int64  `gorm:"column:created_at;type:bigint;not null;index:idx_os_candidate_owner_created,priority:2"`

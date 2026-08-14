@@ -44,6 +44,9 @@ func TestGenerateReviewAndMaterializeSkill(t *testing.T) {
 	if reviewed.Status != entity.LifecycleApproved || reviewed.Revision != 2 {
 		t.Fatalf("reviewed = %+v", reviewed)
 	}
+	if reviewed.ReviewedBy != "reviewer-1" || reviewed.ReviewedAt.IsZero() {
+		t.Fatalf("review provenance was not persisted: %+v", reviewed)
+	}
 	skills, err := store.ListSkills(ctx, "owner-1", 10)
 	if err != nil || len(skills) != 1 {
 		t.Fatalf("ListSkills() = %+v, %v", skills, err)
