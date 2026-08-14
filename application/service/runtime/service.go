@@ -965,8 +965,9 @@ func (s *RuntimeService) attachRunManifest(ctx context.Context, values map[strin
 	for _, item := range knowledge {
 		knowledgeFingerprint = append(knowledgeFingerprint, map[string]any{"id": item.ID, "name": item.Name, "retrieval_url": item.RetrievalURL, "top_k": item.TopK})
 	}
+	modelConfigVersion := hashValue(modelFingerprint)
 	manifest, err := s.deployment.CreateRunManifest(ctx, ownerID, deploymentsvc.RunManifestInput{
-		TaskID: taskID, AgentID: agentID, ModelConfigVersion: hashValue(modelFingerprint),
+		TaskID: taskID, AgentID: agentID, ModelConfigVersion: modelConfigVersion,
 		CapabilityInstances: capabilityInstances, DeviceID: deviceID,
 		WorldRevision: contextInt64(values, "world_revision"), KnowledgeSnapshot: hashValue(knowledgeFingerprint),
 		Budget: runBudget(options), FeatureFlags: map[string]bool{"deployment_manifest": true},
@@ -977,6 +978,7 @@ func (s *RuntimeService) attachRunManifest(ctx context.Context, values map[strin
 	if values != nil {
 		values["agent_build_id"] = manifest.AgentBuildID
 		values["run_manifest_id"] = manifest.ManifestID
+		values["model_config_version"] = modelConfigVersion
 		if manifest.ExposureID != "" {
 			values["exposure_id"] = manifest.ExposureID
 		}

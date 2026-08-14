@@ -25,6 +25,7 @@ import (
 	learningh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/learning"
 	memoryh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/memory"
 	modelh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
+	orchestrationh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/orchestration"
 	scheduledtaskh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/scheduledtask"
 	skillh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/skill"
 	userh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/user"
@@ -54,6 +55,7 @@ type Handlers struct {
 	Knowledge         *knowledgeh.Handler
 	Experience        *experienceh.Handler
 	Learning          *learningh.Handler
+	Orchestration     *orchestrationh.Handler
 	Weixin            *weixinh.Handler
 	Job               *jobh.Handler
 	Workspace         *workspaceh.Handler
@@ -76,6 +78,9 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 	}
 	if h.ScheduledTask != nil {
 		g.POST("/internal/scheduled-task", h.ScheduledTask.CreateInternal)
+	}
+	if h.Orchestration != nil {
+		g.POST("/internal/goals", h.Orchestration.CreateInternal)
 	}
 	if h.Auth != nil {
 		g.Use(h.Auth)
@@ -228,6 +233,20 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		r.POST("/ontology/candidates", h.Knowledge.CreateOntologyCandidate)
 		r.POST("/ontology/candidates/:id/review", h.Knowledge.ReviewOntologyCandidate)
 		r.POST("/ontology/migrations", h.Knowledge.CreateOntologyMigration)
+	}
+	if h.Orchestration != nil {
+		r := g.Group("/goals")
+		r.POST("", h.Orchestration.CreateGoal)
+		r.GET("", h.Orchestration.ListGoals)
+		r.GET("/:id", h.Orchestration.GetGoal)
+		r.POST("/:id/plan", h.Orchestration.PlanGoal)
+		r.POST("/:id/tasks/:taskID/start", h.Orchestration.StartTask)
+		r.POST("/:id/tasks/:taskID/result", h.Orchestration.RecordResult)
+		r.GET("/:id/tasks/:taskID/world-slice", h.Orchestration.WorldSlice)
+		r.POST("/:id/checkpoints", h.Orchestration.SaveCheckpoint)
+		r.GET("/:id/checkpoints", h.Orchestration.ListCheckpoints)
+		r.POST("/:id/pause", h.Orchestration.Pause)
+		r.POST("/:id/resume", h.Orchestration.Resume)
 	}
 
 	if h.BrowserCredential != nil {

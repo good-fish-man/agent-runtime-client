@@ -15,6 +15,7 @@ import (
 	controlhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/control"
 	deploymenthandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/deployment"
 	knowledgehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge"
+	orchestrationhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/orchestration"
 	handler "github.com/good-fish-man/agent-runtime-client/api/http/handler/runtime"
 	"github.com/good-fish-man/agent-runtime-client/api/http/middleware"
 	"github.com/good-fish-man/agent-runtime-client/api/http/router/public"
@@ -23,6 +24,7 @@ import (
 	experiencesvc "github.com/good-fish-man/agent-runtime-client/application/service/experience"
 	knowledgesvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge"
 	learningsvc "github.com/good-fish-man/agent-runtime-client/application/service/learning"
+	orchestrationsvc "github.com/good-fish-man/agent-runtime-client/application/service/orchestration"
 	appsvc "github.com/good-fish-man/agent-runtime-client/application/service/runtime"
 	"github.com/good-fish-man/agent-runtime-client/config"
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
@@ -37,6 +39,7 @@ import (
 	experiencerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/experience"
 	knowledgerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/knowledge"
 	learningrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/learning"
+	orchestrationrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/orchestration"
 	runtimerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/runtime"
 	inruntime "github.com/good-fish-man/agent-runtime-client/infra/runtime"
 	log "github.com/good-fish-man/logx"
@@ -79,12 +82,14 @@ type App struct {
 	Engine  *gin.Engine
 	Restart <-chan struct{}
 
-	client     *inruntime.Client
-	data       *data.Data
-	Control    *controlsvc.Hub
-	Experience *experiencesvc.Service
-	Deployment *deploymentsvc.Service
-	Knowledge  *knowledgesvc.Service
+	client        *inruntime.Client
+	data          *data.Data
+	Control       *controlsvc.Hub
+	Experience    *experiencesvc.Service
+	Deployment    *deploymentsvc.Service
+	Knowledge     *knowledgesvc.Service
+	Orchestration *orchestrationsvc.Service
+	Supervisor    *orchestrationsvc.Supervisor
 }
 
 // Init builds the App from the config at cfgPath (empty uses defaults+env).
@@ -138,6 +143,7 @@ func Init(cfgPath string) (*App, error) {
 	var experienceService *experiencesvc.Service
 	var deploymentService *deploymentsvc.Service
 	var knowledgeService *knowledgesvc.Service
+	var orchestrationService *orchestrationsvc.Service
 	if store != nil {
 		controlStore := controlrepo.NewStore(store)
 		if err := controlStore.MarkAllDevicesOffline(context.Background(), time.Now().UTC()); err != nil {
@@ -150,6 +156,7 @@ func Init(cfgPath string) (*App, error) {
 		experienceService = experiencesvc.NewService(experiencerepo.NewStore(store), controlStore)
 		deploymentService = deploymentsvc.NewService(deploymentrepo.NewStore(store))
 		knowledgeService = knowledgesvc.NewService(knowledgerepo.NewStore(store))
+		orchestrationService = orchestrationsvc.NewService(orchestrationrepo.NewStore(store))
 		controlHub.OnTaskTerminal(func(_ context.Context, taskID string) { experienceService.Enqueue(taskID) })
 	} else {
 		controlHub = controlsvc.NewHub()
@@ -164,21 +171,33 @@ func Init(cfgPath string) (*App, error) {
 	if paths.AppConfigFile == "" && resolvedConfigPath != "" {
 		paths.AppConfigFile = resolvedConfigPath
 	}
-	pub := buildPublicHandlers(cfg, store, appService, experienceService, deploymentService, knowledgeService, paths, restart)
+	pub := buildPublicHandlers(cfg, store, appService, experienceService, deploymentService, knowledgeService, orchestrationService, controlHub, paths, restart)
 	engine := httpapi.NewEngine(h, pub, cfg.Server.PublicPrefix, cfg.Server.Mode)
 	controlhandler.NewHandler(controlHub, cfg.Control.DeviceToken).Register(engine, pub.Auth, cfg.Server.PublicPrefix)
 	controlHub.Start(context.Background())
 	if experienceService != nil {
 		experienceService.Start(context.Background())
 	}
+	var supervisor *orchestrationsvc.Supervisor
+	if orchestrationService != nil && cfg.Orchestration.Enabled {
+		supervisor = orchestrationsvc.NewSupervisor(orchestrationService, appService, controlHub, orchestrationsvc.SupervisorConfig{ScanInterval: time.Duration(cfg.Orchestration.ScanIntervalSec) * time.Second, MaxConcurrentRuns: cfg.Orchestration.MaxConcurrentRuns})
+		if err := supervisor.Start(context.Background()); err != nil {
+			controlHub.Stop()
+			if experienceService != nil {
+				experienceService.Stop()
+			}
+			_ = client.Close()
+			return nil, err
+		}
+	}
 
-	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store, Control: controlHub, Experience: experienceService, Deployment: deploymentService, Knowledge: knowledgeService}, nil
+	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store, Control: controlHub, Experience: experienceService, Deployment: deploymentService, Knowledge: knowledgeService, Orchestration: orchestrationService, Supervisor: supervisor}, nil
 }
 
 // buildPublicHandlers wires the agent-frame-compatible resource handlers. The
 // DB-backed handlers are only constructed when the shared database is enabled;
 // the file-backed config handler and the channel skeletons are always available.
-func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *appsvc.RuntimeService, experienceService *experiencesvc.Service, deploymentService *deploymentsvc.Service, knowledgeService *knowledgesvc.Service, paths config.PathsConfig, restart chan<- struct{}) *public.Handlers {
+func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *appsvc.RuntimeService, experienceService *experiencesvc.Service, deploymentService *deploymentsvc.Service, knowledgeService *knowledgesvc.Service, orchestrationService *orchestrationsvc.Service, controlHub *controlsvc.Hub, paths config.PathsConfig, restart chan<- struct{}) *public.Handlers {
 	pub := &public.Handlers{
 		Config:    confighandler.NewHandler(paths, restart).WithRuntime(cfg.Runtime.HTTPAddr).WithService(cfg.Server.HTTPAddr),
 		Callback:  callbackhandler.NewHandler(),
@@ -200,8 +219,9 @@ func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *a
 		pub.Learning = learninghandler.NewHandler(learningsvc.NewService(learningrepo.NewStore(store), experiencerepo.NewStore(store), experienceService))
 		pub.Deployment = deploymenthandler.NewHandler(deploymentService)
 		pub.Knowledge = knowledgehandler.NewHandler(knowledgeService)
+		pub.Orchestration = orchestrationhandler.NewHandler(orchestrationService)
 		pub.BrowserCredential = browsercredentialhandler.NewHandler(browsercredentialsvc.NewService(store))
-		scheduledService := scheduledtasksvc.NewService(store, runtimeService, time.Duration(cfg.ScheduledTask.ScanIntervalSec)*time.Second)
+		scheduledService := scheduledtasksvc.NewService(store, runtimeService, time.Duration(cfg.ScheduledTask.ScanIntervalSec)*time.Second).WithControlPlane(controlHub, orchestrationService)
 		scheduledService.Start(context.Background())
 		pub.ScheduledTask = scheduledtaskhandler.NewHandler(scheduledService)
 		pub.KB = kbhandler.NewHandler(kbsvc.NewSysKnowledgeBaseService(store))
@@ -224,6 +244,9 @@ func (a *App) PingRuntime() (*entity.HealthStatus, error) {
 
 // Close releases resources (the gRPC connection).
 func (a *App) Close() error {
+	if a.Supervisor != nil {
+		a.Supervisor.Stop()
+	}
 	if a.Experience != nil {
 		a.Experience.Stop()
 	}

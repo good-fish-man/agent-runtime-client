@@ -51,6 +51,8 @@ const (
 	DefaultRequestTimeoutSec            = 60
 	DefaultDialTimeoutSec               = 5
 	DefaultScheduledTaskScanIntervalSec = 60
+	DefaultOrchestrationScanIntervalSec = 3
+	DefaultOrchestrationConcurrency     = 2
 	DefaultGinMode                      = "debug"
 
 	// DefaultPublicPrefix mounts the agent-frame-compatible resource routes so
@@ -78,6 +80,9 @@ const (
 	EnvDefaultAPIBase               = "ARC_DEFAULT_API_BASE"
 	EnvDefaultProvider              = "ARC_DEFAULT_PROVIDER"
 	EnvScheduledTaskScanIntervalSec = "ARC_SCHEDULED_TASK_SCAN_INTERVAL_SEC"
+	EnvOrchestrationEnabled         = "ARC_ORCHESTRATION_ENABLED"
+	EnvOrchestrationScanIntervalSec = "ARC_ORCHESTRATION_SCAN_INTERVAL_SEC"
+	EnvOrchestrationConcurrency     = "ARC_ORCHESTRATION_MAX_CONCURRENT_RUNS"
 	EnvInternalServiceToken         = "ATHENA_INTERNAL_SERVICE_TOKEN"
 	EnvHFHome                       = "HF_HOME"
 	EnvOllamaModels                 = "OLLAMA_MODELS"

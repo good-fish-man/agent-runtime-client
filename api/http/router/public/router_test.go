@@ -16,6 +16,7 @@ import (
 	kbhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
 	learninghandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/learning"
 	modelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
+	orchestrationhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/orchestration"
 	skillhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/skill"
 	userhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/user"
 	weixinhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/weixin"
@@ -29,6 +30,7 @@ import (
 	kbsvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge_base"
 	learningsvc "github.com/good-fish-man/agent-runtime-client/application/service/learning"
 	modelsvc "github.com/good-fish-man/agent-runtime-client/application/service/model"
+	orchestrationsvc "github.com/good-fish-man/agent-runtime-client/application/service/orchestration"
 	skillsvc "github.com/good-fish-man/agent-runtime-client/application/service/skill"
 	usersvc "github.com/good-fish-man/agent-runtime-client/application/service/user"
 	appconfig "github.com/good-fish-man/agent-runtime-client/config"
@@ -42,20 +44,21 @@ func TestRegisterNoConflicts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	h := &Handlers{
-		User:       userhandler.NewHandler(usersvc.NewSysUserService(nil)),
-		Config:     confighandler.NewHandler(appconfig.PathsConfig{}),
-		Model:      modelhandler.NewHandler(modelsvc.NewSysModelService(nil)),
-		KB:         kbhandler.NewHandler(kbsvc.NewSysKnowledgeBaseService(nil)),
-		Skill:      skillhandler.NewHandler(skillsvc.NewSysSkillService(nil)),
-		Agent:      agenthandler.NewHandler(agentsvc.NewSysAgentService(nil)),
-		Channel:    channelhandler.NewHandler(channelsvc.NewSysChannelService(nil)),
-		Experience: experiencehandler.NewHandler(experiencesvc.NewService(nil, nil)),
-		Deployment: deploymenthandler.NewHandler(deploymentsvc.NewService(nil)),
-		Knowledge:  knowledgehandler.NewHandler(knowledgesvc.NewService(nil)),
-		Learning:   learninghandler.NewHandler(learningsvc.NewServiceWithDependencies(nil, nil, nil)),
-		Callback:   callbackhandler.NewHandler(),
-		Weixin:     weixinhandler.NewHandler(),
-		Job:        jobhandler.NewHandler(jobsvc.NewJobExecutionService(nil)),
+		User:          userhandler.NewHandler(usersvc.NewSysUserService(nil)),
+		Config:        confighandler.NewHandler(appconfig.PathsConfig{}),
+		Model:         modelhandler.NewHandler(modelsvc.NewSysModelService(nil)),
+		KB:            kbhandler.NewHandler(kbsvc.NewSysKnowledgeBaseService(nil)),
+		Skill:         skillhandler.NewHandler(skillsvc.NewSysSkillService(nil)),
+		Agent:         agenthandler.NewHandler(agentsvc.NewSysAgentService(nil)),
+		Channel:       channelhandler.NewHandler(channelsvc.NewSysChannelService(nil)),
+		Experience:    experiencehandler.NewHandler(experiencesvc.NewService(nil, nil)),
+		Deployment:    deploymenthandler.NewHandler(deploymentsvc.NewService(nil)),
+		Knowledge:     knowledgehandler.NewHandler(knowledgesvc.NewService(nil)),
+		Learning:      learninghandler.NewHandler(learningsvc.NewServiceWithDependencies(nil, nil, nil)),
+		Orchestration: orchestrationhandler.NewHandler(orchestrationsvc.NewService(nil)),
+		Callback:      callbackhandler.NewHandler(),
+		Weixin:        weixinhandler.NewHandler(),
+		Job:           jobhandler.NewHandler(jobsvc.NewJobExecutionService(nil)),
 	}
 
 	engine := gin.New()
@@ -127,6 +130,18 @@ func TestRegisterNoConflicts(t *testing.T) {
 		"POST " + prefix + "/knowledge/ontology/candidates",
 		"POST " + prefix + "/knowledge/ontology/candidates/:id/review",
 		"POST " + prefix + "/knowledge/ontology/migrations",
+		"POST " + prefix + "/goals",
+		"POST " + prefix + "/internal/goals",
+		"GET " + prefix + "/goals",
+		"GET " + prefix + "/goals/:id",
+		"POST " + prefix + "/goals/:id/plan",
+		"POST " + prefix + "/goals/:id/tasks/:taskID/start",
+		"POST " + prefix + "/goals/:id/tasks/:taskID/result",
+		"GET " + prefix + "/goals/:id/tasks/:taskID/world-slice",
+		"POST " + prefix + "/goals/:id/checkpoints",
+		"GET " + prefix + "/goals/:id/checkpoints",
+		"POST " + prefix + "/goals/:id/pause",
+		"POST " + prefix + "/goals/:id/resume",
 	}
 	for _, route := range expected {
 		if _, ok := registered[route]; !ok {

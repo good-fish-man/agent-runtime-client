@@ -19,6 +19,12 @@ scheduled_task:
   # Cron expressions are minute-granularity, so 60s avoids noisy DB polling.
   scan_interval_sec: 60
 
+orchestration:
+  # Durable goals run through the bounded Supervisor and checkpoint every state transition.
+  enabled: true
+  scan_interval_sec: 3
+  max_concurrent_runs: 2
+
 log:
   level: "debug"
 

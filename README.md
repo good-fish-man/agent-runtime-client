@@ -140,6 +140,7 @@ Management routes are mounted under `server.public_prefix`:
 | `/model`, `/model-key` | Catalog, credentials, local install, lifecycle, training |
 | `/site-credential` | User-owned website account metadata and Auth Vault assisted sign-in |
 | `/scheduled-task` | Durable user-owned monitoring tasks, execution history, and result review |
+| `/goals` | Bounded long-running goals, specialist tasks, checkpoints, pause, and resume |
 | `/experience`, `/evaluation` | Sanitized historical evidence, retention controls, and offline regression suites |
 | `/memory` | User/agent long-term memory |
 | `/skill` | Built-in/custom skill management and ZIP upload |
@@ -187,10 +188,16 @@ Important environment overrides:
 | `ARC_DB_TYPE`, `ARC_DB_HOST`, `ARC_DB_PORT` | Database connection |
 | `ARC_DB_USER`, `ARC_DB_PASSWORD`, `ARC_DB_NAME` | Database credentials |
 | `ARC_SCHEDULED_TASK_SCAN_INTERVAL_SEC` | Scheduled task database scan interval, default `60` |
+| `ARC_ORCHESTRATION_ENABLED` | Enable the durable goal Supervisor |
+| `ARC_ORCHESTRATION_SCAN_INTERVAL_SEC` | Goal Supervisor scan interval, default `3` |
+| `ARC_ORCHESTRATION_MAX_CONCURRENT_RUNS` | Global concurrent specialist limit, default `2` |
 | `ATHENA_INTERNAL_SERVICE_TOKEN` | Shared local token accepted by the internal scheduled-task endpoint |
 | `ATHENA_DEVICE_TOKEN` | Bearer token accepted by the desktop Action/Observation WebSocket |
 
 The database is enabled when both `db_host` and `db_name` are non-empty. Keep model provider secrets in model-key records, not in source control or public API responses.
+
+See [Durable Goals and Supervisor v0.7](docs/durable-goals-v0.7.md) for the
+execution, recovery, safety, and rollback model.
 
 ## Development
 

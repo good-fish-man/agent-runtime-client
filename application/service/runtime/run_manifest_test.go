@@ -44,7 +44,7 @@ func TestAttachRunManifestPersistsTraceableSecretFreeSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attachRunManifest() error = %v", err)
 	}
-	if values["agent_build_id"] == "" || values["run_manifest_id"] == "" {
+	if values["agent_build_id"] == "" || values["run_manifest_id"] == "" || values["model_config_version"] == "" {
 		t.Fatalf("runtime context = %+v", values)
 	}
 	manifests, err := deploymentService.ListRunManifests(ctx, "owner-1", "agent-1", 10)

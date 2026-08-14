@@ -140,6 +140,7 @@ Runtime 执行接口位于根路径：
 | `/model`、`/model-key` | 模型目录、凭据、本地安装、生命周期和训练 |
 | `/site-credential` | 当前用户的网站账号元数据与 Auth Vault 辅助登录 |
 | `/scheduled-task` | 用户隔离的持久化监控任务、执行记录与结果复核 |
+| `/goals` | 有界长期 Goal、Specialist 任务、Checkpoint、暂停与恢复 |
 | `/experience`、`/evaluation` | 脱敏历史证据、保留控制与离线回归套件 |
 | `/memory` | 用户/Agent 长期记忆 |
 | `/skill` | 内置/自定义 Skill 管理与 ZIP 上传 |
@@ -187,10 +188,16 @@ paths:
 | `ARC_DB_TYPE`、`ARC_DB_HOST`、`ARC_DB_PORT` | 数据库连接 |
 | `ARC_DB_USER`、`ARC_DB_PASSWORD`、`ARC_DB_NAME` | 数据库凭据 |
 | `ARC_SCHEDULED_TASK_SCAN_INTERVAL_SEC` | 定时任务扫描数据库的间隔，默认 `60` 秒 |
+| `ARC_ORCHESTRATION_ENABLED` | 是否启用持久化 Goal Supervisor |
+| `ARC_ORCHESTRATION_SCAN_INTERVAL_SEC` | Goal Supervisor 扫描间隔，默认 `3` 秒 |
+| `ARC_ORCHESTRATION_MAX_CONCURRENT_RUNS` | 全局 Specialist 并发上限，默认 `2` |
 | `ATHENA_INTERNAL_SERVICE_TOKEN` | 内部定时任务接口校验的本机共享令牌 |
 | `ATHENA_DEVICE_TOKEN` | 桌面 Action/Observation WebSocket 使用的 Bearer Token |
 
 `db_host` 和 `db_name` 都不为空时启用数据库。模型供应商密钥应保存到模型 Key 表，不应提交到源码或在公共 API 中返回。
+
+执行、恢复、安全边界与回滚说明见
+[持久化 Goal 与 Supervisor v0.7](docs/durable-goals-v0.7.zh-CN.md)。
 
 ## 开发
 

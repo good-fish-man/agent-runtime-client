@@ -25,6 +25,7 @@ type Config struct {
 	Paths         PathsConfig         `yaml:"paths"`
 	Control       ControlConfig       `yaml:"control"`
 	ScheduledTask ScheduledTaskConfig `yaml:"scheduled_task"`
+	Orchestration OrchestrationConfig `yaml:"orchestration"`
 }
 
 type ControlConfig struct {
@@ -33,6 +34,12 @@ type ControlConfig struct {
 
 type ScheduledTaskConfig struct {
 	ScanIntervalSec int `yaml:"scan_interval_sec"`
+}
+
+type OrchestrationConfig struct {
+	Enabled           bool `yaml:"enabled"`
+	ScanIntervalSec   int  `yaml:"scan_interval_sec"`
+	MaxConcurrentRuns int  `yaml:"max_concurrent_runs"`
 }
 
 // DBConfig configures the shared relational database. Field names mirror
@@ -120,6 +127,7 @@ func Default() *Config {
 			Charset:         "utf8mb4",
 		},
 		ScheduledTask: ScheduledTaskConfig{ScanIntervalSec: consts.DefaultScheduledTaskScanIntervalSec},
+		Orchestration: OrchestrationConfig{Enabled: true, ScanIntervalSec: consts.DefaultOrchestrationScanIntervalSec, MaxConcurrentRuns: consts.DefaultOrchestrationConcurrency},
 	}
 }
 
@@ -194,6 +202,21 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.ScheduledTask.ScanIntervalSec = sec
 		}
 	}
+	if v := os.Getenv(consts.EnvOrchestrationEnabled); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			cfg.Orchestration.Enabled = enabled
+		}
+	}
+	if v := os.Getenv(consts.EnvOrchestrationScanIntervalSec); v != "" {
+		if sec, err := strconv.Atoi(v); err == nil {
+			cfg.Orchestration.ScanIntervalSec = sec
+		}
+	}
+	if v := os.Getenv(consts.EnvOrchestrationConcurrency); v != "" {
+		if count, err := strconv.Atoi(v); err == nil {
+			cfg.Orchestration.MaxConcurrentRuns = count
+		}
+	}
 
 	// Database overrides (shared with agent-frame).
 	if v := os.Getenv(consts.EnvDBType); v != "" {
@@ -238,5 +261,11 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if cfg.ScheduledTask.ScanIntervalSec <= 0 {
 		cfg.ScheduledTask.ScanIntervalSec = consts.DefaultScheduledTaskScanIntervalSec
+	}
+	if cfg.Orchestration.ScanIntervalSec <= 0 {
+		cfg.Orchestration.ScanIntervalSec = consts.DefaultOrchestrationScanIntervalSec
+	}
+	if cfg.Orchestration.MaxConcurrentRuns <= 0 {
+		cfg.Orchestration.MaxConcurrentRuns = consts.DefaultOrchestrationConcurrency
 	}
 }
