@@ -21,24 +21,24 @@ func TestEvidenceGatedRetrievalExpiryConflictAndOwnerIsolation(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	future := now.Add(24 * time.Hour)
+	persistEvidence(t, service, officialEvidence("e-1", "owner-1", "https://example.jp/license", "An official translation is required", now))
 	first, conflicts, err := service.CreateClaim(ctx, "owner-1", CreateClaimRequest{
-		Claim:    entity.Claim{Subject: "foreign-license-conversion", Predicate: "requires", Value: "official translation", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, Confidence: .95, TimeSensitive: true, ValidUntil: &future},
-		Evidence: []entity.Evidence{officialEvidence("e-1", "owner-1", "https://example.jp/license", "An official translation is required", now)},
+		Claim: entity.Claim{Subject: "foreign-license-conversion", Predicate: "requires", Value: "official translation", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, Confidence: .95, TimeSensitive: true, ValidUntil: &future}, EvidenceRefs: []string{"e-1"},
 	})
 	if err != nil || len(conflicts) != 0 || first.Status != knowledgev1.ClaimActive {
 		t.Fatalf("first claim=%+v conflicts=%+v error=%v", first, conflicts, err)
 	}
+	persistEvidence(t, service, officialEvidence("e-2", "owner-1", "https://example.jp/notice", "A newer notice says no translation", now))
 	second, conflicts, err := service.CreateClaim(ctx, "owner-1", CreateClaimRequest{
-		Claim:    entity.Claim{Subject: "foreign-license-conversion", Predicate: "requires", Value: "no translation", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, Confidence: .9},
-		Evidence: []entity.Evidence{officialEvidence("e-2", "owner-1", "https://example.jp/notice", "A newer notice says no translation", now)},
+		Claim: entity.Claim{Subject: "foreign-license-conversion", Predicate: "requires", Value: "no translation", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, Confidence: .9}, EvidenceRefs: []string{"e-2"},
 	})
 	if err != nil || second.Status != knowledgev1.ClaimContradicted || len(conflicts) != 1 {
 		t.Fatalf("second claim=%+v conflicts=%+v error=%v", second, conflicts, err)
 	}
 	past := now.Add(-time.Hour)
+	persistEvidence(t, service, officialEvidence("e-3", "owner-1", "https://example.jp/hours", "Office hours", now))
 	if _, _, err := service.CreateClaim(ctx, "owner-1", CreateClaimRequest{
-		Claim:    entity.Claim{Subject: "office", Predicate: "open", Value: "today", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, Confidence: .8, TimeSensitive: true, ValidUntil: &past},
-		Evidence: []entity.Evidence{officialEvidence("e-3", "owner-1", "https://example.jp/hours", "Office hours", now)},
+		Claim: entity.Claim{Subject: "office", Predicate: "open", Value: "today", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, Confidence: .8, TimeSensitive: true, ValidUntil: &past}, EvidenceRefs: []string{"e-3"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -61,9 +61,10 @@ func TestEvidenceGatedRetrievalExpiryConflictAndOwnerIsolation(t *testing.T) {
 func TestSinglePageObservationCannotDirectlyCreateKnowledge(t *testing.T) {
 	service := newKnowledgeService(t)
 	now := time.Now().UTC()
+	staleAt := now.Add(time.Hour)
+	persistEvidence(t, service, entity.Evidence{Schema: entity.Schema, EvidenceID: "page-1", OwnerID: "owner-1", SourceType: knowledgev1.SourcePageObservation, Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, Title: "Observed page", URI: "https://example.com", Accessible: true, Excerpt: "Available", Authority: .45, Freshness: 1, ObservedAt: now, StaleAt: &staleAt, TrustProfile: "page-observation.v1", AccessVerifiedAt: now, Provenance: testProvenance(now, "page")})
 	_, _, err := service.CreateClaim(context.Background(), "owner-1", CreateClaimRequest{
-		Claim:    entity.Claim{Subject: "page", Predicate: "shows", Value: "available", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, Confidence: .5},
-		Evidence: []entity.Evidence{{SourceType: knowledgev1.SourcePageObservation, Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, Title: "Observed page", URI: "https://example.com", Accessible: true, Excerpt: "Available", Authority: .5, Freshness: 1, ObservedAt: now}},
+		Claim: entity.Claim{Subject: "page", Predicate: "shows", Value: "available", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, Confidence: .5}, EvidenceRefs: []string{"page-1"},
 	})
 	if err == nil {
 		t.Fatal("single observation became knowledge")
@@ -88,6 +89,45 @@ func TestResearchPagesAreEvidenceOnly(t *testing.T) {
 	}
 }
 
+func TestResearchSourceTypeRejectsOfficialLookalikeDomain(t *testing.T) {
+	if got := researchSourceType("https://www.example.go.jp.attacker.com/procedure"); got != knowledgev1.SourceResearch {
+		t.Fatalf("lookalike domain was trusted as official: %s", got)
+	}
+	if got := researchSourceType("https://www.example.go.jp/procedure"); got != knowledgev1.SourceOfficial {
+		t.Fatalf("official domain was not recognized: %s", got)
+	}
+}
+
+func TestPublicRetrievalDoesNotLeakPrivateContradictionDetails(t *testing.T) {
+	service := newKnowledgeService(t)
+	ctx, now := context.Background(), time.Now().UTC()
+	staleAt := now.Add(24 * time.Hour)
+	publicEvidence := entity.Evidence{Schema: entity.Schema, EvidenceID: "e-public", OwnerID: "publisher", Scope: knowledgev1.ScopePublic, Sensitivity: knowledgev1.SensitivityPublic, SourceType: knowledgev1.SourceOfficial, Title: "Public notice", URI: "https://example.gov/notice", Accessible: true, Excerpt: "The public value is A", Authority: .95, Freshness: 1, ObservedAt: now, StaleAt: &staleAt, TrustProfile: "official-web.v1", AccessVerifiedAt: now, Provenance: testProvenance(now, "public")}
+	privateEvidence := entity.Evidence{Schema: entity.Schema, EvidenceID: "e-private", OwnerID: "publisher", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, SourceType: knowledgev1.SourceUserConfirmation, Title: "Private note", URI: "athena://user/confirmation/e-private", Accessible: true, Excerpt: "The private value is B", Authority: 1, Freshness: 1, ObservedAt: now, TrustProfile: "user-confirmation.v1", AccessVerifiedAt: now, Provenance: testProvenance(now, "private")}
+	persistEvidence(t, service, publicEvidence, privateEvidence)
+	publicVector, err := service.embedder.Embed(ctx, "public-rule value A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicClaim := entity.Claim{Schema: entity.Schema, ClaimID: "claim-public", OwnerID: "publisher", Subject: "public-rule", Predicate: "value", Value: "A", Scope: knowledgev1.ScopePublic, Sensitivity: knowledgev1.SensitivityPublic, EvidenceRefs: []string{publicEvidence.EvidenceID}, Confidence: .9, SemanticVector: publicVector, Status: knowledgev1.ClaimActive, Provenance: testProvenance(now, "public-claim"), CreatedAt: now, UpdatedAt: now}
+	if err := service.store.CreateKnowledge(ctx, publicClaim, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	privateClaim := entity.Claim{Schema: entity.Schema, ClaimID: "claim-private", OwnerID: "publisher", Subject: "public-rule", Predicate: "value", Value: "B", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, EvidenceRefs: []string{privateEvidence.EvidenceID}, Confidence: 1, ContradictedBy: []string{publicClaim.ClaimID}, Status: knowledgev1.ClaimContradicted, Provenance: testProvenance(now, "private-claim"), CreatedAt: now, UpdatedAt: now}
+	conflict := entity.Contradiction{Schema: entity.Schema, ContradictionID: "conflict-private", OwnerID: "publisher", Subject: "public-rule", Predicate: "value", ClaimIDs: []string{publicClaim.ClaimID, privateClaim.ClaimID}, EvidenceRefs: []string{publicEvidence.EvidenceID, privateEvidence.EvidenceID}, Severity: "HIGH", Summary: "Conflicting values", CreatedAt: now, UpdatedAt: now}
+	if err := service.store.CreateKnowledge(ctx, privateClaim, []entity.Contradiction{conflict}, []string{publicClaim.ClaimID}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Retrieve(ctx, "viewer", entity.RetrievalQuery{Text: "public rule value", Scopes: []string{knowledgev1.ScopePublic}, MaxSensitivity: knowledgev1.SensitivityPublic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Hits) != 1 || !result.Hits[0].HasConflict || len(result.Contradictions) != 0 {
+		t.Fatalf("private contradiction details leaked: %+v", result)
+	}
+}
+
 func TestOntologyNeedsOfflineCandidateHumanReviewAndMigrationTool(t *testing.T) {
 	service := newKnowledgeService(t)
 	ctx := context.Background()
@@ -98,28 +138,103 @@ func TestOntologyNeedsOfflineCandidateHumanReviewAndMigrationTool(t *testing.T) 
 	if err != nil || len(packs) != 1 {
 		t.Fatalf("packs=%+v error=%v", packs, err)
 	}
+	persistEvidence(t, service, officialEvidence("e-reviewed", "owner-1", "https://example.go.jp/ontology", "Reviewed domain vocabulary", time.Now().UTC()))
 	candidate, err := service.CreateOntologyCandidate(ctx, "owner-1", CreateOntologyCandidateRequest{
-		PackID: packs[0].PackID, BaseVersion: "1.0.0", Version: "1.1.0", EvidenceRefs: []string{"e-reviewed"}, EvaluationID: "eval-offline-1",
-		ValidationRules: []knowledgev1.ValidationRule{{SubjectType: "Claim", Predicate: "supports", ValueType: "Evidence", Required: true}}, Definition: map[string]any{"entities": []string{"Claim", "Evidence", "Source"}},
+		PackID: packs[0].PackID, BaseVersion: "1.0.0", Version: "1.1.0", CompatibleWith: []string{"1.0.0"}, EvidenceRefs: []string{"e-reviewed"},
+		ValidationRules: []knowledgev1.ValidationRule{{SubjectType: "Claim", Predicate: "supports", ValueType: "Evidence", Required: true}},
+		Definition:      knowledgev1.OntologyDefinition{Entities: []knowledgev1.OntologyEntity{{ID: "Claim"}, {ID: "Evidence"}, {ID: "Source"}}, Relations: []knowledgev1.OntologyRelation{{ID: "supports", SourceType: "Claim", TargetType: "Evidence"}}},
 	})
-	if err != nil || candidate.Status != knowledgev1.OntologyReviewRequired {
+	if err != nil || candidate.Status != knowledgev1.OntologyReviewRequired || !candidate.Evaluation.Passed || candidate.Evaluation.Environment != "OFFLINE" {
 		t.Fatalf("candidate=%+v error=%v", candidate, err)
 	}
-	approved, err := service.ReviewOntologyCandidate(ctx, "owner-1", "reviewer-1", candidate.CandidateID, ReviewOntologyCandidateRequest{Approved: true, ExpectedRevision: candidate.Revision})
+	approved, err := service.ReviewOntologyCandidate(ctx, "owner-1", "reviewer-1", candidate.CandidateID, ReviewOntologyCandidateRequest{Approved: true, ReviewNote: "Offline checks passed", ExpectedRevision: candidate.Revision})
 	if err != nil || approved.Proposed.ApprovedBy != "reviewer-1" {
 		t.Fatalf("approved=%+v error=%v", approved, err)
 	}
-	request := CreateOntologyMigrationRequest{CandidateID: candidate.CandidateID, FromVersion: "1.0.0", ToVersion: "1.1.0", Plan: []string{"add Source entity"}}
-	if _, err := service.CreateOntologyMigration(ctx, "owner-1", "reviewer-1", request); err == nil {
-		t.Fatal("production migration ran without migration tool")
+	request := CreateOntologyMigrationRequest{CandidateID: candidate.CandidateID, Plan: []knowledgev1.OntologyMigrationStep{{Operation: "ADD_ENTITY", Target: "Source"}}}
+	migration, err := service.CreateOntologyMigration(ctx, "owner-1", "reviewer-1", request)
+	if err != nil || migration.Status != knowledgev1.MigrationReviewRequired {
+		t.Fatalf("migration=%+v error=%v", migration, err)
 	}
-	request.ToolExecution = true
-	if _, err := service.CreateOntologyMigration(ctx, "owner-1", "reviewer-1", request); err != nil {
-		t.Fatalf("approved tool migration failed: %v", err)
+	if _, err := service.ExecuteOntologyMigration(ctx, "owner-1", migration.MigrationID); err == nil {
+		t.Fatal("unreviewed production migration executed")
+	}
+	migration, err = service.ReviewOntologyMigration(ctx, "owner-1", "reviewer-2", migration.MigrationID, ReviewOntologyMigrationRequest{Approved: true, ReviewNote: "Migration plan reviewed", ExpectedRevision: migration.Revision})
+	if err != nil || migration.Status != knowledgev1.MigrationApproved {
+		t.Fatalf("reviewed migration=%+v error=%v", migration, err)
+	}
+	migration, err = service.ExecuteOntologyMigration(ctx, "owner-1", migration.MigrationID)
+	if err != nil || migration.Execution == nil || !migration.Execution.Success {
+		t.Fatalf("approved tool migration failed: migration=%+v error=%v", migration, err)
 	}
 	packs, err = service.ListOntologyPacks(ctx, "owner-1")
 	if err != nil || len(packs) != 1 || packs[0].Current != "1.1.0" {
 		t.Fatalf("ontology pointer was not advanced atomically: packs=%+v error=%v", packs, err)
+	}
+}
+
+func TestHybridRetrievalTraversesRelationsAndMarksStaleEvidence(t *testing.T) {
+	service := newKnowledgeService(t)
+	ctx, now := context.Background(), time.Now().UTC()
+	persistEvidence(t, service, officialEvidence("e-target", "owner-1", "https://example.go.jp/target", "Bring an original residence certificate", now))
+	target, _, err := service.CreateClaim(ctx, "owner-1", CreateClaimRequest{Claim: entity.Claim{Subject: "required-document", Predicate: "name", Value: "residence certificate", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal}, EvidenceRefs: []string{"e-target"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistEvidence(t, service, officialEvidence("e-procedure", "owner-1", "https://example.go.jp/procedure", "Foreign license conversion procedure", now))
+	procedure, _, err := service.CreateClaim(ctx, "owner-1", CreateClaimRequest{Claim: entity.Claim{Subject: "foreign-license-conversion", Predicate: "has-document", Value: "required documents", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, Relations: []entity.ClaimRelation{{Predicate: "requires", TargetClaimID: target.ClaimID, Weight: 1}}}, EvidenceRefs: []string{"e-procedure"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Retrieve(ctx, "owner-1", entity.RetrievalQuery{Text: "foreign license conversion", Scopes: []string{knowledgev1.ScopeUser}, MaxSensitivity: knowledgev1.SensitivityInternal, RelationDepth: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRelation := false
+	for _, hit := range result.Hits {
+		if hit.Claim.ClaimID == target.ClaimID && containsValue(hit.MatchedBy, "relation") && len(hit.RelationPath) > 0 {
+			foundRelation = true
+		}
+	}
+	if !foundRelation || procedure.SemanticVector == nil {
+		t.Fatalf("relation traversal or vector indexing missing: %+v", result.Hits)
+	}
+
+	stale := officialEvidence("e-stale", "owner-1", "https://example.go.jp/stale", "Old opening hours", now.Add(-48*time.Hour))
+	staleAt := now.Add(-24 * time.Hour)
+	stale.StaleAt = &staleAt
+	persistEvidence(t, service, stale)
+	claim, _, err := service.CreateClaim(ctx, "owner-1", CreateClaimRequest{Claim: entity.Claim{Subject: "office", Predicate: "hours", Value: "09:00-17:00", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal}, EvidenceRefs: []string{"e-stale"}})
+	if err != nil || claim.Status != knowledgev1.ClaimExpired {
+		t.Fatalf("stale claim=%+v error=%v", claim, err)
+	}
+	result, err = service.Retrieve(ctx, "owner-1", entity.RetrievalQuery{Text: "office hours", Scopes: []string{knowledgev1.ScopeUser}, MaxSensitivity: knowledgev1.SensitivityInternal, IncludeExpired: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hit := range result.Hits {
+		if hit.Claim.ClaimID == claim.ClaimID && hit.Determination == knowledgev1.DeterminationFact {
+			t.Fatal("stale evidence was returned as a deterministic fact")
+		}
+	}
+}
+
+func TestContradictionResolutionIsAudited(t *testing.T) {
+	service := newKnowledgeService(t)
+	ctx, now := context.Background(), time.Now().UTC()
+	persistEvidence(t, service, officialEvidence("e-left", "owner-1", "https://example.go.jp/left", "Rule A", now))
+	left, _, err := service.CreateClaim(ctx, "owner-1", CreateClaimRequest{Claim: entity.Claim{Subject: "rule", Predicate: "value", Value: "A", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal}, EvidenceRefs: []string{"e-left"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistEvidence(t, service, officialEvidence("e-right", "owner-1", "https://example.go.jp/right", "Rule B", now))
+	_, contradictions, err := service.CreateClaim(ctx, "owner-1", CreateClaimRequest{Claim: entity.Claim{Subject: "rule", Predicate: "value", Value: "B", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal}, EvidenceRefs: []string{"e-right"}})
+	if err != nil || len(contradictions) != 1 {
+		t.Fatalf("contradictions=%+v error=%v", contradictions, err)
+	}
+	resolved, err := service.ResolveContradiction(ctx, "owner-1", "reviewer-1", contradictions[0].ContradictionID, ResolveContradictionRequest{Decision: knowledgev1.ResolutionKeepClaim, WinningClaimID: left.ClaimID, Note: "Verified against the current official rule"})
+	if err != nil || !resolved.Resolved || resolved.Resolution == nil || resolved.Resolution.ResolvedBy != "reviewer-1" {
+		t.Fatalf("resolved=%+v error=%v", resolved, err)
 	}
 }
 
@@ -144,5 +259,17 @@ func newKnowledgeService(t *testing.T) *Service {
 }
 
 func officialEvidence(id, owner, uri, excerpt string, now time.Time) entity.Evidence {
-	return entity.Evidence{Schema: entity.Schema, EvidenceID: id, OwnerID: owner, Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, SourceType: knowledgev1.SourceOfficial, Title: "Official guidance", URI: uri, Accessible: true, Excerpt: excerpt, Authority: 1, Freshness: 1, ObservedAt: now}
+	staleAt := now.Add(30 * 24 * time.Hour)
+	return entity.Evidence{Schema: entity.Schema, EvidenceID: id, OwnerID: owner, Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, SourceType: knowledgev1.SourceOfficial, Title: "Official guidance", URI: uri, Accessible: true, Excerpt: excerpt, Authority: .95, Freshness: 1, ObservedAt: now, StaleAt: &staleAt, TrustProfile: "official-web.v1", AccessVerifiedAt: now, Provenance: testProvenance(now, excerpt)}
+}
+
+func persistEvidence(t *testing.T, service *Service, values ...entity.Evidence) {
+	t.Helper()
+	if err := service.store.CreateEvidence(context.Background(), values); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testProvenance(now time.Time, body string) entity.Provenance {
+	return normalizeProvenance(entity.Provenance{Producer: "test-fixture", Method: "verified-source"}, now, body)
 }

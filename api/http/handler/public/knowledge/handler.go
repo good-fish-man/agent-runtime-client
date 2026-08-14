@@ -17,6 +17,20 @@ type Handler struct{ service *service.Service }
 
 func NewHandler(value *service.Service) *Handler { return &Handler{service: value} }
 
+func (h *Handler) CreateUserEvidence(c *gin.Context) {
+	var request service.CreateUserEvidenceRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
+		return
+	}
+	value, err := h.service.CreateUserEvidence(c.Request.Context(), userID(c), request)
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.OkStatus(c, http.StatusCreated, value)
+}
+
 func (h *Handler) CreateClaim(c *gin.Context) {
 	var request service.CreateClaimRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -72,6 +86,20 @@ func (h *Handler) ListContradictions(c *gin.Context) {
 	response.Ok(c, gin.H{"items": items})
 }
 
+func (h *Handler) ResolveContradiction(c *gin.Context) {
+	var request service.ResolveContradictionRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
+		return
+	}
+	value, err := h.service.ResolveContradiction(c.Request.Context(), userID(c), userID(c), c.Param("id"), request)
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, value)
+}
+
 func (h *Handler) ListSnapshots(c *gin.Context) {
 	items, err := h.service.ListSnapshots(c.Request.Context(), userID(c), queryInt(c, "limit", 100))
 	if err != nil {
@@ -118,6 +146,15 @@ func (h *Handler) CreateOntologyCandidate(c *gin.Context) {
 	response.OkStatus(c, http.StatusCreated, value)
 }
 
+func (h *Handler) ListOntologyCandidates(c *gin.Context) {
+	items, err := h.service.ListOntologyCandidates(c.Request.Context(), userID(c), queryInt(c, "limit", 100))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, gin.H{"items": items})
+}
+
 func (h *Handler) ReviewOntologyCandidate(c *gin.Context) {
 	var request service.ReviewOntologyCandidateRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -144,6 +181,29 @@ func (h *Handler) CreateOntologyMigration(c *gin.Context) {
 		return
 	}
 	response.OkStatus(c, http.StatusCreated, value)
+}
+
+func (h *Handler) ReviewOntologyMigration(c *gin.Context) {
+	var request service.ReviewOntologyMigrationRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
+		return
+	}
+	value, err := h.service.ReviewOntologyMigration(c.Request.Context(), userID(c), userID(c), c.Param("id"), request)
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, value)
+}
+
+func (h *Handler) ExecuteOntologyMigration(c *gin.Context) {
+	value, err := h.service.ExecuteOntologyMigration(c.Request.Context(), userID(c), c.Param("id"))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, value)
 }
 
 func userID(c *gin.Context) string { return c.GetString(consts.CtxKeyUserID) }

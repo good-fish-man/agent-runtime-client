@@ -1,34 +1,37 @@
 package knowledge
 
 type Claim struct {
-	ClaimID     string `gorm:"column:claim_id;primaryKey;size:64"`
-	OwnerID     string `gorm:"column:owner_id;size:64;not null;index:idx_knowledge_claim_lookup,priority:1"`
-	Subject     string `gorm:"column:subject;size:256;not null;index:idx_knowledge_claim_lookup,priority:2"`
-	Predicate   string `gorm:"column:predicate;size:128;not null;index:idx_knowledge_claim_lookup,priority:3"`
-	Scope       string `gorm:"column:scope;size:24;not null;index"`
-	Sensitivity string `gorm:"column:sensitivity;size:24;not null;index"`
-	Status      string `gorm:"column:status;size:24;not null;index"`
-	ValidUntil  int64  `gorm:"column:valid_until;index"`
-	SearchText  string `gorm:"column:search_text;type:text;not null"`
-	Content     string `gorm:"column:content;type:text;not null"`
-	CreatedAt   int64  `gorm:"column:created_at;not null;index"`
-	UpdatedAt   int64  `gorm:"column:updated_at;not null;index"`
+	ClaimID        string `gorm:"column:claim_id;primaryKey;size:64"`
+	OwnerID        string `gorm:"column:owner_id;size:64;not null;index:idx_knowledge_claim_lookup,priority:1"`
+	OrganizationID string `gorm:"column:organization_id;size:64;index"`
+	Subject        string `gorm:"column:subject;size:256;not null;index:idx_knowledge_claim_lookup,priority:2"`
+	Predicate      string `gorm:"column:predicate;size:128;not null;index:idx_knowledge_claim_lookup,priority:3"`
+	Scope          string `gorm:"column:scope;size:24;not null;index"`
+	Sensitivity    string `gorm:"column:sensitivity;size:24;not null;index"`
+	Status         string `gorm:"column:status;size:24;not null;index"`
+	ValidUntil     int64  `gorm:"column:valid_until;index"`
+	SearchText     string `gorm:"column:search_text;type:text;not null"`
+	Content        string `gorm:"column:content;type:text;not null"`
+	CreatedAt      int64  `gorm:"column:created_at;not null;index"`
+	UpdatedAt      int64  `gorm:"column:updated_at;not null;index"`
 }
 
 func (Claim) TableName() string { return "os_knowledge_claim" }
 
 type Evidence struct {
-	EvidenceID  string  `gorm:"column:evidence_id;primaryKey;size:64"`
-	OwnerID     string  `gorm:"column:owner_id;size:64;not null;index"`
-	Scope       string  `gorm:"column:scope;size:24;not null;index"`
-	Sensitivity string  `gorm:"column:sensitivity;size:24;not null;index"`
-	SourceType  string  `gorm:"column:source_type;size:32;not null;index"`
-	URI         string  `gorm:"column:uri;type:text"`
-	Accessible  bool    `gorm:"column:accessible;not null;index"`
-	Authority   float64 `gorm:"column:authority;not null"`
-	Freshness   float64 `gorm:"column:freshness;not null"`
-	Content     string  `gorm:"column:content;type:text;not null"`
-	CreatedAt   int64   `gorm:"column:created_at;not null;index"`
+	EvidenceID     string  `gorm:"column:evidence_id;primaryKey;size:64"`
+	OwnerID        string  `gorm:"column:owner_id;size:64;not null;index"`
+	OrganizationID string  `gorm:"column:organization_id;size:64;index"`
+	Scope          string  `gorm:"column:scope;size:24;not null;index"`
+	Sensitivity    string  `gorm:"column:sensitivity;size:24;not null;index"`
+	SourceType     string  `gorm:"column:source_type;size:32;not null;index"`
+	URI            string  `gorm:"column:uri;type:text"`
+	Accessible     bool    `gorm:"column:accessible;not null;index"`
+	Authority      float64 `gorm:"column:authority;not null"`
+	Freshness      float64 `gorm:"column:freshness;not null"`
+	StaleAt        int64   `gorm:"column:stale_at;index"`
+	Content        string  `gorm:"column:content;type:text;not null"`
+	CreatedAt      int64   `gorm:"column:created_at;not null;index"`
 }
 
 func (Evidence) TableName() string { return "os_evidence" }
@@ -45,11 +48,12 @@ type Contradiction struct {
 func (Contradiction) TableName() string { return "os_contradiction" }
 
 type Snapshot struct {
-	SnapshotID string `gorm:"column:snapshot_id;primaryKey;size:64"`
-	OwnerID    string `gorm:"column:owner_id;size:64;not null;index"`
-	Checksum   string `gorm:"column:checksum;size:64;not null;index"`
-	Content    string `gorm:"column:content;type:text;not null"`
-	CreatedAt  int64  `gorm:"column:created_at;not null;index"`
+	SnapshotID    string  `gorm:"column:snapshot_id;primaryKey;size:64"`
+	OwnerID       string  `gorm:"column:owner_id;size:64;not null;index"`
+	Checksum      string  `gorm:"column:checksum;size:64;not null;index"`
+	RunManifestID *string `gorm:"column:run_manifest_id;size:64;uniqueIndex"`
+	Content       string  `gorm:"column:content;type:text;not null"`
+	CreatedAt     int64   `gorm:"column:created_at;not null;index"`
 }
 
 func (Snapshot) TableName() string { return "os_knowledge_snapshot" }
@@ -97,8 +101,10 @@ type OntologyMigration struct {
 	OwnerID     string `gorm:"column:owner_id;size:64;not null;index"`
 	PackID      string `gorm:"column:pack_id;size:64;not null;index"`
 	Status      string `gorm:"column:status;size:24;not null;index"`
+	Revision    int64  `gorm:"column:revision;not null"`
 	Content     string `gorm:"column:content;type:text;not null"`
 	CreatedAt   int64  `gorm:"column:created_at;not null"`
+	UpdatedAt   int64  `gorm:"column:updated_at;not null"`
 }
 
 func (OntologyMigration) TableName() string { return "os_ontology_migration" }

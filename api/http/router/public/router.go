@@ -250,17 +250,22 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 
 	if h.Knowledge != nil {
 		r := g.Group("/knowledge")
+		r.POST("/evidence/confirmations", h.Knowledge.CreateUserEvidence)
 		r.POST("/claims", h.Knowledge.CreateClaim)
 		r.GET("/claims", h.Knowledge.ListClaims)
 		r.GET("/evidence", h.Knowledge.ListEvidence)
 		r.POST("/retrieve", h.Knowledge.Retrieve)
 		r.GET("/contradictions", h.Knowledge.ListContradictions)
+		r.POST("/contradictions/:id/resolve", h.Knowledge.ResolveContradiction)
 		r.GET("/snapshots", h.Knowledge.ListSnapshots)
 		r.POST("/ontology/packs", h.Knowledge.CreateOntologyPack)
 		r.GET("/ontology/packs", h.Knowledge.ListOntologyPacks)
 		r.POST("/ontology/candidates", h.Knowledge.CreateOntologyCandidate)
+		r.GET("/ontology/candidates", h.Knowledge.ListOntologyCandidates)
 		r.POST("/ontology/candidates/:id/review", h.Knowledge.ReviewOntologyCandidate)
 		r.POST("/ontology/migrations", h.Knowledge.CreateOntologyMigration)
+		r.POST("/ontology/migrations/:id/review", h.Knowledge.ReviewOntologyMigration)
+		r.POST("/ontology/migrations/:id/execute", h.Knowledge.ExecuteOntologyMigration)
 	}
 	if h.Orchestration != nil {
 		r := g.Group("/goals")

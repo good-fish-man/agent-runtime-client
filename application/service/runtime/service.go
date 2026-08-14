@@ -22,6 +22,7 @@ import (
 	agententity "github.com/good-fish-man/agent-runtime-client/domain/entity/agent"
 	controlentity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
 	deploymententity "github.com/good-fish-man/agent-runtime-client/domain/entity/deployment"
+	knowledgeentity "github.com/good-fish-man/agent-runtime-client/domain/entity/knowledge"
 	modelentity "github.com/good-fish-man/agent-runtime-client/domain/entity/model"
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
 	irepo "github.com/good-fish-man/agent-runtime-client/domain/irepository/runtime"
@@ -32,6 +33,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
+	knowledgev1 "github.com/good-fish-man/athena-protocol/protocol/knowledge/v1"
 	log "github.com/good-fish-man/logx"
 )
 
@@ -99,6 +101,9 @@ func (s *RuntimeService) Run(ctx context.Context, req *dto.RunReq) (*entity.Comp
 	if err := s.hydrateSubAgentModels(ctx, in.SubAgents); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.Run.hydrateSubAgentModels")
 	}
+	if err := s.injectKnowledge(ctx, in.Context, in.Prompt); err != nil {
+		return nil, log.WrapError(err, "RuntimeService.Run.injectKnowledge")
+	}
 	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, in.KnowledgeBases, in.Options); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.Run.attachRunManifest")
 	}
@@ -138,6 +143,9 @@ func (s *RuntimeService) RunStream(ctx context.Context, req *dto.RunReq, emit St
 	if err := s.hydrateSubAgentModels(ctx, in.SubAgents); err != nil {
 		return log.WrapError(err, "RuntimeService.RunStream.hydrateSubAgentModels")
 	}
+	if err := s.injectKnowledge(ctx, in.Context, in.Prompt); err != nil {
+		return log.WrapError(err, "RuntimeService.RunStream.injectKnowledge")
+	}
 	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, in.KnowledgeBases, in.Options); err != nil {
 		return log.WrapError(err, "RuntimeService.RunStream.attachRunManifest")
 	}
@@ -166,6 +174,9 @@ func (s *RuntimeService) RunAgent(ctx context.Context, req *dto.AgentReq) (*enti
 	}
 	if err := s.hydrateModels(ctx, in.Models); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.RunAgent.hydrateModels")
+	}
+	if err := s.injectKnowledge(ctx, in.Context, in.Task); err != nil {
+		return nil, log.WrapError(err, "RuntimeService.RunAgent.injectKnowledge")
 	}
 	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, nil, nil); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.RunAgent.attachRunManifest")
@@ -199,6 +210,9 @@ func (s *RuntimeService) RunAgentStream(ctx context.Context, req *dto.AgentReq, 
 	}
 	if err := s.hydrateModels(ctx, in.Models); err != nil {
 		return log.WrapError(err, "RuntimeService.RunAgentStream.hydrateModels")
+	}
+	if err := s.injectKnowledge(ctx, in.Context, in.Task); err != nil {
+		return log.WrapError(err, "RuntimeService.RunAgentStream.injectKnowledge")
 	}
 	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, nil, nil); err != nil {
 		return log.WrapError(err, "RuntimeService.RunAgentStream.attachRunManifest")
@@ -988,12 +1002,16 @@ func (s *RuntimeService) attachRunManifest(ctx context.Context, values map[strin
 	for _, item := range knowledge {
 		knowledgeFingerprint = append(knowledgeFingerprint, map[string]any{"id": item.ID, "name": item.Name, "retrieval_url": item.RetrievalURL, "top_k": item.TopK})
 	}
+	knowledgeSnapshot := contextString(values, "knowledge_snapshot_checksum")
+	if knowledgeSnapshot == "" {
+		knowledgeSnapshot = hashValue(knowledgeFingerprint)
+	}
 	modelConfigVersion := hashValue(modelFingerprint)
 	manifest, err := s.deployment.CreateRunManifest(ctx, ownerID, deploymentsvc.RunManifestInput{
 		TaskID: taskID, AgentID: agentID, ModelConfigVersion: modelConfigVersion,
 		CapabilityInstances: capabilityInstances, DeviceID: deviceID,
-		WorldRevision: contextInt64(values, "world_revision"), KnowledgeSnapshot: hashValue(knowledgeFingerprint),
-		Budget: runBudget(options), FeatureFlags: map[string]bool{"deployment_manifest": true},
+		WorldRevision: contextInt64(values, "world_revision"), KnowledgeSnapshot: knowledgeSnapshot,
+		Budget: runBudget(options), FeatureFlags: map[string]bool{"deployment_manifest": true, "evidence_knowledge": contextString(values, "knowledge_snapshot_id") != ""},
 	})
 	if err != nil {
 		return err
@@ -1004,6 +1022,11 @@ func (s *RuntimeService) attachRunManifest(ctx context.Context, values map[strin
 		values["model_config_version"] = modelConfigVersion
 		if manifest.ExposureID != "" {
 			values["exposure_id"] = manifest.ExposureID
+		}
+	}
+	if snapshotID := contextString(values, "knowledge_snapshot_id"); snapshotID != "" && s.knowledge != nil {
+		if err := s.knowledge.BindSnapshotToRun(ctx, ownerID, snapshotID, manifest.ManifestID); err != nil {
+			return log.WrapError(err, "RuntimeService.attachRunManifest.bindKnowledgeSnapshot")
 		}
 	}
 	return nil
@@ -1498,6 +1521,76 @@ func bindStoredAgentModels(agent *agententity.SysAgent, configured map[string]en
 	}
 	*target = bound
 	return nil
+}
+
+func (s *RuntimeService) injectKnowledge(ctx context.Context, values map[string]any, input string) error {
+	if s == nil || s.knowledge == nil || values == nil {
+		return nil
+	}
+	ownerID := authctx.UserID(ctx)
+	queryText := strings.TrimSpace(input)
+	if original := contextString(values, "original_task"); original != "" && !strings.Contains(strings.ToLower(queryText), strings.ToLower(original)) {
+		queryText = strings.TrimSpace(original + "\n" + queryText)
+	}
+	if ownerID == "" || queryText == "" {
+		return nil
+	}
+	result, err := s.knowledge.Retrieve(ctx, ownerID, knowledgeentity.RetrievalQuery{
+		Text: queryText, Scopes: []string{knowledgev1.ScopeUser, knowledgev1.ScopePublic}, MaxSensitivity: knowledgev1.SensitivityInternal,
+		RelationDepth: 1, MinEvidenceAuthority: .25,
+		Budget: knowledgev1.RetrievalBudget{MaxResults: 8, MaxTokens: 6000, MaxTimeMS: 1200},
+	})
+	if err != nil {
+		return log.WrapError(err, "RuntimeService.injectKnowledge.retrieve")
+	}
+	if result == nil || result.Snapshot == nil || len(result.Hits) == 0 {
+		return nil
+	}
+	claims := make([]map[string]any, 0, len(result.Hits))
+	for _, hit := range result.Hits {
+		sources := make([]map[string]any, 0, len(hit.Evidence))
+		for _, evidence := range hit.Evidence {
+			sources = append(sources, map[string]any{
+				"evidence_id": evidence.EvidenceID, "title": evidence.Title, "uri": evidence.URI,
+				"excerpt": boundedKnowledgeText(evidence.Excerpt, 900), "source_type": evidence.SourceType,
+				"authority": evidence.Authority, "freshness": evidence.Freshness, "stale_at": evidence.StaleAt,
+			})
+		}
+		claims = append(claims, map[string]any{
+			"claim_id": hit.Claim.ClaimID, "subject": hit.Claim.Subject, "predicate": hit.Claim.Predicate,
+			"value": boundedKnowledgeText(hit.Claim.Value, 1200), "confidence": hit.Claim.Confidence,
+			"determination": hit.Determination, "valid_until": hit.Claim.ValidUntil,
+			"matched_by": hit.MatchedBy, "relation_path": hit.RelationPath, "sources": sources,
+		})
+	}
+	conflicts := make([]map[string]any, 0, len(result.Contradictions))
+	for _, contradiction := range result.Contradictions {
+		conflicts = append(conflicts, map[string]any{
+			"contradiction_id": contradiction.ContradictionID, "subject": contradiction.Subject,
+			"predicate": contradiction.Predicate, "claim_ids": contradiction.ClaimIDs,
+			"severity": contradiction.Severity, "summary": contradiction.Summary,
+		})
+	}
+	values["knowledge_context"] = map[string]any{
+		"schema": knowledgev1.Schema, "snapshot_id": result.Snapshot.SnapshotID,
+		"checksum": result.Snapshot.Checksum, "as_of": result.Snapshot.AsOf,
+		"claims": claims, "contradictions": conflicts,
+	}
+	values["knowledge_snapshot_id"] = result.Snapshot.SnapshotID
+	values["knowledge_snapshot_checksum"] = result.Snapshot.Checksum
+	return nil
+}
+
+func boundedKnowledgeText(value string, maximum int) string {
+	value = strings.TrimSpace(value)
+	if maximum < 1 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= maximum {
+		return value
+	}
+	return string(runes[:maximum])
 }
 
 func (s *RuntimeService) injectMemories(ctx context.Context, values map[string]any) error {

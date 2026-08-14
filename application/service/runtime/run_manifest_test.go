@@ -11,12 +11,17 @@ import (
 	"gorm.io/gorm"
 
 	deploymentsvc "github.com/good-fish-man/agent-runtime-client/application/service/deployment"
+	knowledgesvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge"
+	knowledgeentity "github.com/good-fish-man/agent-runtime-client/domain/entity/knowledge"
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	deploymentpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/deployment"
+	knowledgepo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/knowledge"
 	learningpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/learning"
 	deploymentrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/deployment"
+	knowledgerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/knowledge"
 	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
+	knowledgev1 "github.com/good-fish-man/athena-protocol/protocol/knowledge/v1"
 )
 
 func TestAttachRunManifestPersistsTraceableSecretFreeSnapshot(t *testing.T) {
@@ -57,5 +62,55 @@ func TestAttachRunManifestPersistsTraceableSecretFreeSnapshot(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprintf("%+v", manifest), "must-never-persist") || strings.Contains(fmt.Sprintf("%+v", manifest), "knowledge-secret") {
 		t.Fatal("run manifest persisted a model or knowledge credential")
+	}
+}
+
+func TestKnowledgeSnapshotIsBoundToRunManifest(t *testing.T) {
+	dsn := fmt.Sprintf("file:runtime-knowledge-manifest-%d?mode=memory&cache=shared", time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&deploymentpo.AgentBuild{}, &deploymentpo.RunManifest{}, &deploymentpo.Promotion{}, &deploymentpo.Exposure{},
+		&deploymentpo.ShadowResult{}, &deploymentpo.CanaryMetric{}, &deploymentpo.CanarySample{}, &deploymentpo.Rollback{}, &deploymentpo.Compensation{},
+		&learningpo.Skill{}, &learningpo.Strategy{},
+		&knowledgepo.Claim{}, &knowledgepo.Evidence{}, &knowledgepo.Contradiction{}, &knowledgepo.Snapshot{}, &knowledgepo.OntologyPack{}, &knowledgepo.OntologyVersion{}, &knowledgepo.OntologyCandidate{}, &knowledgepo.OntologyMigration{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	dataHandle := data.New(db)
+	deploymentService := deploymentsvc.NewService(deploymentrepo.NewStore(dataHandle))
+	knowledgeService := knowledgesvc.NewService(knowledgerepo.NewStore(dataHandle))
+	evidence, err := knowledgeService.CreateUserEvidence(context.Background(), "owner-1", knowledgesvc.CreateUserEvidenceRequest{Title: "Confirmed requirement", Excerpt: "An official translation is required", Sensitivity: knowledgev1.SensitivityInternal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := knowledgeService.CreateClaim(context.Background(), "owner-1", knowledgesvc.CreateClaimRequest{Claim: knowledgeentity.Claim{Subject: "foreign-license-conversion", Predicate: "requires", Value: "official translation", Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal}, EvidenceRefs: []string{evidence.EvidenceID}}); err != nil {
+		t.Fatal(err)
+	}
+	service := &RuntimeService{}
+	service.SetDeploymentService(deploymentService)
+	service.SetKnowledgeService(knowledgeService)
+	ctx := authctx.WithUserID(context.Background(), "owner-1")
+	values := map[string]any{"agent_id": "agent-1"}
+	if err := service.injectKnowledge(ctx, values, "foreign license conversion official translation"); err != nil {
+		t.Fatal(err)
+	}
+	snapshotID, _ := values["knowledge_snapshot_id"].(string)
+	checksum, _ := values["knowledge_snapshot_checksum"].(string)
+	if snapshotID == "" || checksum == "" || values["knowledge_context"] == nil {
+		t.Fatalf("knowledge context was not injected: %+v", values)
+	}
+	if err := service.attachRunManifest(ctx, values, "task-knowledge", "device-1", map[string]entity.ModelConfig{"default": {Provider: "openai", Name: "gpt-test"}}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	manifests, err := deploymentService.ListRunManifests(ctx, "owner-1", "agent-1", 10)
+	if err != nil || len(manifests) != 1 || manifests[0].KnowledgeSnapshot != checksum {
+		t.Fatalf("manifest=%+v error=%v", manifests, err)
+	}
+	snapshots, err := knowledgeService.ListSnapshots(ctx, "owner-1", 10)
+	if err != nil || len(snapshots) != 1 || snapshots[0].SnapshotID != snapshotID || snapshots[0].RunManifestID != manifests[0].ManifestID || snapshots[0].BoundAt == nil {
+		t.Fatalf("snapshot=%+v error=%v", snapshots, err)
 	}
 }

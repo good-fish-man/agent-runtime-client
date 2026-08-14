@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -40,17 +42,8 @@ func (s *Store) CreateEvidence(ctx context.Context, evidence []entity.Evidence) 
 	}), "KnowledgeStore.CreateEvidence")
 }
 
-func (s *Store) CreateKnowledge(ctx context.Context, evidence []entity.Evidence, claim entity.Claim, contradictions []entity.Contradiction, conflictingClaimIDs []string) error {
+func (s *Store) CreateKnowledge(ctx context.Context, claim entity.Claim, contradictions []entity.Contradiction, conflictingClaimIDs []string) error {
 	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, item := range evidence {
-			row, err := evidenceRow(item)
-			if err != nil {
-				return err
-			}
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
-				return err
-			}
-		}
 		claimRow, err := claimRow(claim)
 		if err != nil {
 			return err
@@ -105,6 +98,17 @@ func (s *Store) FindClaim(ctx context.Context, ownerID, claimID string) (*entity
 	return decode[entity.Claim](row.Content, "KnowledgeStore.FindClaim.decode")
 }
 
+func (s *Store) FindClaims(ctx context.Context, ownerID string, claimIDs []string) ([]entity.Claim, error) {
+	if len(claimIDs) == 0 {
+		return []entity.Claim{}, nil
+	}
+	var rows []po.Claim
+	if err := s.data.DB(ctx).Where("owner_id = ? AND claim_id IN ?", ownerID, claimIDs).Find(&rows).Error; err != nil {
+		return nil, log.WrapError(err, "KnowledgeStore.FindClaims")
+	}
+	return decodeRows[entity.Claim](rows, func(row po.Claim) string { return row.Content }, "KnowledgeStore.FindClaims.decode")
+}
+
 func (s *Store) ListClaims(ctx context.Context, ownerID string, filter entity.ClaimFilter) ([]entity.Claim, error) {
 	db := s.data.DB(ctx).Model(&po.Claim{}).Where("owner_id = ?", ownerID)
 	if filter.Subject != "" {
@@ -135,6 +139,44 @@ func (s *Store) ListClaims(ctx context.Context, ownerID string, filter entity.Cl
 		items = append(items, *item)
 	}
 	return items, nil
+}
+
+func (s *Store) SearchClaims(ctx context.Context, userID string, organizationIDs []string, filter entity.ClaimFilter) ([]entity.Claim, error) {
+	parts := make([]string, 0, 3)
+	args := make([]any, 0, 4)
+	if containsString(filter.Scopes, "USER") {
+		parts = append(parts, "(scope = ? AND owner_id = ?)")
+		args = append(args, "USER", userID)
+	}
+	if containsString(filter.Scopes, "PUBLIC") {
+		parts = append(parts, "scope = ?")
+		args = append(args, "PUBLIC")
+	}
+	if containsString(filter.Scopes, "ORGANIZATION") && len(organizationIDs) > 0 {
+		parts = append(parts, "(scope = ? AND organization_id IN ?)")
+		args = append(args, "ORGANIZATION", organizationIDs)
+	}
+	if len(parts) == 0 {
+		return []entity.Claim{}, nil
+	}
+	db := s.data.DB(ctx).Model(&po.Claim{}).Where("("+strings.Join(parts, " OR ")+")", args...)
+	if filter.Subject != "" {
+		db = db.Where("subject = ?", filter.Subject)
+	}
+	if filter.Predicate != "" {
+		db = db.Where("predicate = ?", filter.Predicate)
+	}
+	if len(filter.Sensitivities) > 0 {
+		db = db.Where("sensitivity IN ?", filter.Sensitivities)
+	}
+	if len(filter.Statuses) > 0 {
+		db = db.Where("status IN ?", filter.Statuses)
+	}
+	var rows []po.Claim
+	if err := db.Order("updated_at DESC").Limit(normalizeLimit(filter.Limit, 500)).Find(&rows).Error; err != nil {
+		return nil, log.WrapError(err, "KnowledgeStore.SearchClaims")
+	}
+	return decodeRows[entity.Claim](rows, func(row po.Claim) string { return row.Content }, "KnowledgeStore.SearchClaims.decode")
 }
 
 func (s *Store) FindEvidence(ctx context.Context, ownerID string, evidenceIDs []string) ([]entity.Evidence, error) {
@@ -199,6 +241,55 @@ func (s *Store) ListContradictions(ctx context.Context, ownerID string, unresolv
 	return items, nil
 }
 
+func (s *Store) FindContradiction(ctx context.Context, ownerID, contradictionID string) (*entity.Contradiction, error) {
+	var row po.Contradiction
+	result := s.data.DB(ctx).Where("owner_id = ? AND contradiction_id = ?", ownerID, contradictionID).Limit(1).Find(&row)
+	if result.Error != nil {
+		return nil, log.WrapError(result.Error, "KnowledgeStore.FindContradiction")
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil
+	}
+	return decode[entity.Contradiction](row.Content, "KnowledgeStore.FindContradiction.decode")
+}
+
+func (s *Store) ResolveContradiction(ctx context.Context, value entity.Contradiction, claimStatuses map[string]string) error {
+	content, err := encode(value)
+	if err != nil {
+		return err
+	}
+	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&po.Contradiction{}).Where("contradiction_id = ? AND owner_id = ? AND resolved = ?", value.ContradictionID, value.OwnerID, false).Updates(map[string]any{"resolved": true, "content": content, "updated_at": millis(value.UpdatedAt)})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrRevisionConflict
+		}
+		for claimID, status := range claimStatuses {
+			var row po.Claim
+			found := tx.Where("claim_id = ? AND owner_id = ?", claimID, value.OwnerID).Limit(1).Find(&row)
+			if found.Error != nil || found.RowsAffected != 1 {
+				return fmt.Errorf("resolve contradiction claim %q not found", claimID)
+			}
+			claim, decodeErr := decode[entity.Claim](row.Content, "KnowledgeStore.ResolveContradiction.claim.decode")
+			if decodeErr != nil {
+				return decodeErr
+			}
+			claim.Status = status
+			claim.UpdatedAt = value.UpdatedAt
+			claimContent, encodeErr := encode(*claim)
+			if encodeErr != nil {
+				return encodeErr
+			}
+			if updateErr := tx.Model(&po.Claim{}).Where("claim_id = ? AND owner_id = ?", claimID, value.OwnerID).Updates(map[string]any{"status": status, "content": claimContent, "updated_at": millis(claim.UpdatedAt)}).Error; updateErr != nil {
+				return updateErr
+			}
+		}
+		return nil
+	}), "KnowledgeStore.ResolveContradiction")
+}
+
 func (s *Store) CreateSnapshot(ctx context.Context, value entity.Snapshot) error {
 	content, err := encode(value)
 	if err != nil {
@@ -206,6 +297,34 @@ func (s *Store) CreateSnapshot(ctx context.Context, value entity.Snapshot) error
 	}
 	row := po.Snapshot{SnapshotID: value.SnapshotID, OwnerID: value.OwnerID, Checksum: value.Checksum, Content: content, CreatedAt: millis(value.CreatedAt)}
 	return log.WrapError(s.data.DB(ctx).Create(&row).Error, "KnowledgeStore.CreateSnapshot")
+}
+
+func (s *Store) BindSnapshotToRun(ctx context.Context, ownerID, snapshotID, runManifestID string, boundAtMillis int64) error {
+	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
+		var row po.Snapshot
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("snapshot_id = ? AND owner_id = ?", snapshotID, ownerID).Limit(1).Find(&row)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		value, decodeErr := decode[entity.Snapshot](row.Content, "KnowledgeStore.BindSnapshotToRun.decode")
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if value.RunManifestID != "" && value.RunManifestID != runManifestID {
+			return fmt.Errorf("knowledge snapshot is already bound to another run manifest")
+		}
+		boundAt := time.UnixMilli(boundAtMillis).UTC()
+		value.RunManifestID = runManifestID
+		value.BoundAt = &boundAt
+		content, encodeErr := encode(*value)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		return tx.Model(&po.Snapshot{}).Where("snapshot_id = ? AND owner_id = ?", snapshotID, ownerID).Updates(map[string]any{"run_manifest_id": runManifestID, "content": content}).Error
+	}), "KnowledgeStore.BindSnapshotToRun")
 }
 
 func (s *Store) ListSnapshots(ctx context.Context, ownerID string, limit int) ([]entity.Snapshot, error) {
@@ -243,21 +362,36 @@ func (s *Store) CreateOntologyPackWithVersion(ctx context.Context, pack entity.O
 	}), "KnowledgeStore.CreateOntologyPackWithVersion")
 }
 
+func (s *Store) FindOntologyPack(ctx context.Context, ownerID, packID string) (*entity.OntologyPack, error) {
+	var row po.OntologyPack
+	result := s.data.DB(ctx).Where("owner_id = ? AND pack_id = ?", ownerID, packID).Limit(1).Find(&row)
+	if result.Error != nil {
+		return nil, log.WrapError(result.Error, "KnowledgeStore.FindOntologyPack")
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil
+	}
+	return decode[entity.OntologyPack](row.Content, "KnowledgeStore.FindOntologyPack.decode")
+}
+
+func (s *Store) FindOntologyVersion(ctx context.Context, ownerID, packID, version string) (*entity.OntologyVersion, error) {
+	var row po.OntologyVersion
+	result := s.data.DB(ctx).Where("owner_id = ? AND pack_id = ? AND version = ?", ownerID, packID, version).Limit(1).Find(&row)
+	if result.Error != nil {
+		return nil, log.WrapError(result.Error, "KnowledgeStore.FindOntologyVersion")
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil
+	}
+	return decode[entity.OntologyVersion](row.Content, "KnowledgeStore.FindOntologyVersion.decode")
+}
+
 func (s *Store) ListOntologyPacks(ctx context.Context, ownerID string) ([]entity.OntologyPack, error) {
 	var rows []po.OntologyPack
 	if err := s.data.DB(ctx).Where("owner_id = ?", ownerID).Order("created_at DESC").Find(&rows).Error; err != nil {
 		return nil, log.WrapError(err, "KnowledgeStore.ListOntologyPacks")
 	}
 	return decodeRows[entity.OntologyPack](rows, func(row po.OntologyPack) string { return row.Content }, "KnowledgeStore.ListOntologyPacks.decode")
-}
-
-func (s *Store) CreateOntologyVersion(ctx context.Context, value entity.OntologyVersion) error {
-	content, err := encode(value)
-	if err != nil {
-		return err
-	}
-	row := po.OntologyVersion{VersionID: value.VersionID, PackID: value.PackID, OwnerID: value.OwnerID, Version: value.Version, Status: value.Status, Checksum: value.Checksum, Content: content, CreatedAt: millis(value.CreatedAt)}
-	return log.WrapError(s.data.DB(ctx).Create(&row).Error, "KnowledgeStore.CreateOntologyVersion")
 }
 
 func (s *Store) CreateOntologyCandidate(ctx context.Context, value entity.OntologyCandidate) error {
@@ -267,6 +401,14 @@ func (s *Store) CreateOntologyCandidate(ctx context.Context, value entity.Ontolo
 	}
 	row := po.OntologyCandidate{CandidateID: value.CandidateID, OwnerID: value.OwnerID, PackID: value.PackID, Status: value.Status, Revision: value.Revision, Content: content, CreatedAt: millis(value.CreatedAt), UpdatedAt: millis(value.UpdatedAt)}
 	return log.WrapError(s.data.DB(ctx).Create(&row).Error, "KnowledgeStore.CreateOntologyCandidate")
+}
+
+func (s *Store) ListOntologyCandidates(ctx context.Context, ownerID string, limit int) ([]entity.OntologyCandidate, error) {
+	var rows []po.OntologyCandidate
+	if err := s.data.DB(ctx).Where("owner_id = ?", ownerID).Order("created_at DESC").Limit(normalizeLimit(limit, 200)).Find(&rows).Error; err != nil {
+		return nil, log.WrapError(err, "KnowledgeStore.ListOntologyCandidates")
+	}
+	return decodeRows[entity.OntologyCandidate](rows, func(row po.OntologyCandidate) string { return row.Content }, "KnowledgeStore.ListOntologyCandidates.decode")
 }
 
 func (s *Store) FindOntologyCandidate(ctx context.Context, ownerID, candidateID string) (*entity.OntologyCandidate, error) {
@@ -306,6 +448,42 @@ func (s *Store) ReviewOntologyCandidate(ctx context.Context, value entity.Ontolo
 	}), "KnowledgeStore.ReviewOntologyCandidate")
 }
 
+func (s *Store) CreateOntologyMigration(ctx context.Context, value entity.OntologyMigration) error {
+	content, err := encode(value)
+	if err != nil {
+		return err
+	}
+	row := po.OntologyMigration{MigrationID: value.MigrationID, OwnerID: value.OwnerID, PackID: value.PackID, Status: value.Status, Revision: value.Revision, Content: content, CreatedAt: millis(value.CreatedAt), UpdatedAt: millis(value.UpdatedAt)}
+	return log.WrapError(s.data.DB(ctx).Create(&row).Error, "KnowledgeStore.CreateOntologyMigration")
+}
+
+func (s *Store) FindOntologyMigration(ctx context.Context, ownerID, migrationID string) (*entity.OntologyMigration, error) {
+	var row po.OntologyMigration
+	result := s.data.DB(ctx).Where("owner_id = ? AND migration_id = ?", ownerID, migrationID).Limit(1).Find(&row)
+	if result.Error != nil {
+		return nil, log.WrapError(result.Error, "KnowledgeStore.FindOntologyMigration")
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil
+	}
+	return decode[entity.OntologyMigration](row.Content, "KnowledgeStore.FindOntologyMigration.decode")
+}
+
+func (s *Store) ReviewOntologyMigration(ctx context.Context, value entity.OntologyMigration, expectedStatus string) error {
+	content, err := encode(value)
+	if err != nil {
+		return err
+	}
+	result := s.data.DB(ctx).Model(&po.OntologyMigration{}).Where("migration_id = ? AND owner_id = ? AND status = ? AND revision = ?", value.MigrationID, value.OwnerID, expectedStatus, value.Revision-1).Updates(map[string]any{"status": value.Status, "revision": value.Revision, "content": content, "updated_at": millis(value.UpdatedAt)})
+	if result.Error != nil {
+		return log.WrapError(result.Error, "KnowledgeStore.ReviewOntologyMigration")
+	}
+	if result.RowsAffected != 1 {
+		return ErrRevisionConflict
+	}
+	return nil
+}
+
 func (s *Store) ApplyOntologyMigration(ctx context.Context, value entity.OntologyMigration) error {
 	content, err := encode(value)
 	if err != nil {
@@ -329,11 +507,45 @@ func (s *Store) ApplyOntologyMigration(ctx context.Context, value entity.Ontolog
 		if err != nil {
 			return err
 		}
-		if err := tx.Model(&po.OntologyPack{}).Where("pack_id = ? AND owner_id = ? AND current_version = ?", value.PackID, value.OwnerID, value.FromVersion).Updates(map[string]any{"current_version": value.ToVersion, "content": packContent}).Error; err != nil {
-			return err
+		packUpdate := tx.Model(&po.OntologyPack{}).Where("pack_id = ? AND owner_id = ? AND current_version = ?", value.PackID, value.OwnerID, value.FromVersion).Updates(map[string]any{"current_version": value.ToVersion, "content": packContent})
+		if packUpdate.Error != nil {
+			return packUpdate.Error
 		}
-		row := po.OntologyMigration{MigrationID: value.MigrationID, OwnerID: value.OwnerID, PackID: value.PackID, Status: value.Status, Content: content, CreatedAt: millis(value.CreatedAt)}
-		return tx.Create(&row).Error
+		if packUpdate.RowsAffected != 1 {
+			return ErrOntologyVersionConflict
+		}
+		var versionRow po.OntologyVersion
+		versionResult := tx.Where("pack_id = ? AND owner_id = ? AND version = ?", value.PackID, value.OwnerID, value.ToVersion).Limit(1).Find(&versionRow)
+		if versionResult.Error != nil {
+			return versionResult.Error
+		}
+		if versionResult.RowsAffected != 1 {
+			return ErrOntologyVersionConflict
+		}
+		version, decodeErr := decode[entity.OntologyVersion](versionRow.Content, "KnowledgeStore.ApplyOntologyMigration.version.decode")
+		if decodeErr != nil {
+			return decodeErr
+		}
+		version.Status = "APPLIED"
+		versionContent, encodeErr := encode(*version)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		versionUpdate := tx.Model(&po.OntologyVersion{}).Where("version_id = ? AND owner_id = ? AND status = ?", version.VersionID, value.OwnerID, "APPROVED").Updates(map[string]any{"status": version.Status, "content": versionContent})
+		if versionUpdate.Error != nil {
+			return versionUpdate.Error
+		}
+		if versionUpdate.RowsAffected != 1 {
+			return ErrOntologyVersionConflict
+		}
+		migrationResult := tx.Model(&po.OntologyMigration{}).Where("migration_id = ? AND owner_id = ? AND status = ? AND revision = ?", value.MigrationID, value.OwnerID, "APPROVED", value.Revision-1).Updates(map[string]any{"status": value.Status, "revision": value.Revision, "content": content, "updated_at": millis(value.UpdatedAt)})
+		if migrationResult.Error != nil {
+			return migrationResult.Error
+		}
+		if migrationResult.RowsAffected != 1 {
+			return ErrRevisionConflict
+		}
+		return nil
 	}), "KnowledgeStore.ApplyOntologyMigration")
 }
 
@@ -346,7 +558,7 @@ func claimRow(value entity.Claim) (po.Claim, error) {
 	if value.ValidUntil != nil {
 		validUntil = millis(*value.ValidUntil)
 	}
-	return po.Claim{ClaimID: value.ClaimID, OwnerID: value.OwnerID, Subject: value.Subject, Predicate: value.Predicate, Scope: value.Scope, Sensitivity: value.Sensitivity, Status: value.Status, ValidUntil: validUntil, SearchText: value.Subject + " " + value.Predicate + " " + value.Value, Content: content, CreatedAt: millis(value.CreatedAt), UpdatedAt: millis(value.UpdatedAt)}, nil
+	return po.Claim{ClaimID: value.ClaimID, OwnerID: value.OwnerID, OrganizationID: value.OrganizationID, Subject: value.Subject, Predicate: value.Predicate, Scope: value.Scope, Sensitivity: value.Sensitivity, Status: value.Status, ValidUntil: validUntil, SearchText: value.Subject + " " + value.Predicate + " " + value.Value, Content: content, CreatedAt: millis(value.CreatedAt), UpdatedAt: millis(value.UpdatedAt)}, nil
 }
 
 func evidenceRow(value entity.Evidence) (po.Evidence, error) {
@@ -354,7 +566,11 @@ func evidenceRow(value entity.Evidence) (po.Evidence, error) {
 	if err != nil {
 		return po.Evidence{}, err
 	}
-	return po.Evidence{EvidenceID: value.EvidenceID, OwnerID: value.OwnerID, Scope: value.Scope, Sensitivity: value.Sensitivity, SourceType: value.SourceType, URI: value.URI, Accessible: value.Accessible, Authority: value.Authority, Freshness: value.Freshness, Content: content, CreatedAt: millis(value.ObservedAt)}, nil
+	staleAt := int64(0)
+	if value.StaleAt != nil {
+		staleAt = millis(*value.StaleAt)
+	}
+	return po.Evidence{EvidenceID: value.EvidenceID, OwnerID: value.OwnerID, OrganizationID: value.OrganizationID, Scope: value.Scope, Sensitivity: value.Sensitivity, SourceType: value.SourceType, URI: value.URI, Accessible: value.Accessible, Authority: value.Authority, Freshness: value.Freshness, StaleAt: staleAt, Content: content, CreatedAt: millis(value.ObservedAt)}, nil
 }
 
 func encode(value any) (string, error) {
@@ -405,3 +621,12 @@ func normalizeLimit(value, maximum int) int {
 }
 
 func millis(value time.Time) int64 { return value.UTC().UnixMilli() }
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
