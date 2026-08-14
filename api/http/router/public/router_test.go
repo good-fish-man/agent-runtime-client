@@ -12,6 +12,7 @@ import (
 	experiencehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/experience"
 	jobhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/job"
 	kbhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
+	learninghandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/learning"
 	modelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
 	skillhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/skill"
 	userhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/user"
@@ -22,6 +23,7 @@ import (
 	experiencesvc "github.com/good-fish-man/agent-runtime-client/application/service/experience"
 	jobsvc "github.com/good-fish-man/agent-runtime-client/application/service/job"
 	kbsvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge_base"
+	learningsvc "github.com/good-fish-man/agent-runtime-client/application/service/learning"
 	modelsvc "github.com/good-fish-man/agent-runtime-client/application/service/model"
 	skillsvc "github.com/good-fish-man/agent-runtime-client/application/service/skill"
 	usersvc "github.com/good-fish-man/agent-runtime-client/application/service/user"
@@ -44,6 +46,7 @@ func TestRegisterNoConflicts(t *testing.T) {
 		Agent:      agenthandler.NewHandler(agentsvc.NewSysAgentService(nil)),
 		Channel:    channelhandler.NewHandler(channelsvc.NewSysChannelService(nil)),
 		Experience: experiencehandler.NewHandler(experiencesvc.NewService(nil, nil)),
+		Learning:   learninghandler.NewHandler(learningsvc.NewServiceWithDependencies(nil, nil, nil)),
 		Callback:   callbackhandler.NewHandler(),
 		Weixin:     weixinhandler.NewHandler(),
 		Job:        jobhandler.NewHandler(jobsvc.NewJobExecutionService(nil)),
@@ -76,10 +79,26 @@ func TestRegisterNoConflicts(t *testing.T) {
 		"POST " + prefix + "/evaluation/suites/:id/runs",
 		"GET " + prefix + "/evaluation/runs",
 		"GET " + prefix + "/evaluation/runs/:id/results",
+		"POST " + prefix + "/learning/candidates/generate",
+		"GET " + prefix + "/learning/candidates",
+		"GET " + prefix + "/learning/candidates/:id",
+		"PUT " + prefix + "/learning/candidates/:id",
+		"POST " + prefix + "/learning/candidates/:id/re-evaluate",
+		"POST " + prefix + "/learning/candidates/:id/review",
+		"GET " + prefix + "/learning/skills",
+		"GET " + prefix + "/learning/strategies",
+		"POST " + prefix + "/learning/demonstrations",
+		"GET " + prefix + "/learning/demonstrations",
+		"POST " + prefix + "/learning/demonstrations/:id/steps",
+		"POST " + prefix + "/learning/demonstrations/:id/resume",
+		"POST " + prefix + "/learning/demonstrations/:id/preview",
+		"PUT " + prefix + "/learning/demonstrations/:id",
+		"POST " + prefix + "/learning/demonstrations/:id/confirm",
+		"POST " + prefix + "/learning/demonstrations/:id/discard",
 	}
 	for _, route := range expected {
 		if _, ok := registered[route]; !ok {
-			t.Errorf("v0.3 route was not registered: %s", route)
+			t.Errorf("required route was not registered: %s", route)
 		}
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/api/http/router/public"
 	controlsvc "github.com/good-fish-man/agent-runtime-client/application/service/control"
 	experiencesvc "github.com/good-fish-man/agent-runtime-client/application/service/experience"
+	learningsvc "github.com/good-fish-man/agent-runtime-client/application/service/learning"
 	appsvc "github.com/good-fish-man/agent-runtime-client/application/service/runtime"
 	"github.com/good-fish-man/agent-runtime-client/config"
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
@@ -29,6 +30,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/repository/migration"
 	controlrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/control"
 	experiencerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/experience"
+	learningrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/learning"
 	runtimerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/runtime"
 	inruntime "github.com/good-fish-man/agent-runtime-client/infra/runtime"
 	log "github.com/good-fish-man/logx"
@@ -43,6 +45,7 @@ import (
 	experiencehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/experience"
 	jobhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/job"
 	kbhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
+	learninghandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/learning"
 	memoryhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/memory"
 	modelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
 	scheduledtaskhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/scheduledtask"
@@ -180,6 +183,7 @@ func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *a
 		pub.Model = modelhandler.NewHandler(modelService).WithRuntime(cfg.Runtime.HTTPAddr).WithTraining(store, runtimeService, paths.UploadsDir)
 		pub.Memory = memoryhandler.NewHandler(memorysvc.NewService(store))
 		pub.Experience = experiencehandler.NewHandler(experienceService)
+		pub.Learning = learninghandler.NewHandler(learningsvc.NewService(learningrepo.NewStore(store), experiencerepo.NewStore(store), experienceService))
 		pub.BrowserCredential = browsercredentialhandler.NewHandler(browsercredentialsvc.NewService(store))
 		scheduledService := scheduledtasksvc.NewService(store, runtimeService, time.Duration(cfg.ScheduledTask.ScanIntervalSec)*time.Second)
 		scheduledService.Start(context.Background())

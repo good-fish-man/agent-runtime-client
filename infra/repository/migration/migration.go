@@ -18,6 +18,7 @@ import (
 	experiencepo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/experience"
 	jobpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/job"
 	kbpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/knowledge_base"
+	learningpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/learning"
 	memorypo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/memory"
 	modelpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/model"
 	runtimepo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/runtime"
@@ -86,6 +87,14 @@ func InitTables(ctx context.Context, d *data.Data) error {
 		&experiencepo.EvaluationSuite{},
 		&experiencepo.EvaluationRun{},
 		&experiencepo.EvaluationResult{},
+		&learningpo.Candidate{},
+		&learningpo.CandidateEvidence{},
+		&learningpo.CandidateEvaluation{},
+		&learningpo.Skill{},
+		&learningpo.SkillVersion{},
+		&learningpo.Strategy{},
+		&learningpo.StrategyVersion{},
+		&learningpo.Demonstration{},
 		&memorypo.AgentMemory{},
 		&jobpo.JobExecutionPO{},
 		&runtimepo.MediaGenerationJob{},

@@ -20,6 +20,7 @@ import (
 	experienceh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/experience"
 	jobh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/job"
 	kbh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
+	learningh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/learning"
 	memoryh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/memory"
 	modelh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
 	scheduledtaskh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/scheduledtask"
@@ -48,6 +49,7 @@ type Handlers struct {
 	Callback          *callbackh.Handler
 	Dashboard         *dashboardh.Handler
 	Experience        *experienceh.Handler
+	Learning          *learningh.Handler
 	Weixin            *weixinh.Handler
 	Job               *jobh.Handler
 	Workspace         *workspaceh.Handler
@@ -168,6 +170,26 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		evaluation.POST("/suites/:id/runs", h.Experience.RunSuite)
 		evaluation.GET("/runs", h.Experience.ListRuns)
 		evaluation.GET("/runs/:id/results", h.Experience.ListResults)
+	}
+
+	if h.Learning != nil {
+		r := g.Group("/learning")
+		r.POST("/candidates/generate", h.Learning.GenerateCandidate)
+		r.GET("/candidates", h.Learning.ListCandidates)
+		r.GET("/candidates/:id", h.Learning.FindCandidate)
+		r.PUT("/candidates/:id", h.Learning.UpdateCandidate)
+		r.POST("/candidates/:id/re-evaluate", h.Learning.ReevaluateCandidate)
+		r.POST("/candidates/:id/review", h.Learning.ReviewCandidate)
+		r.GET("/skills", h.Learning.ListSkills)
+		r.GET("/strategies", h.Learning.ListStrategies)
+		r.POST("/demonstrations", h.Learning.StartDemonstration)
+		r.GET("/demonstrations", h.Learning.ListDemonstrations)
+		r.POST("/demonstrations/:id/steps", h.Learning.RecordDemonstrationStep)
+		r.POST("/demonstrations/:id/resume", h.Learning.ResumeDemonstration)
+		r.POST("/demonstrations/:id/preview", h.Learning.PreviewDemonstration)
+		r.PUT("/demonstrations/:id", h.Learning.EditDemonstration)
+		r.POST("/demonstrations/:id/confirm", h.Learning.ConfirmDemonstration)
+		r.POST("/demonstrations/:id/discard", h.Learning.DiscardDemonstration)
 	}
 
 	if h.BrowserCredential != nil {
