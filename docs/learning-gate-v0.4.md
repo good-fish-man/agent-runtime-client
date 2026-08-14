@@ -19,7 +19,9 @@ Experience evidence
   -> immutable SkillVersion or StrategyVersion
 ```
 
-The evidence gate requires at least four independent Experiences, two matching successes, and one failed counterexample. Candidate edits are validated again. Re-evaluation reuses the original evidence and appends a new evaluation instead of overwriting history. Optimistic revisions reject stale reviews and edits.
+The evidence gate requires at least four independent Experiences, two matching successes, and one failed counterexample with the same semantic action pattern. Every sample carries a structured environment fingerprint, site scope, outcome, and failure condition. The selected set must span at least two environment/site contexts and independent task IDs. Candidate edits are validated again. Re-evaluation reuses the original evidence and its original environment version, then appends a new evaluation instead of overwriting history. Optimistic revisions reject stale reviews and edits.
+
+Generated Skills include explicit preconditions, a bounded recovery path for every observed failure class, evidence-backed verification, and a cross-context provenance summary. Literal URLs, CSS/XPath selectors, screen coordinates, prompts, scripts, credentials, and direct code executors are rejected from executable arguments. Untrusted page or user text remains evidence only and is never copied into the generated artifact.
 
 ## API
 
@@ -49,6 +51,8 @@ Before rollback, stop the client and export approved definitions if they must be
 | Threat | Control |
 | --- | --- |
 | Prompt injection becomes executable code | DSL rejects executor capabilities and script/command/credential-shaped fields |
+| Site-specific examples become universal hard-coded behavior | Matching semantic patterns must generalize across structured contexts; fixed URLs, selectors, and coordinates are rejected |
+| An unrelated failure is presented as a counterexample | Failure evidence must use the same semantic action pattern as supporting successes |
 | Candidate requests an unregistered or disabled capability | Validation requires the persisted capability registry policy |
 | Candidate lowers composed risk | Declared ceiling must be at least the maximum referenced capability risk |
 | Candidate expands credentials or auth scope | Credential fields and new executors are forbidden in declarative arguments |
@@ -59,7 +63,7 @@ Before rollback, stop the client and export approved definitions if they must be
 
 ## Verification and benchmark
 
-The deterministic test suite covers schema validation, unregistered capabilities, direct executors, risk escalation, insufficient evidence, failed counterexamples, sensitive demonstrations, stale revisions, safe edit, re-evaluation history, and transactional materialization.
+The deterministic test suite covers schema validation, DAG cycles, bounded recovery, unregistered capabilities, direct executors, risk escalation, site-bound arguments, prompt-injection isolation, cross-context generalization, matching failed counterexamples, sensitive demonstrations, stale revisions, safe edit, re-evaluation history, and transactional materialization.
 
 Local acceptance command:
 

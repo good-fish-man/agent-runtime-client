@@ -19,7 +19,9 @@ Experience 证据
   -> 不可变 SkillVersion 或 StrategyVersion
 ```
 
-证据门槛要求至少四条独立 Experience、两条相同模式成功证据和一条失败反例。编辑后必须重新通过静态门禁；重评只复用原始证据并追加 Evaluation，不覆盖历史。编辑、重评和评审都使用 revision 乐观锁，拒绝过期操作。
+证据门槛要求至少四条独立 Experience、两条相同模式成功证据，以及一条与成功证据具有相同语义动作模式的失败反例。每个样本必须包含结构化环境指纹、站点范围、结果和失败条件；入选证据必须来自独立任务，并覆盖至少两个“环境/站点”上下文。编辑后必须重新通过静态门禁；重评复用原始证据及其环境版本并追加 Evaluation，不覆盖历史。编辑、重评和评审都使用 revision 乐观锁，拒绝过期操作。
+
+自动生成的 Skill 必须包含显式前置条件、针对每类已观察失败的有界恢复路径、证据型验证规则和跨上下文来源摘要。可执行参数禁止固定 URL、CSS/XPath Selector、屏幕坐标、Prompt、脚本、凭据和直接代码执行器。网页或用户提供的不可信文本只作为证据，绝不会复制进可执行声明式定义。
 
 ## API
 
@@ -49,6 +51,8 @@ v0.4 新增 `os_learning_candidate`、`os_candidate_evidence`、`os_candidate_ev
 | 威胁 | 控制措施 |
 | --- | --- |
 | Prompt Injection 变成可执行代码 | DSL 拒绝执行器 Capability，以及脚本、命令、凭据形态字段 |
+| 站点样本变成通用执行路径中的硬编码 | 同一语义模式必须覆盖结构化独立上下文，并拒绝固定 URL、Selector 和坐标 |
+| 不相关失败被当作反例 | 失败证据必须与成功证据具有相同语义动作模式 |
 | 候选引用未注册或已停用能力 | 校验必须读取持久化 Capability Registry 策略 |
 | 候选降低组合风险 | 声明风险上限不得低于所引用能力的最高风险 |
 | 候选扩大凭据或认证范围 | 声明式参数禁止 Credential 字段和新 Runtime Executor |
@@ -59,7 +63,7 @@ v0.4 新增 `os_learning_candidate`、`os_candidate_evidence`、`os_candidate_ev
 
 ## 验证与 Benchmark
 
-确定性测试覆盖 Schema、未注册能力、直接执行器、风险升级、证据不足、失败反例、敏感演示、过期 revision、安全编辑、重评历史和事务物化。
+确定性测试覆盖 Schema、DAG 环路、有界恢复、未注册能力、直接执行器、风险升级、站点绑定参数、Prompt Injection 隔离、跨上下文泛化、同模式失败反例、敏感演示、过期 revision、安全编辑、重评历史和事务物化。
 
 本地验收命令：
 

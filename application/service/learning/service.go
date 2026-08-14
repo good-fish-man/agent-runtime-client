@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -396,13 +397,14 @@ func selectPatternEvidence(items []experienceentity.Experience) (string, []exper
 		items   []experienceentity.Experience
 	}
 	groups := make(map[string][]experienceentity.Experience)
-	failures := make([]experienceentity.Experience, 0)
+	failures := make(map[string][]experienceentity.Experience)
 	for _, item := range items {
 		if item.Outcome == experienceentity.OutcomeSucceeded && len(item.ActionRefs) > 0 {
 			pattern := actionPattern(item.ActionRefs)
 			groups[pattern] = append(groups[pattern], item)
-		} else if item.Outcome == experienceentity.OutcomeFailed {
-			failures = append(failures, item)
+		} else if item.Outcome == experienceentity.OutcomeFailed && len(item.ActionRefs) > 0 {
+			pattern := actionPattern(item.ActionRefs)
+			failures[pattern] = append(failures[pattern], item)
 		}
 	}
 	ordered := make([]group, 0, len(groups))
@@ -418,16 +420,20 @@ func selectPatternEvidence(items []experienceentity.Experience) (string, []exper
 	if len(ordered) == 0 || len(ordered[0].items) < minimumSuccessCount {
 		return "", nil, fmt.Errorf("candidate needs at least two successful experiences with the same semantic action pattern")
 	}
-	if len(failures) == 0 {
-		return "", nil, fmt.Errorf("candidate needs at least one failed counterexample")
+	matchingFailures := failures[ordered[0].pattern]
+	if len(matchingFailures) == 0 {
+		return "", nil, fmt.Errorf("candidate needs at least one failed counterexample with the same semantic action pattern")
 	}
 	selected := append([]experienceentity.Experience{}, ordered[0].items...)
-	selected = append(selected, failures...)
+	selected = append(selected, matchingFailures...)
 	if len(selected) < minimumEvidenceCount {
 		return "", nil, fmt.Errorf("candidate needs at least four independent experiences")
 	}
 	if len(selected) > maximumEvidenceCount {
 		selected = selected[:maximumEvidenceCount]
+	}
+	if err := validateIndependentEvidence(selected); err != nil {
+		return "", nil, err
 	}
 	return ordered[0].pattern, selected, nil
 }
@@ -435,8 +441,12 @@ func selectPatternEvidence(items []experienceentity.Experience) (string, []exper
 func (s *Service) evaluateEvidence(ctx context.Context, ownerID, candidateID string, evidence []experienceentity.Experience, name string) ([]string, string, *experienceentity.EvaluationRun, []experienceentity.EvaluationResult, error) {
 	fixtureIDs := make([]string, 0, len(evidence))
 	for _, item := range evidence {
+		environmentVersion := strings.TrimSpace(item.EnvironmentFingerprint)
+		if environmentVersion == "" {
+			return nil, "", nil, nil, fmt.Errorf("experience %s has no environment fingerprint", item.ExperienceID)
+		}
 		fixture, err := s.evaluator.CreateFixture(ctx, ownerID, experiencesvc.CreateFixtureRequest{
-			ExperienceID: item.ExperienceID, Name: "candidate " + candidateID + " evidence", EnvironmentVersion: "learning-v1",
+			ExperienceID: item.ExperienceID, Name: "candidate " + candidateID + " evidence", EnvironmentVersion: environmentVersion,
 		})
 		if err != nil {
 			return nil, "", nil, nil, err
@@ -512,15 +522,49 @@ func buildSkill(id, version, description, ownerID, visibility, suiteID string, m
 			capabilities = append(capabilities, action.Capability)
 		}
 	}
+	stepIDs := make([]string, 0, len(steps))
+	for _, step := range steps {
+		stepIDs = append(stepIDs, step.ID)
+	}
+	failureClasses := make([]string, 0)
+	for _, item := range evidence {
+		if item.Outcome != experienceentity.OutcomeFailed {
+			continue
+		}
+		failureClass := "OUTCOME_FAILED"
+		if item.Failure != nil && strings.TrimSpace(item.Failure.Class) != "" {
+			failureClass = item.Failure.Class
+		}
+		failureClasses = append(failureClasses, failureClass)
+	}
+	recoveryPaths := make([]entity.RecoveryPath, 0, len(failureClasses))
+	for _, failureClass := range uniqueStrings(failureClasses) {
+		recoveryPaths = append(recoveryPaths, entity.RecoveryPath{On: failureClass, StepIDs: append([]string(nil), stepIDs...), MaxAttempts: 1})
+	}
+	siteScopes := make([]string, 0, len(evidence))
+	for _, item := range evidence {
+		siteScopes = append(siteScopes, evidenceSiteScope(item))
+	}
+	siteScopes = uniqueStrings(siteScopes)
 	return &entity.SkillDefinition{
 		ID: id, Version: version, Description: description,
-		InputSchema:          learningv1.JSONSchema{"type": "object", "additionalProperties": true},
-		OutputSchema:         learningv1.JSONSchema{"type": "object", "additionalProperties": true},
+		InputSchema:  learningv1.JSONSchema{"type": "object", "additionalProperties": true},
+		OutputSchema: learningv1.JSONSchema{"type": "object", "additionalProperties": true},
+		Preconditions: []entity.Predicate{
+			{Field: "context.environment_fingerprint", Operator: "exists"},
+			{Field: "context.capabilities", Operator: "contains_all", Value: capabilities},
+		},
 		RequiredCapabilities: capabilities, TaskGraphTemplate: entity.TaskGraphTemplate{Steps: steps},
+		RecoveryPaths:     recoveryPaths,
 		VerificationRules: []entity.VerificationRule{{Field: "task.status", Operator: "equals", Expected: "COMPLETED", EvidenceRequired: true}},
 		RiskCeiling:       composedPolicyRisk(capabilities, policy),
 		EvaluationSuite:   entity.EvaluationSuiteRef{SuiteID: suiteID, MinimumSample: minimumEvidenceCount, MinimumScore: minimumScore},
 		OwnerID:           ownerID, Visibility: visibility, LifecycleState: entity.LifecycleReviewRequired,
+		Metadata: map[string]string{
+			"generalization_scope": "cross-context",
+			"site_scopes":          strings.Join(siteScopes, ","),
+			"source_contexts":      fmt.Sprint(len(evidence)),
+		},
 	}
 }
 
@@ -536,7 +580,7 @@ func buildStrategy(id, version, description, ownerID, visibility, preferred stri
 }
 
 func summarizeEvidence(candidateID, ownerID, trace, pattern string, values []experienceentity.Experience, now time.Time) (entity.EvidenceSummary, []entity.CandidateEvidence) {
-	summary := entity.EvidenceSummary{Pattern: pattern, ExperienceIDs: make([]string, 0, len(values))}
+	summary := entity.EvidenceSummary{Pattern: pattern, ExperienceIDs: make([]string, 0, len(values)), Contexts: make([]entity.EvidenceContext, 0, len(values))}
 	rows := make([]entity.CandidateEvidence, 0, len(values))
 	for _, value := range values {
 		relation := "SUPPORTING_SUCCESS"
@@ -548,6 +592,14 @@ func summarizeEvidence(candidateID, ownerID, trace, pattern string, values []exp
 			summary.Counterexamples++
 		}
 		summary.ExperienceIDs = append(summary.ExperienceIDs, value.ExperienceID)
+		failureCondition := ""
+		if value.Failure != nil {
+			failureCondition = value.Failure.Class
+		}
+		summary.Contexts = append(summary.Contexts, entity.EvidenceContext{
+			ExperienceID: value.ExperienceID, EnvironmentFingerprint: value.EnvironmentFingerprint,
+			SiteScope: evidenceSiteScope(value), Outcome: value.Outcome, FailureCondition: failureCondition,
+		})
 		rows = append(rows, entity.CandidateEvidence{
 			EvidenceID: ulid.New(), CandidateID: candidateID, OwnerID: ownerID,
 			ExperienceID: value.ExperienceID, Relation: relation, Outcome: value.Outcome,
@@ -555,6 +607,92 @@ func summarizeEvidence(candidateID, ownerID, trace, pattern string, values []exp
 		})
 	}
 	return summary, rows
+}
+
+func validateIndependentEvidence(values []experienceentity.Experience) error {
+	experienceIDs := make(map[string]struct{}, len(values))
+	taskIDs := make(map[string]struct{}, len(values))
+	contexts := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value.ExperienceID) == "" || strings.TrimSpace(value.TaskID) == "" {
+			return fmt.Errorf("candidate evidence requires experience_id and task_id")
+		}
+		if _, duplicate := experienceIDs[value.ExperienceID]; duplicate {
+			return fmt.Errorf("candidate evidence repeats experience %s", value.ExperienceID)
+		}
+		if _, duplicate := taskIDs[value.TaskID]; duplicate {
+			return fmt.Errorf("candidate evidence must come from independent tasks; task %s is repeated", value.TaskID)
+		}
+		experienceIDs[value.ExperienceID] = struct{}{}
+		taskIDs[value.TaskID] = struct{}{}
+		environment := strings.TrimSpace(value.EnvironmentFingerprint)
+		site := evidenceSiteScope(value)
+		if environment == "" || site == "unknown" {
+			return fmt.Errorf("experience %s must include an environment fingerprint and explicit site scope", value.ExperienceID)
+		}
+		contexts[environment+"\x00"+site] = struct{}{}
+	}
+	if len(contexts) < 2 {
+		return fmt.Errorf("candidate evidence must span at least two independent environment/site contexts")
+	}
+	return nil
+}
+
+func evidenceSiteScope(value experienceentity.Experience) string {
+	if site := findSiteScope(value.Intent); site != "" {
+		return site
+	}
+	for _, action := range value.ActionRefs {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(action.Capability)), "browser.") {
+			return "unknown"
+		}
+	}
+	return "not-applicable"
+}
+
+func findSiteScope(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"site_scope", "site", "domain", "hostname", "host", "origin", "url"} {
+			if child, ok := typed[key]; ok {
+				if site := normalizeSiteScope(fmt.Sprint(child)); site != "" {
+					return site
+				}
+			}
+		}
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if site := findSiteScope(typed[key]); site != "" {
+				return site
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if site := findSiteScope(child); site != "" {
+				return site
+			}
+		}
+	}
+	return ""
+}
+
+func normalizeSiteScope(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" || value == "<nil>" {
+		return ""
+	}
+	if parsed, err := url.Parse(value); err == nil && parsed.Hostname() != "" {
+		return parsed.Hostname()
+	}
+	value = strings.TrimPrefix(value, "www.")
+	if strings.ContainsAny(value, " /?#") {
+		return ""
+	}
+	return value
 }
 
 func summarizeEvaluation(run *experienceentity.EvaluationRun, results []experienceentity.EvaluationResult, baseline, minimum float64) entity.EvaluationSummary {

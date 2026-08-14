@@ -36,6 +36,7 @@ type Candidate = learningv1.Candidate
 type SkillDefinition = learningv1.SkillDefinition
 type StrategyDefinition = learningv1.StrategyDefinition
 type EvidenceSummary = learningv1.EvidenceSummary
+type EvidenceContext = learningv1.EvidenceContext
 type EvaluationSummary = learningv1.EvaluationSummary
 type ConfidenceInterval = learningv1.ConfidenceInterval
 type CapabilityPolicy = learningv1.CapabilityPolicy
@@ -45,6 +46,7 @@ type DemonstrationStep = learningv1.DemonstrationStep
 type Predicate = learningv1.Predicate
 type TaskStep = learningv1.TaskStep
 type TaskGraphTemplate = learningv1.TaskGraphTemplate
+type RecoveryPath = learningv1.RecoveryPath
 type VerificationRule = learningv1.VerificationRule
 type EvaluationSuiteRef = learningv1.EvaluationSuiteRef
 
