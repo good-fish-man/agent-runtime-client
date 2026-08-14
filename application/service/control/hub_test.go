@@ -213,6 +213,42 @@ func TestHubTerminalStatusIgnoresLateStatusProgressAndObservation(t *testing.T) 
 	}
 }
 
+func TestHubNotifiesTerminalTaskExactlyOnce(t *testing.T) {
+	hub := NewHub()
+	notifications := make(chan string, 2)
+	hub.OnTaskTerminal(func(_ context.Context, taskID string) {
+		notifications <- taskID
+	})
+	ctx := context.Background()
+	if err := hub.BeginTask(ctx, "task-terminal", "user-1", "chat-1", "device-1"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case taskID := <-notifications:
+		t.Fatalf("task creation emitted terminal notification for %q", taskID)
+	default:
+	}
+	if err := hub.SetTaskStatus(ctx, "task-terminal", entity.StatusFailed); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case taskID := <-notifications:
+		if taskID != "task-terminal" {
+			t.Fatalf("notification task ID = %q", taskID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal task notification was not emitted")
+	}
+	if err := hub.SetTaskStatus(ctx, "task-terminal", entity.StatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case taskID := <-notifications:
+		t.Fatalf("terminal task emitted duplicate notification for %q", taskID)
+	default:
+	}
+}
+
 func TestHubActionFailureCanBeRecoveredByControlLoop(t *testing.T) {
 	hub := NewHub()
 	ctx := context.Background()

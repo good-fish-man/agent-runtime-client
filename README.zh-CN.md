@@ -26,6 +26,7 @@ Agent Runtime Client 是 Athena 的控制面和公共 HTTP API。它负责用户
 - Dashboard、记忆、渠道、回调、命令执行、服务配置与重启接口。
 - 带源码位置的错误链，并只在 HTTP 边界集中输出一次。
 - 面向桌面设备的 WebSocket Action/Observation 控制面与能力协商（[协议文档](docs/action-observation-protocol.md)）。
+- 经过脱敏的任务经验、用户级保留/删除控制、失败分类与确定性离线评测（[架构文档](docs/experience-evaluation.zh-CN.md)）。
 
 ## 系统架构
 
@@ -139,6 +140,7 @@ Runtime 执行接口位于根路径：
 | `/model`、`/model-key` | 模型目录、凭据、本地安装、生命周期和训练 |
 | `/site-credential` | 当前用户的网站账号元数据与 Auth Vault 辅助登录 |
 | `/scheduled-task` | 用户隔离的持久化监控任务、执行记录与结果复核 |
+| `/experience`、`/evaluation` | 脱敏历史证据、保留控制与离线回归套件 |
 | `/memory` | 用户/Agent 长期记忆 |
 | `/skill` | 内置/自定义 Skill 管理与 ZIP 上传 |
 | `/knowledge_base` | 检索配置与召回测试 |

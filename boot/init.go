@@ -17,6 +17,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/api/http/middleware"
 	"github.com/good-fish-man/agent-runtime-client/api/http/router/public"
 	controlsvc "github.com/good-fish-man/agent-runtime-client/application/service/control"
+	experiencesvc "github.com/good-fish-man/agent-runtime-client/application/service/experience"
 	appsvc "github.com/good-fish-man/agent-runtime-client/application/service/runtime"
 	"github.com/good-fish-man/agent-runtime-client/config"
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
@@ -27,6 +28,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/db"
 	"github.com/good-fish-man/agent-runtime-client/infra/repository/migration"
 	controlrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/control"
+	experiencerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/experience"
 	runtimerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/runtime"
 	inruntime "github.com/good-fish-man/agent-runtime-client/infra/runtime"
 	log "github.com/good-fish-man/logx"
@@ -38,6 +40,7 @@ import (
 	commandhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/command"
 	confighandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/config"
 	dashboardhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/dashboard"
+	experiencehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/experience"
 	jobhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/job"
 	kbhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
 	memoryhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/memory"
@@ -67,9 +70,10 @@ type App struct {
 	Engine  *gin.Engine
 	Restart <-chan struct{}
 
-	client  *inruntime.Client
-	data    *data.Data
-	Control *controlsvc.Hub
+	client     *inruntime.Client
+	data       *data.Data
+	Control    *controlsvc.Hub
+	Experience *experiencesvc.Service
 }
 
 // Init builds the App from the config at cfgPath (empty uses defaults+env).
@@ -119,16 +123,8 @@ func Init(cfgPath string) (*App, error) {
 	if store != nil {
 		appService = appsvc.NewRuntimeService(domainSvc, runtimeAgentSvc, runtimeModelSvc, runtimeMemorySvc, runtimerepo.NewMediaJobRepo(store)).WithChatRecorder(store)
 	}
-	h := handler.NewHandler(appService)
-
-	restart := make(chan struct{}, 1)
-	paths := cfg.Paths
-	if paths.AppConfigFile == "" && resolvedConfigPath != "" {
-		paths.AppConfigFile = resolvedConfigPath
-	}
-	pub := buildPublicHandlers(cfg, store, appService, paths, restart)
-	engine := httpapi.NewEngine(h, pub, cfg.Server.PublicPrefix, cfg.Server.Mode)
 	var controlHub *controlsvc.Hub
+	var experienceService *experiencesvc.Service
 	if store != nil {
 		controlStore := controlrepo.NewStore(store)
 		if err := controlStore.MarkAllDevicesOffline(context.Background(), time.Now().UTC()); err != nil {
@@ -138,20 +134,34 @@ func Init(cfgPath string) (*App, error) {
 			return nil, err
 		}
 		controlHub = controlsvc.NewHub(controlStore)
+		experienceService = experiencesvc.NewService(experiencerepo.NewStore(store), controlStore)
+		controlHub.OnTaskTerminal(func(_ context.Context, taskID string) { experienceService.Enqueue(taskID) })
 	} else {
 		controlHub = controlsvc.NewHub()
 	}
 	appService.SetControlHub(controlHub)
+	h := handler.NewHandler(appService)
+
+	restart := make(chan struct{}, 1)
+	paths := cfg.Paths
+	if paths.AppConfigFile == "" && resolvedConfigPath != "" {
+		paths.AppConfigFile = resolvedConfigPath
+	}
+	pub := buildPublicHandlers(cfg, store, appService, experienceService, paths, restart)
+	engine := httpapi.NewEngine(h, pub, cfg.Server.PublicPrefix, cfg.Server.Mode)
 	controlhandler.NewHandler(controlHub, cfg.Control.DeviceToken).Register(engine, pub.Auth, cfg.Server.PublicPrefix)
 	controlHub.Start(context.Background())
+	if experienceService != nil {
+		experienceService.Start(context.Background())
+	}
 
-	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store, Control: controlHub}, nil
+	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store, Control: controlHub, Experience: experienceService}, nil
 }
 
 // buildPublicHandlers wires the agent-frame-compatible resource handlers. The
 // DB-backed handlers are only constructed when the shared database is enabled;
 // the file-backed config handler and the channel skeletons are always available.
-func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *appsvc.RuntimeService, paths config.PathsConfig, restart chan<- struct{}) *public.Handlers {
+func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *appsvc.RuntimeService, experienceService *experiencesvc.Service, paths config.PathsConfig, restart chan<- struct{}) *public.Handlers {
 	pub := &public.Handlers{
 		Config:    confighandler.NewHandler(paths, restart).WithRuntime(cfg.Runtime.HTTPAddr).WithService(cfg.Server.HTTPAddr),
 		Callback:  callbackhandler.NewHandler(),
@@ -169,6 +179,7 @@ func buildPublicHandlers(cfg *config.Config, store *data.Data, runtimeService *a
 		pub.Auth = middleware.Auth(store)
 		pub.Model = modelhandler.NewHandler(modelService).WithRuntime(cfg.Runtime.HTTPAddr).WithTraining(store, runtimeService, paths.UploadsDir)
 		pub.Memory = memoryhandler.NewHandler(memorysvc.NewService(store))
+		pub.Experience = experiencehandler.NewHandler(experienceService)
 		pub.BrowserCredential = browsercredentialhandler.NewHandler(browsercredentialsvc.NewService(store))
 		scheduledService := scheduledtasksvc.NewService(store, runtimeService, time.Duration(cfg.ScheduledTask.ScanIntervalSec)*time.Second)
 		scheduledService.Start(context.Background())
@@ -193,6 +204,9 @@ func (a *App) PingRuntime() (*entity.HealthStatus, error) {
 
 // Close releases resources (the gRPC connection).
 func (a *App) Close() error {
+	if a.Experience != nil {
+		a.Experience.Stop()
+	}
 	if a.Control != nil {
 		a.Control.Stop()
 	}

@@ -81,6 +81,8 @@ type Hub struct {
 	workerMu     sync.Mutex
 	workerCancel context.CancelFunc
 	workerWG     sync.WaitGroup
+	terminalMu   sync.RWMutex
+	terminal     []func(context.Context, string)
 }
 
 type pendingAction struct {
@@ -133,6 +135,18 @@ func (h *Hub) Stop() {
 		cancel()
 		h.workerWG.Wait()
 	}
+}
+
+// OnTaskTerminal registers a lightweight durable-task notification. Listeners
+// must not perform blocking work; the Experience Engine only enqueues the ID
+// and relies on its database scan for crash recovery.
+func (h *Hub) OnTaskTerminal(listener func(context.Context, string)) {
+	if listener == nil {
+		return
+	}
+	h.terminalMu.Lock()
+	h.terminal = append(h.terminal, listener)
+	h.terminalMu.Unlock()
 }
 
 func (h *Hub) Subscribe(taskID string) (<-chan entity.EventEnvelope, func()) {
@@ -518,7 +532,42 @@ func (h *Hub) BeginTask(ctx context.Context, taskID, userID, conversationID, dev
 	h.sessions[taskID] = current
 	copy := cloneTask(current)
 	h.mu.Unlock()
+	if err := h.saveTask(ctx, &copy); err != nil {
+		return err
+	}
+	return nil
+}
+
+// DescribeTask stores the sanitized user goal and structured intent used to
+// explain the task later. Raw credentials are removed before durable storage.
+func (h *Hub) DescribeTask(ctx context.Context, taskID, goal string, metadata map[string]any) error {
+	h.mu.Lock()
+	current := h.sessions[taskID]
+	if current == nil {
+		h.mu.Unlock()
+		return fmt.Errorf("task %s is not loaded", taskID)
+	}
+	current.Goal = redactSensitiveString(goal)
+	if current.Metadata == nil {
+		current.Metadata = make(map[string]interface{})
+	}
+	for key, value := range metadata {
+		current.Metadata[key] = redactSensitiveValue(value)
+	}
+	current.Revision++
+	current.UpdatedAt = time.Now().UTC()
+	copy := cloneTask(current)
+	h.mu.Unlock()
 	return h.saveTask(ctx, &copy)
+}
+
+func (h *Hub) notifyTaskTerminal(ctx context.Context, taskID string) {
+	h.terminalMu.RLock()
+	listeners := append([]func(context.Context, string){}, h.terminal...)
+	h.terminalMu.RUnlock()
+	for _, listener := range listeners {
+		listener(ctx, taskID)
+	}
 }
 
 func (h *Hub) ActiveSessions(ctx context.Context, userID, conversationID string) map[string]string {
@@ -710,7 +759,10 @@ func (h *Hub) markApprovedActionDispatched(ctx context.Context, action entity.Ac
 	current.UpdatedAt = time.Now().UTC()
 	copy := cloneTask(current)
 	h.mu.Unlock()
-	return h.saveTask(ctx, &copy)
+	if err := h.saveTask(ctx, &copy); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (h *Hub) Observe(ctx context.Context, observation entity.Observation) (err error) {
@@ -856,7 +908,13 @@ func (h *Hub) SetTaskStatus(ctx context.Context, taskID, status string) error {
 	current.UpdatedAt = time.Now().UTC()
 	copy := cloneTask(current)
 	h.mu.Unlock()
-	return h.saveTask(ctx, &copy)
+	if err := h.saveTask(ctx, &copy); err != nil {
+		return err
+	}
+	if entity.TerminalTaskStatus(status) {
+		h.notifyTaskTerminal(context.WithoutCancel(ctx), taskID)
+	}
+	return nil
 }
 
 // PauseTask records why execution cannot continue without pretending that an

@@ -1,0 +1,149 @@
+package experience
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/experience"
+	"github.com/good-fish-man/agent-runtime-client/infra/data"
+	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/experience"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestStoreOwnerIsolationIdempotencyAndDeletion(t *testing.T) {
+	store, db := newTestStore(t)
+	ctx := context.Background()
+	first := testStoredExperience("experience-1", "task-1", "user-1", time.Now().UTC().Add(time.Hour))
+	created, err := store.Create(ctx, first)
+	if err != nil || !created {
+		t.Fatalf("create: created=%v err=%v", created, err)
+	}
+	created, err = store.Create(ctx, first)
+	if err != nil || created {
+		t.Fatalf("idempotent create: created=%v err=%v", created, err)
+	}
+	if value, err := store.Find(ctx, "user-2", first.Experience.ExperienceID); err != nil || value != nil {
+		t.Fatalf("cross-user read leaked: value=%#v err=%v", value, err)
+	}
+	candidates, err := store.SearchCandidates(ctx, "user-2", entity.SearchRequest{}, 10)
+	if err != nil || len(candidates) != 0 {
+		t.Fatalf("cross-user search leaked: candidates=%#v err=%v", candidates, err)
+	}
+	now := time.Now().UTC()
+	fixture := po.EvaluationFixture{
+		FixtureID: "fixture-1", OwnerID: "user-1", ExperienceID: first.Experience.ExperienceID, Name: "private fixture",
+		RuntimeKind: "browser", Simulator: "browser.mock.v1", EnvironmentVersion: "v1", SnapshotHash: "hash",
+		Protocol: entity.Schema, Content: `{"goal":"private retained content"}`, CreatedAt: millis(now), UpdatedAt: millis(now),
+	}
+	suite := po.EvaluationSuite{SuiteID: "suite-1", OwnerID: "user-1", Name: "suite", FixtureIDs: `["fixture-1"]`, CreatedAt: millis(now), UpdatedAt: millis(now)}
+	run := po.EvaluationRun{RunID: "run-1", OwnerID: "user-1", SuiteID: suite.SuiteID, Status: entity.EvaluationCompleted, Seed: 42, Metrics: `{}`, StartedAt: millis(now), CreatedAt: millis(now), UpdatedAt: millis(now)}
+	result := po.EvaluationResult{ResultID: "result-1", OwnerID: "user-1", RunID: run.RunID, FixtureID: fixture.FixtureID, Metrics: `{}`, Summary: "private result", EvidenceIDs: `[]`, CreatedAt: millis(now)}
+	malformedSuite := po.EvaluationSuite{SuiteID: "suite-corrupt", OwnerID: "user-1", Name: "corrupt suite", FixtureIDs: `{`, CreatedAt: millis(now), UpdatedAt: millis(now)}
+	malformedRun := po.EvaluationRun{RunID: "run-corrupt", OwnerID: "user-1", SuiteID: malformedSuite.SuiteID, Status: entity.EvaluationCompleted, Seed: 42, Metrics: `{}`, StartedAt: millis(now), CreatedAt: millis(now), UpdatedAt: millis(now)}
+	for _, value := range []any{&fixture, &suite, &run, &result, &malformedSuite, &malformedRun} {
+		if err := db.Create(value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.DeletePayload(ctx, "user-1", first.Experience.ExperienceID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := store.Find(ctx, "user-1", first.Experience.ExperienceID); err != nil || value != nil {
+		t.Fatalf("deleted payload remained readable: value=%#v err=%v", value, err)
+	}
+	tombstones, total, err := store.List(ctx, "user-1", entity.ListFilter{Status: entity.StatusDeleted, Limit: 10})
+	if err != nil || total != 1 || len(tombstones) != 1 {
+		t.Fatalf("deleted audit shell was not listed: total=%d items=%#v err=%v", total, tombstones, err)
+	}
+	if tombstones[0].Retention.PayloadMode != entity.PayloadDeleted || tombstones[0].GoalSummary != "" {
+		t.Fatalf("deleted audit shell exposed payload: %#v", tombstones[0])
+	}
+	var payloads int64
+	if err := db.Model(&po.ExperiencePayload{}).Where("experience_id = ?", first.Experience.ExperienceID).Count(&payloads).Error; err != nil || payloads != 0 {
+		t.Fatalf("payload was not physically deleted: count=%d err=%v", payloads, err)
+	}
+	var refs int64
+	if err := db.Model(&po.ExperienceEventRef{}).Where("experience_id = ?", first.Experience.ExperienceID).Count(&refs).Error; err != nil || refs != 1 {
+		t.Fatalf("audit references were unexpectedly removed: count=%d err=%v", refs, err)
+	}
+	for name, model := range map[string]any{
+		"fixture": &po.EvaluationFixture{}, "suite": &po.EvaluationSuite{}, "run": &po.EvaluationRun{}, "result": &po.EvaluationResult{},
+	} {
+		var count int64
+		if err := db.Model(model).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("derived %s data survived experience deletion: count=%d err=%v", name, count, err)
+		}
+	}
+}
+
+func TestStoreRetentionAndDisabledPreference(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+	preference, err := store.SavePreference(ctx, entity.Preference{OwnerID: "user-1", LearningEnabled: false, RetentionDays: 14, MaxSensitivity: entity.SensitivityInternal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preference.LearningEnabled || preference.RetentionDays != 14 {
+		t.Fatalf("false preference was not persisted: %#v", preference)
+	}
+	skipped := testStoredExperience("experience-skipped", "task-skipped", "user-1", time.Now().UTC().Add(time.Hour))
+	skipped.Experience.Status = entity.StatusSkipped
+	skipped.Experience.SkipReason = "learning_disabled_by_user"
+	skipped.Experience.GoalSummary = ""
+	skipped.Experience.Outcome = ""
+	skipped.Payload = ""
+	skipped.SearchText = ""
+	if _, err := store.Create(ctx, skipped); err != nil {
+		t.Fatal(err)
+	}
+	value, err := store.Find(ctx, "user-1", skipped.Experience.ExperienceID)
+	if err != nil || value == nil || value.Retention.PayloadMode != entity.PayloadNone {
+		t.Fatalf("skipped experience payload mode = %#v, err=%v", value, err)
+	}
+	expired := testStoredExperience("experience-expired", "task-expired", "user-1", time.Now().UTC().Add(-time.Minute))
+	if _, err := store.Create(ctx, expired); err != nil {
+		t.Fatal(err)
+	}
+	purged, err := store.PurgeExpired(ctx, time.Now().UTC(), 10)
+	if err != nil || purged != 1 {
+		t.Fatalf("purge: count=%d err=%v", purged, err)
+	}
+	if value, _ := store.Find(ctx, "user-1", expired.Experience.ExperienceID); value != nil {
+		t.Fatalf("expired experience remained readable: %#v", value)
+	}
+}
+
+func newTestStore(t *testing.T) (*Store, *gorm.DB) {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(
+		&po.Experience{}, &po.ExperiencePayload{}, &po.ExperienceEventRef{}, &po.ExperienceRedaction{},
+		&po.FailureClassification{}, &po.ExperiencePreference{}, &po.EvaluationFixture{}, &po.EvaluationSuite{},
+		&po.EvaluationRun{}, &po.EvaluationResult{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	return NewStore(data.New(db)), db
+}
+
+func testStoredExperience(experienceID, taskID, ownerID string, deleteAt time.Time) *entity.StoredExperience {
+	now := time.Now().UTC()
+	experience := entity.Experience{
+		Schema: entity.Schema, ExperienceID: experienceID, OwnerID: ownerID, TaskID: taskID, Status: entity.StatusReady,
+		GoalSummary: "open a local mock page", Outcome: entity.OutcomeSucceeded, Sensitivity: entity.SensitivityInternal,
+		Retention:  entity.RetentionPolicy{Days: 30, PayloadMode: entity.PayloadSeparate, DeleteAt: deleteAt},
+		Provenance: entity.Provenance{Protocol: "athena.agent.v4", GeneratedBy: "test", GeneratedAt: now},
+		CreatedAt:  now, UpdatedAt: now,
+	}
+	payload, _ := json.Marshal(experience)
+	return &entity.StoredExperience{
+		Experience: experience, Payload: string(payload), SearchText: experience.GoalSummary, Vector: []float64{1, 0},
+		EventRefs: []entity.EventRef{{ExperienceID: experienceID, EventID: "event-" + experienceID, OwnerID: ownerID, TaskID: taskID, EventType: "task.status_changed", CreatedAt: now}},
+	}
+}

@@ -26,6 +26,7 @@ The authenticated dashboard is backed by this service's agent, task, token, appr
 - Dashboard, memory, channels, callbacks, command execution, service configuration, and restart APIs.
 - Source-aware error chains logged once at the HTTP boundary.
 - WebSocket Action/Observation control plane for capability-aware desktop devices ([protocol](docs/action-observation-protocol.md)).
+- Sanitized task Experience, per-user retention/deletion controls, failure taxonomy, and deterministic offline evaluation ([architecture](docs/experience-evaluation.md)).
 
 ## System Architecture
 
@@ -139,6 +140,7 @@ Management routes are mounted under `server.public_prefix`:
 | `/model`, `/model-key` | Catalog, credentials, local install, lifecycle, training |
 | `/site-credential` | User-owned website account metadata and Auth Vault assisted sign-in |
 | `/scheduled-task` | Durable user-owned monitoring tasks, execution history, and result review |
+| `/experience`, `/evaluation` | Sanitized historical evidence, retention controls, and offline regression suites |
 | `/memory` | User/agent long-term memory |
 | `/skill` | Built-in/custom skill management and ZIP upload |
 | `/knowledge_base` | Retrieval configuration and recall testing |

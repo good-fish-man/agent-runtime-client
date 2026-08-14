@@ -15,6 +15,7 @@ import (
 	channelpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/channel"
 	chatpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/chat"
 	controlpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/control"
+	experiencepo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/experience"
 	jobpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/job"
 	kbpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/knowledge_base"
 	memorypo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/memory"
@@ -75,6 +76,16 @@ func InitTables(ctx context.Context, d *data.Data) error {
 		&controlpo.WorldEntity{},
 		&controlpo.WorldRelation{},
 		&controlpo.WorldEvidenceRef{},
+		&experiencepo.Experience{},
+		&experiencepo.ExperiencePayload{},
+		&experiencepo.ExperienceEventRef{},
+		&experiencepo.ExperienceRedaction{},
+		&experiencepo.FailureClassification{},
+		&experiencepo.ExperiencePreference{},
+		&experiencepo.EvaluationFixture{},
+		&experiencepo.EvaluationSuite{},
+		&experiencepo.EvaluationRun{},
+		&experiencepo.EvaluationResult{},
 		&memorypo.AgentMemory{},
 		&jobpo.JobExecutionPO{},
 		&runtimepo.MediaGenerationJob{},

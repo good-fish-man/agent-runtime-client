@@ -9,6 +9,7 @@ import (
 	callbackhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/callback"
 	channelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/channel"
 	confighandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/config"
+	experiencehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/experience"
 	jobhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/job"
 	kbhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
 	modelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
@@ -18,6 +19,7 @@ import (
 
 	agentsvc "github.com/good-fish-man/agent-runtime-client/application/service/agent"
 	channelsvc "github.com/good-fish-man/agent-runtime-client/application/service/channel"
+	experiencesvc "github.com/good-fish-man/agent-runtime-client/application/service/experience"
 	jobsvc "github.com/good-fish-man/agent-runtime-client/application/service/job"
 	kbsvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge_base"
 	modelsvc "github.com/good-fish-man/agent-runtime-client/application/service/model"
@@ -34,16 +36,17 @@ func TestRegisterNoConflicts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	h := &Handlers{
-		User:     userhandler.NewHandler(usersvc.NewSysUserService(nil)),
-		Config:   confighandler.NewHandler(appconfig.PathsConfig{}),
-		Model:    modelhandler.NewHandler(modelsvc.NewSysModelService(nil)),
-		KB:       kbhandler.NewHandler(kbsvc.NewSysKnowledgeBaseService(nil)),
-		Skill:    skillhandler.NewHandler(skillsvc.NewSysSkillService(nil)),
-		Agent:    agenthandler.NewHandler(agentsvc.NewSysAgentService(nil)),
-		Channel:  channelhandler.NewHandler(channelsvc.NewSysChannelService(nil)),
-		Callback: callbackhandler.NewHandler(),
-		Weixin:   weixinhandler.NewHandler(),
-		Job:      jobhandler.NewHandler(jobsvc.NewJobExecutionService(nil)),
+		User:       userhandler.NewHandler(usersvc.NewSysUserService(nil)),
+		Config:     confighandler.NewHandler(appconfig.PathsConfig{}),
+		Model:      modelhandler.NewHandler(modelsvc.NewSysModelService(nil)),
+		KB:         kbhandler.NewHandler(kbsvc.NewSysKnowledgeBaseService(nil)),
+		Skill:      skillhandler.NewHandler(skillsvc.NewSysSkillService(nil)),
+		Agent:      agenthandler.NewHandler(agentsvc.NewSysAgentService(nil)),
+		Channel:    channelhandler.NewHandler(channelsvc.NewSysChannelService(nil)),
+		Experience: experiencehandler.NewHandler(experiencesvc.NewService(nil, nil)),
+		Callback:   callbackhandler.NewHandler(),
+		Weixin:     weixinhandler.NewHandler(),
+		Job:        jobhandler.NewHandler(jobsvc.NewJobExecutionService(nil)),
 	}
 
 	engine := gin.New()
@@ -51,6 +54,33 @@ func TestRegisterNoConflicts(t *testing.T) {
 
 	if got := len(engine.Routes()); got == 0 {
 		t.Fatalf("expected routes to be registered, got %d", got)
+	}
+
+	registered := make(map[string]struct{}, len(engine.Routes()))
+	for _, route := range engine.Routes() {
+		registered[route.Method+" "+route.Path] = struct{}{}
+	}
+	prefix := "/api/xiaoqinglong/agent-frame/v1"
+	expected := []string{
+		"GET " + prefix + "/experience",
+		"GET " + prefix + "/experience/preferences",
+		"PUT " + prefix + "/experience/preferences",
+		"GET " + prefix + "/experience/stats",
+		"POST " + prefix + "/experience/search",
+		"GET " + prefix + "/experience/:id",
+		"DELETE " + prefix + "/experience/:id",
+		"POST " + prefix + "/experience/:id/fixture",
+		"GET " + prefix + "/evaluation/fixtures",
+		"POST " + prefix + "/evaluation/suites",
+		"GET " + prefix + "/evaluation/suites",
+		"POST " + prefix + "/evaluation/suites/:id/runs",
+		"GET " + prefix + "/evaluation/runs",
+		"GET " + prefix + "/evaluation/runs/:id/results",
+	}
+	for _, route := range expected {
+		if _, ok := registered[route]; !ok {
+			t.Errorf("v0.3 route was not registered: %s", route)
+		}
 	}
 }
 

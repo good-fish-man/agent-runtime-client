@@ -207,7 +207,7 @@ func (s *RuntimeService) runControlLoop(ctx context.Context, in *entity.RunInput
 			}
 			return err
 		}
-		observation, err := s.dispatchControlAction(ctx, requestedDevice, taskID, conversationID, pending, emit)
+		observation, err := s.dispatchControlAction(ctx, requestedDevice, taskID, conversationID, originalPrompt, pending, emit)
 		if err != nil && observation == nil {
 			_ = s.controlHub.SetTaskStatus(context.WithoutCancel(ctx), taskID, controlentity.StatusFailed)
 			return err
@@ -257,7 +257,7 @@ func (s *RuntimeService) runAgentControlLoop(ctx context.Context, in *entity.Age
 			}
 			return nil
 		}
-		observation, err := s.dispatchControlAction(ctx, requestedDevice, taskID, conversationID, pending, emit)
+		observation, err := s.dispatchControlAction(ctx, requestedDevice, taskID, conversationID, originalTask, pending, emit)
 		if err != nil && observation == nil {
 			_ = s.controlHub.SetTaskStatus(context.WithoutCancel(ctx), taskID, controlentity.StatusFailed)
 			return err
@@ -308,7 +308,7 @@ func (s *RuntimeService) runControlStep(ctx context.Context, taskID string, sequ
 	return pending, nil
 }
 
-func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDevice, taskID, conversationID string, action *controlentity.Action, emit StreamFunc) (*controlentity.Observation, error) {
+func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDevice, taskID, conversationID, goal string, action *controlentity.Action, emit StreamFunc) (*controlentity.Observation, error) {
 	if s.controlHub == nil {
 		return nil, apierror.ErrRuntimeUnavailable.WithMessage("desktop control plane is unavailable")
 	}
@@ -355,6 +355,12 @@ func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDev
 	}
 	if err := s.controlHub.BeginTask(ctx, taskID, userID, conversationID, deviceID); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.beginControlTask")
+	}
+	if err := s.controlHub.DescribeTask(ctx, taskID, goal, map[string]any{"intent": map[string]any{
+		"primary_capability": action.Capability,
+		"operation":          action.Operation,
+	}}); err != nil {
+		return nil, log.WrapError(err, "RuntimeService.describeControlTask")
 	}
 	if task, ok, taskErr := s.controlHub.Task(ctx, taskID); taskErr != nil {
 		return nil, log.WrapError(taskErr, "RuntimeService.loadControlTaskRevision")

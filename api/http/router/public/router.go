@@ -17,6 +17,7 @@ import (
 	commandh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/command"
 	confighh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/config"
 	dashboardh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/dashboard"
+	experienceh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/experience"
 	jobh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/job"
 	kbh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge_base"
 	memoryh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/memory"
@@ -46,6 +47,7 @@ type Handlers struct {
 	Command           *commandh.Handler
 	Callback          *callbackh.Handler
 	Dashboard         *dashboardh.Handler
+	Experience        *experienceh.Handler
 	Weixin            *weixinh.Handler
 	Job               *jobh.Handler
 	Workspace         *workspaceh.Handler
@@ -146,6 +148,26 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		r.POST("", h.Memory.Create)
 		r.POST("/all", h.Memory.List)
 		r.DELETE("/:ulid", h.Memory.Delete)
+	}
+
+	if h.Experience != nil {
+		r := g.Group("/experience")
+		r.GET("", h.Experience.List)
+		r.GET("/preferences", h.Experience.GetPreference)
+		r.PUT("/preferences", h.Experience.UpdatePreference)
+		r.GET("/stats", h.Experience.Stats)
+		r.POST("/search", h.Experience.Search)
+		r.GET("/:id", h.Experience.Find)
+		r.DELETE("/:id", h.Experience.Delete)
+		r.POST("/:id/fixture", h.Experience.CreateFixture)
+
+		evaluation := g.Group("/evaluation")
+		evaluation.GET("/fixtures", h.Experience.ListFixtures)
+		evaluation.POST("/suites", h.Experience.CreateSuite)
+		evaluation.GET("/suites", h.Experience.ListSuites)
+		evaluation.POST("/suites/:id/runs", h.Experience.RunSuite)
+		evaluation.GET("/runs", h.Experience.ListRuns)
+		evaluation.GET("/runs/:id/results", h.Experience.ListResults)
 	}
 
 	if h.BrowserCredential != nil {
