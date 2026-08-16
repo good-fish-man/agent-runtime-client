@@ -7,9 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag, for example v0.1.5
+        description: Release tag, for example vX.Y.Z
         required: true
-        default: v0.1.5
 
 permissions:
   contents: write
@@ -48,9 +47,8 @@ jobs:
           GOWORK: "off"
         run: |
           set -euo pipefail
-          go mod tidy
-          go clean -modcache
           go mod download
+          go mod verify
           name="agent-runtime-client_${RELEASE_TAG}_${GOOS}_${GOARCH}"
           mkdir -p "package/$name" dist
           extension=""
