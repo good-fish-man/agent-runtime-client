@@ -13,6 +13,7 @@ import (
 
 	httpapi "github.com/good-fish-man/agent-runtime-client/api/http"
 	controlhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/control"
+	delegationlearninghandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/delegationlearning"
 	delegationopshandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/delegationops"
 	deploymenthandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/deployment"
 	knowledgehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge"
@@ -90,15 +91,17 @@ type App struct {
 	Engine  *gin.Engine
 	Restart <-chan struct{}
 
-	client        *inruntime.Client
-	data          *data.Data
-	Control       *controlsvc.Hub
-	Delegation    *delegationsvc.Orchestrator
-	Experience    *experiencesvc.Service
-	Deployment    *deploymentsvc.Service
-	Knowledge     *knowledgesvc.Service
-	Orchestration *orchestrationsvc.Service
-	Supervisor    *orchestrationsvc.Supervisor
+	client              *inruntime.Client
+	data                *data.Data
+	Control             *controlsvc.Hub
+	Delegation          *delegationsvc.Orchestrator
+	DelegationLearning  *delegationsvc.GovernedLearningService
+	DelegationEvolution *delegationsvc.GovernedLearningEvolution
+	Experience          *experiencesvc.Service
+	Deployment          *deploymentsvc.Service
+	Knowledge           *knowledgesvc.Service
+	Orchestration       *orchestrationsvc.Service
+	Supervisor          *orchestrationsvc.Supervisor
 }
 
 // Init builds the App from the config at cfgPath (empty uses defaults+env).
@@ -158,6 +161,8 @@ func Init(cfgPath string) (*App, error) {
 	var actionGovernance *delegationsvc.GovernedActionService
 	var delegationRecovery *delegationsvc.RecoveryService
 	var delegationReplay *delegationsvc.ReplayRunner
+	var delegationLearning *delegationsvc.GovernedLearningService
+	var delegationEvolution *delegationsvc.GovernedLearningEvolution
 	if store != nil {
 		controlStore := controlrepo.NewStore(store)
 		if err := controlStore.MarkAllDevicesOffline(context.Background(), time.Now().UTC()); err != nil {
@@ -167,7 +172,8 @@ func Init(cfgPath string) (*App, error) {
 			return nil, err
 		}
 		controlHub = controlsvc.NewHub(controlStore)
-		experienceService = experiencesvc.NewService(experiencerepo.NewStore(store), controlStore)
+		experienceStore := experiencerepo.NewStore(store)
+		experienceService = experiencesvc.NewService(experienceStore, controlStore)
 		deploymentService = deploymentsvc.NewService(deploymentrepo.NewStore(store))
 		knowledgeService = knowledgesvc.NewService(knowledgerepo.NewStore(store))
 		orchestrationService = orchestrationsvc.NewService(orchestrationrepo.NewStore(store))
@@ -179,6 +185,12 @@ func Init(cfgPath string) (*App, error) {
 		// Live replay is fail-closed until a policy-verifying executor is
 		// explicitly injected. Exact and recorded-observation modes remain usable.
 		delegationReplay = delegationsvc.NewReplayRunner(delegationStore, nil)
+		delegationLearning = delegationsvc.NewGovernedLearningService(delegationStore, delegationReplay, nil).WithOwnerLearningConsent(experienceStore)
+		deploymentService.WithDelegationArtifactResolver(delegationLearning)
+		delegationEvolution = delegationsvc.NewGovernedLearningEvolution(delegationLearning, delegationStore, delegationsvc.GovernedEvolutionConfig{
+			Enabled: true, ScanInterval: 5 * time.Minute, BatchSize: 100,
+		})
+		delegationExecution.SetGovernedLearning(delegationLearning)
 		controlHub.OnTaskTerminal(func(_ context.Context, taskID string) { experienceService.Enqueue(taskID) })
 	} else {
 		controlHub = controlsvc.NewHub()
@@ -220,6 +232,9 @@ func Init(cfgPath string) (*App, error) {
 	if delegationRecovery != nil && delegationReplay != nil {
 		pub.DelegationOps = delegationopshandler.NewHandler(delegationRecovery, delegationReplay)
 	}
+	if delegationLearning != nil {
+		pub.DelegationLearning = delegationlearninghandler.NewHandler(delegationLearning).WithEvolution(delegationEvolution)
+	}
 	engine := httpapi.NewEngine(h, pub, cfg.Server.PublicPrefix, cfg.Server.Mode)
 	controlhandler.NewHandler(controlHub, cfg.Control.DeviceToken).Register(engine, pub.Auth, cfg.Server.PublicPrefix)
 	if delegationOrchestrator != nil {
@@ -231,6 +246,9 @@ func Init(cfgPath string) (*App, error) {
 	controlHub.Start(context.Background())
 	if experienceService != nil {
 		experienceService.Start(context.Background())
+	}
+	if delegationEvolution != nil {
+		delegationEvolution.Start(context.Background())
 	}
 	var supervisor *orchestrationsvc.Supervisor
 	if orchestrationService != nil && cfg.Orchestration.Enabled {
@@ -248,7 +266,7 @@ func Init(cfgPath string) (*App, error) {
 		}
 	}
 
-	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store, Control: controlHub, Delegation: delegationOrchestrator, Experience: experienceService, Deployment: deploymentService, Knowledge: knowledgeService, Orchestration: orchestrationService, Supervisor: supervisor}, nil
+	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store, Control: controlHub, Delegation: delegationOrchestrator, DelegationLearning: delegationLearning, DelegationEvolution: delegationEvolution, Experience: experienceService, Deployment: deploymentService, Knowledge: knowledgeService, Orchestration: orchestrationService, Supervisor: supervisor}, nil
 }
 
 // buildPublicHandlers wires the agent-frame-compatible resource handlers. The
@@ -310,6 +328,9 @@ func (a *App) Close() error {
 	}
 	if a.Experience != nil {
 		a.Experience.Stop()
+	}
+	if a.DelegationEvolution != nil {
+		a.DelegationEvolution.Stop()
 	}
 	if a.Control != nil {
 		a.Control.Stop()

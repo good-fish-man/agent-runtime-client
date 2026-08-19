@@ -25,8 +25,9 @@ const (
 )
 
 type Service struct {
-	store           repository.Store
-	shadowEvaluator ShadowEvaluator
+	store               repository.Store
+	shadowEvaluator     ShadowEvaluator
+	delegationArtifacts DelegationArtifactApprovalResolver
 }
 
 func NewService(store repository.Store) *Service {
@@ -41,18 +42,20 @@ func NewServiceWithShadowEvaluator(store repository.Store, evaluator ShadowEvalu
 }
 
 type CreateBuildRequest struct {
-	AgentID                string            `json:"agent_id"`
-	Version                string            `json:"version"`
-	KernelVersion          string            `json:"kernel_version"`
-	PlannerVersion         string            `json:"planner_version"`
-	PolicyVersion          string            `json:"policy_version"`
-	ProtocolVersion        string            `json:"protocol_version"`
-	SkillVersions          map[string]string `json:"skill_versions,omitempty"`
-	StrategyVersions       map[string]string `json:"strategy_versions,omitempty"`
-	OntologyVersion        string            `json:"ontology_version"`
-	PromptTemplateVersions map[string]string `json:"prompt_template_versions"`
-	EvaluationSuiteVersion string            `json:"evaluation_suite_version"`
-	RiskLevel              string            `json:"risk_level"`
+	AgentID                   string            `json:"agent_id"`
+	Version                   string            `json:"version"`
+	KernelVersion             string            `json:"kernel_version"`
+	PlannerVersion            string            `json:"planner_version"`
+	PolicyVersion             string            `json:"policy_version"`
+	ProtocolVersion           string            `json:"protocol_version"`
+	SkillVersions             map[string]string `json:"skill_versions,omitempty"`
+	StrategyVersions          map[string]string `json:"strategy_versions,omitempty"`
+	DelegationPolicyVersions  map[string]string `json:"delegation_policy_versions,omitempty"`
+	SpecialistProfileVersions map[string]string `json:"specialist_profile_versions,omitempty"`
+	OntologyVersion           string            `json:"ontology_version"`
+	PromptTemplateVersions    map[string]string `json:"prompt_template_versions"`
+	EvaluationSuiteVersion    string            `json:"evaluation_suite_version"`
+	RiskLevel                 string            `json:"risk_level"`
 }
 
 type CreatePromotionRequest struct {
@@ -123,7 +126,23 @@ func (s *Service) CreateBuild(ctx context.Context, ownerID, actorID string, requ
 	if err != nil {
 		return nil, log.WrapError(err, "DeploymentService.CreateBuild.artifacts")
 	}
-	build, err := makeBuild(ownerID, actorID, traceID(ctx), request, approvals.References)
+	approvalReferences := append([]entity.ArtifactApprovalReference(nil), approvals.References...)
+	if len(request.DelegationPolicyVersions) > 0 || len(request.SpecialistProfileVersions) > 0 {
+		if s.delegationArtifacts == nil {
+			return nil, apierror.ErrBadRequest.WithMessage("delegation artifacts require the governed learning resolver")
+		}
+		delegationApprovals, resolveErr := s.delegationArtifacts.ResolveBuildApprovals(
+			ctx,
+			ownerID,
+			request.DelegationPolicyVersions,
+			request.SpecialistProfileVersions,
+		)
+		if resolveErr != nil {
+			return nil, log.WrapError(resolveErr, "DeploymentService.CreateBuild.delegationArtifacts")
+		}
+		approvalReferences = append(approvalReferences, delegationApprovals...)
+	}
+	build, err := makeBuild(ownerID, actorID, traceID(ctx), request, approvalReferences)
 	if err != nil {
 		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
 	}
@@ -638,6 +657,7 @@ func makeBuild(ownerID, actorID, trace string, request CreateBuildRequest, appro
 		Schema: entity.Schema, BuildID: buildID, OwnerID: ownerID, AgentID: strings.TrimSpace(request.AgentID), Version: strings.TrimSpace(request.Version),
 		KernelVersion: request.KernelVersion, PlannerVersion: request.PlannerVersion, PolicyVersion: request.PolicyVersion,
 		ProtocolVersion: request.ProtocolVersion, SkillVersions: copyMap(request.SkillVersions), StrategyVersions: copyMap(request.StrategyVersions),
+		DelegationPolicyVersions: copyMap(request.DelegationPolicyVersions), SpecialistProfileVersions: copyMap(request.SpecialistProfileVersions),
 		OntologyVersion: request.OntologyVersion, PromptTemplateVersions: copyMap(request.PromptTemplateVersions),
 		EvaluationSuiteVersion: request.EvaluationSuiteVersion, ArtifactApprovals: approvals,
 		RiskLevel: strings.ToUpper(strings.TrimSpace(request.RiskLevel)), Verified: true, Recoverable: true, TraceID: trace,

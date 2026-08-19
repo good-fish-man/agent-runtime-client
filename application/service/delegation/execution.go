@@ -44,7 +44,14 @@ type ExecutionService struct {
 	parallelStore delegationrepo.ParallelStore
 	adHocStore    delegationrepo.AdHocStore
 	adHocBuilder  *AdHocSpecialistBuilder
+	learning      *GovernedLearningService
 	now           func() time.Time
+}
+
+func (s *ExecutionService) SetGovernedLearning(service *GovernedLearningService) {
+	if s != nil {
+		s.learning = service
+	}
 }
 
 func NewExecutionService(orchestrator *Orchestrator, runtime RuntimeExecutor, judge DelegationJudge) *ExecutionService {
@@ -64,6 +71,7 @@ func (s *ExecutionService) MaybeRunStream(ctx context.Context, input *runtimeent
 		return false, nil
 	}
 	route := s.policy.Decide(ctx, input.Prompt)
+	route = s.applyGovernedLearningRoute(ctx, input, route)
 	if route.Route != RouteSpecialist {
 		return false, nil
 	}

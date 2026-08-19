@@ -17,6 +17,7 @@ import (
 	commandh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/command"
 	confighh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/config"
 	dashboardh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/dashboard"
+	delegationlearningh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/delegationlearning"
 	delegationopsh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/delegationops"
 	deploymenth "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/deployment"
 	experienceh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/experience"
@@ -40,32 +41,33 @@ import (
 // Handlers aggregates the public resource handlers wired by the composition
 // root. DB-backed handlers may be nil when the database is not configured.
 type Handlers struct {
-	Auth              gin.HandlerFunc
-	User              *userh.Handler
-	Config            *confighh.Handler
-	Model             *modelh.Handler
-	Memory            *memoryh.Handler
-	KB                *kbh.Handler
-	Skill             *skillh.Handler
-	Agent             *agenth.Handler
-	BrowserCredential *browsercredentialh.Handler
-	ScheduledTask     *scheduledtaskh.Handler
-	Channel           *channelh.Handler
-	Command           *commandh.Handler
-	Callback          *callbackh.Handler
-	Dashboard         *dashboardh.Handler
-	DelegationOps     *delegationopsh.Handler
-	Deployment        *deploymenth.Handler
-	Knowledge         *knowledgeh.Handler
-	Experience        *experienceh.Handler
-	Learning          *learningh.Handler
-	Orchestration     *orchestrationh.Handler
-	Operations        *operationsh.Handler
-	PluginRegistry    *pluginregistryh.Handler
-	Weixin            *weixinh.Handler
-	Job               *jobh.Handler
-	Workspace         *workspaceh.Handler
-	VoiceAvatar       *voiceavatarh.Handler
+	Auth               gin.HandlerFunc
+	User               *userh.Handler
+	Config             *confighh.Handler
+	Model              *modelh.Handler
+	Memory             *memoryh.Handler
+	KB                 *kbh.Handler
+	Skill              *skillh.Handler
+	Agent              *agenth.Handler
+	BrowserCredential  *browsercredentialh.Handler
+	ScheduledTask      *scheduledtaskh.Handler
+	Channel            *channelh.Handler
+	Command            *commandh.Handler
+	Callback           *callbackh.Handler
+	Dashboard          *dashboardh.Handler
+	DelegationLearning *delegationlearningh.Handler
+	DelegationOps      *delegationopsh.Handler
+	Deployment         *deploymenth.Handler
+	Knowledge          *knowledgeh.Handler
+	Experience         *experienceh.Handler
+	Learning           *learningh.Handler
+	Orchestration      *orchestrationh.Handler
+	Operations         *operationsh.Handler
+	PluginRegistry     *pluginregistryh.Handler
+	Weixin             *weixinh.Handler
+	Job                *jobh.Handler
+	Workspace          *workspaceh.Handler
+	VoiceAvatar        *voiceavatarh.Handler
 }
 
 // Register mounts all available resource routes under the given group.
@@ -110,6 +112,18 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		g.POST("/delegation/replays", h.DelegationOps.Replay)
 		g.GET("/delegation/export", h.DelegationOps.Export)
 		g.DELETE("/delegation/data", h.DelegationOps.Delete)
+	}
+	if h.DelegationLearning != nil {
+		g.GET("/delegation-learning", h.DelegationLearning.Snapshot)
+		g.PUT("/delegation-learning/preference", h.DelegationLearning.Preference)
+		g.POST("/delegation-learning/candidates", h.DelegationLearning.Propose)
+		g.POST("/delegation-learning/candidates/:candidate_id/offline-evaluation", h.DelegationLearning.EvaluateOffline)
+		g.POST("/delegation-learning/candidates/:candidate_id/review", h.DelegationLearning.Review)
+		g.POST("/delegation-learning/candidates/:candidate_id/shadow", h.DelegationLearning.Shadow)
+		g.POST("/delegation-learning/candidates/:candidate_id/canary", h.DelegationLearning.Canary)
+		g.POST("/delegation-learning/rollouts/:rollout_id/benchmark", h.DelegationLearning.Benchmark)
+		g.POST("/delegation-learning/rollouts/:rollout_id/promote", h.DelegationLearning.Promote)
+		g.POST("/delegation-learning/rollouts/:rollout_id/disable", h.DelegationLearning.Disable)
 	}
 	if h.User != nil {
 		g.GET("/auth/me", h.User.Me)

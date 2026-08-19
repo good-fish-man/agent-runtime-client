@@ -13,4 +13,5 @@ type AdHocStore interface {
 	ListSuccessfulAdHocOutcomes(context.Context, string, string) ([]entity.AdHocRunOutcome, error)
 	CreateProfileCandidate(context.Context, entity.ProfileCandidate, entity.Event) error
 	FindProfileCandidate(context.Context, string, string) (*entity.ProfileCandidate, error)
+	ListPendingProfileCandidates(context.Context, int) ([]entity.ProfileCandidate, error)
 }

@@ -120,7 +120,23 @@ func (b *AdHocSpecialistBuilder) Build(request AdHocBuildRequest) (AdHocBuildRes
 }
 
 func (s *ExecutionService) resolveSpecialist(ctx context.Context, ownerID, taskStepID, outcomeID, role, roleDescription, explicitProfile string, requested, parent []string, scope dso.ContextScope, budget dso.BudgetAmount, allowAdHoc bool) (specialistResolution, error) {
-	if profile, ok := reviewedSpecialistProfile(role, explicitProfile); ok {
+	if explicitProfile != "" {
+		if profile, ok := reviewedSpecialistProfile(role, explicitProfile); ok {
+			return specialistResolution{ProfileRef: profile.Reference(), PromptRef: profile.PromptArtifactRef, Role: profile.Role}, nil
+		}
+	}
+	if s.learning != nil && explicitProfile == "" {
+		resolved, err := s.learning.Resolve(ctx, ownerID, dso.LearningCandidateSpecialistProfile, "low", taskStepID)
+		if err != nil {
+			log.Warnf(ctx, "governed specialist profile resolution failed; using reviewed baseline: %v", err)
+		} else if resolved.Candidate != nil && resolved.Candidate.ProfileArtifact != nil {
+			artifact := resolved.Candidate.ProfileArtifact
+			if role == "" || role == artifact.Role {
+				return specialistResolution{ProfileRef: "specialist-profile://" + artifact.ArtifactID + "/" + artifact.Version, PromptRef: artifact.PromptArtifactRef, Role: artifact.Role}, nil
+			}
+		}
+	}
+	if profile, ok := reviewedSpecialistProfile(role, ""); ok {
 		return specialistResolution{ProfileRef: profile.Reference(), PromptRef: profile.PromptArtifactRef, Role: profile.Role}, nil
 	}
 	if !allowAdHoc {

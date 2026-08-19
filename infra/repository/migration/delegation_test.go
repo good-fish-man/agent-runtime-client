@@ -32,7 +32,10 @@ func TestInitTablesCreatesDurableDelegationAuthoritySchema(t *testing.T) {
 		"execution_context": &po.ExecutionContext{}, "action_policy_decision": &po.ActionPolicyDecision{},
 		"action_plan_run": &po.ActionPlanRun{}, "governed_action_attempt": &po.GovernedActionAttempt{},
 		"action_verification": &po.ActionVerification{},
-		"budget_reservation":  &po.BudgetReservation{}, "resource_lease": &po.ResourceLease{},
+		"learning_preference": &po.LearningPreference{}, "learning_candidate": &po.LearningCandidate{},
+		"learning_evaluation": &po.LearningEvaluation{}, "learning_review": &po.LearningReview{},
+		"learning_rollout": &po.LearningRollout{}, "learning_benchmark": &po.LearningBenchmark{},
+		"budget_reservation": &po.BudgetReservation{}, "resource_lease": &po.ResourceLease{},
 		"candidate_result": &po.CandidateResult{}, "event": &po.Event{},
 	} {
 		if !db.Migrator().HasTable(table) {

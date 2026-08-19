@@ -136,6 +136,21 @@ func (s *Store) FindProfileCandidate(ctx context.Context, ownerID, candidateID s
 	return &value, nil
 }
 
+func (s *Store) ListPendingProfileCandidates(ctx context.Context, limit int) ([]entity.ProfileCandidate, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	var rows []po.ProfileCandidate
+	if err := s.data.DB(ctx).Where("status = ?", entity.ProfileReviewNeeded).Order("created_at ASC, candidate_id ASC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, log.WrapError(err, "DelegationStore.ListPendingProfileCandidates")
+	}
+	result := make([]entity.ProfileCandidate, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, profileCandidateEntity(row))
+	}
+	return result, nil
+}
+
 func adHocOverlayRow(value entity.AdHocOverlay) po.AdHocOverlay {
 	return po.AdHocOverlay{OverlayID: value.OverlayID, OwnerID: value.OwnerID, BaseProfileRef: value.BaseProfileRef, ContentHash: value.ContentHash, Status: value.Status, Content: value.Content, ExpiresAt: millis(value.ExpiresAt), CreatedAt: millis(value.CreatedAt)}
 }
