@@ -27,6 +27,8 @@ type ArtifactResolveInput struct {
 	DeviceID             string
 	EnvironmentRef       string
 	RuntimeBuildRef      string
+	SpecialistProfileRef string
+	PromptArtifactRef    string
 	AdmittedCapabilities []string
 	Context              ContextBundle
 	Model                runtimeentity.ModelConfig
@@ -104,8 +106,9 @@ func (r *ArtifactResolver) Resolve(input ArtifactResolveInput) (ResolvedArtifact
 	manifest := dso.InvocationManifest{
 		InvocationManifestID: "manifest-" + input.RunID, ParentRunManifestRef: input.ParentRunManifestID,
 		SubagentSpecRef: input.SubagentSpecID, DelegatedOutcomeRef: input.DelegatedOutcomeID,
-		SpecialistProfileRef: researchProfileRef, PromptArtifactRef: researchPromptRef,
-		ContextSliceRef: input.Context.Slice.ContextSliceID, ContextHash: input.Context.Slice.ContentHash,
+		SpecialistProfileRef: firstNonEmpty(strings.TrimSpace(input.SpecialistProfileRef), researchProfileRef),
+		PromptArtifactRef:    firstNonEmpty(strings.TrimSpace(input.PromptArtifactRef), researchPromptRef),
+		ContextSliceRef:      input.Context.Slice.ContextSliceID, ContextHash: input.Context.Slice.ContentHash,
 		ModelRef: modelRef, ModelBuildRef: modelBuildRef, ModelParametersHash: modelParametersHash,
 		OutputSchemaRef: candidateSchemaRef, CapabilityViewRef: capabilityView.CapabilityViewID,
 		RuntimeBuildRef: runtimeBuild, CreatedAt: input.Now,

@@ -11,6 +11,7 @@ import (
 
 	delegationentity "github.com/good-fish-man/agent-runtime-client/domain/entity/delegation"
 	runtimeentity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
+	delegationrepo "github.com/good-fish-man/agent-runtime-client/domain/irepository/delegation"
 	runtimerepo "github.com/good-fish-man/agent-runtime-client/domain/irepository/runtime"
 	"github.com/good-fish-man/agent-runtime-client/pkg/ulid"
 	dso "github.com/good-fish-man/athena-protocol/draft/dso/v0alpha"
@@ -18,11 +19,15 @@ import (
 )
 
 const (
-	ContextInvocationManifest = "athena.dso.invocation_manifest.v0alpha"
-	ContextCapabilityView     = "athena.dso.capability_view.v0alpha"
-	ContextRedactedSlice      = "athena.dso.context_slice.v0alpha"
-	ContextRedactedPayload    = "athena.dso.context_payload.v0alpha"
-	ContextSpecialistRun      = "athena.dso.specialist_run"
+	ContextInvocationManifest  = "athena.dso.invocation_manifest.v0alpha"
+	ContextCapabilityView      = "athena.dso.capability_view.v0alpha"
+	ContextRedactedSlice       = "athena.dso.context_slice.v0alpha"
+	ContextRedactedPayload     = "athena.dso.context_payload.v0alpha"
+	ContextSpecialistRun       = "athena.dso.specialist_run"
+	ContextSpecialistRole      = "athena.dso.specialist_role"
+	ContextSpecialistProfile   = "athena.dso.specialist_profile_ref"
+	ContextSpecialistPrompt    = "athena.dso.specialist_prompt_ref"
+	ContextParallelSpecialists = "athena.dso.parallel_specialists"
 )
 
 type RuntimeExecutor interface {
@@ -31,19 +36,24 @@ type RuntimeExecutor interface {
 }
 
 type ExecutionService struct {
-	orchestrator *Orchestrator
-	runtime      RuntimeExecutor
-	policy       *RoutePolicy
-	contexts     *ContextBuilder
-	artifacts    *ArtifactResolver
-	now          func() time.Time
+	orchestrator  *Orchestrator
+	runtime       RuntimeExecutor
+	policy        *RoutePolicy
+	contexts      *ContextBuilder
+	artifacts     *ArtifactResolver
+	parallelStore delegationrepo.ParallelStore
+	now           func() time.Time
 }
 
 func NewExecutionService(orchestrator *Orchestrator, runtime RuntimeExecutor, judge DelegationJudge) *ExecutionService {
-	return &ExecutionService{
+	service := &ExecutionService{
 		orchestrator: orchestrator, runtime: runtime, policy: NewRoutePolicy(judge),
 		contexts: NewContextBuilder(), artifacts: NewArtifactResolver(), now: func() time.Time { return time.Now().UTC() },
 	}
+	if orchestrator != nil {
+		service.parallelStore, _ = orchestrator.store.(delegationrepo.ParallelStore)
+	}
+	return service
 }
 
 func (s *ExecutionService) MaybeRunStream(ctx context.Context, input *runtimeentity.RunInput, emit runtimerepo.StreamFunc) (bool, error) {
@@ -57,7 +67,13 @@ func (s *ExecutionService) MaybeRunStream(ctx context.Context, input *runtimeent
 	if emit == nil {
 		emit = func(*runtimeentity.StreamEvent) error { return nil }
 	}
-	if err := s.runSingleSpecialist(ctx, input, route, emit); err != nil {
+	var err error
+	if contextBool(input.Context, ContextParallelSpecialists) {
+		err = s.runParallelSpecialists(ctx, input, route, emit)
+	} else {
+		err = s.runSingleSpecialist(ctx, input, route, emit)
+	}
+	if err != nil {
 		return true, log.WrapError(err, "DelegationExecution.MaybeRunStream")
 	}
 	return true, nil
@@ -76,6 +92,9 @@ func (s *ExecutionService) runSingleSpecialist(ctx context.Context, input *runti
 	outcomeID := "outcome-" + ulid.New()
 	specID := "spec-" + ulid.New()
 	actorBindingID := "actor-" + ulid.New()
+	specialistRole := firstNonEmpty(contextString(input.Context, ContextSpecialistRole), "research_specialist")
+	specialistProfile := firstNonEmpty(contextString(input.Context, ContextSpecialistProfile), researchProfileRef)
+	specialistPrompt := firstNonEmpty(contextString(input.Context, ContextSpecialistPrompt), researchPromptRef)
 	parentCapabilities := capabilityIDs(input.Capabilities)
 	admitted := admitCapabilities(parentCapabilities, route.RequestedCapabilities)
 
@@ -90,7 +109,7 @@ func (s *ExecutionService) runSingleSpecialist(ctx context.Context, input *runti
 	}
 	outcome.DefinitionHash = outcomeDefinitionHash(outcome)
 	spec := dso.SubagentSpec{
-		SubagentSpecID: specID, TaskStepRef: taskStepID, DelegatedOutcomeRef: outcomeID, Role: "research_specialist",
+		SubagentSpecID: specID, TaskStepRef: taskStepID, DelegatedOutcomeRef: outcomeID, Role: specialistRole,
 		RequestedCapabilities: append([]string(nil), route.RequestedCapabilities...),
 		RequestedContextScope: dso.ContextScope{AllowedClasses: []string{dso.ClassPublic, dso.ClassInternal}, MaxBytes: defaultContextBytes},
 		PermissionCeilingRef:  "capability-ceiling://parent/" + taskStepID, RiskCeiling: "low",
@@ -105,7 +124,7 @@ func (s *ExecutionService) runSingleSpecialist(ctx context.Context, input *runti
 	proposal := dso.DelegationProposal{
 		Schema: dso.Schema, ProposalID: proposalID, OwnerID: ownerID, GoalID: goalID, TaskStepRef: taskStepID,
 		DraftOutcome: outcome, DraftSubagentSpec: spec, RequestedCapabilitySet: append([]string(nil), route.RequestedCapabilities...),
-		RequestedContextScope: spec.RequestedContextScope, CandidateSpecialistRefs: []string{researchProfileRef},
+		RequestedContextScope: spec.RequestedContextScope, CandidateSpecialistRefs: []string{specialistProfile},
 		CostBenefitEstimate: dso.CostBenefitEstimate{ExpectedQualityGain: 0.35, CoordinationCost: 0.10, ExpectedLatencyMS: 3000, ExpectedTokens: spec.BudgetRequest.Tokens},
 		Reasons:             append([]string(nil), route.Reasons...), InputHash: inputHash, Status: dso.ProposalSubmitted,
 		Revision: 1, CreatedBy: "main-agent-supervisor", CreatedAt: now,
@@ -143,7 +162,8 @@ func (s *ExecutionService) runSingleSpecialist(ctx context.Context, input *runti
 		OwnerID: ownerID, RunID: runID, ParentRunManifestID: contextString(input.Context, "run_manifest_id"),
 		SubagentSpecID: specID, DelegatedOutcomeID: outcomeID, ActorBindingID: actorBindingID,
 		DeviceID: contextString(input.Context, "requested_device_id"), EnvironmentRef: "server",
-		RuntimeBuildRef: contextString(input.Context, "runtime_build_ref"), AdmittedCapabilities: admitted,
+		RuntimeBuildRef: contextString(input.Context, "runtime_build_ref"), SpecialistProfileRef: specialistProfile,
+		PromptArtifactRef: specialistPrompt, AdmittedCapabilities: admitted,
 		Context: contextBundle, Model: model, Now: now,
 	})
 	if err != nil {

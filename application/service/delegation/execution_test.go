@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ type specialistRuntimeStub struct {
 	withEvidence bool
 	content      string
 	last         *runtimeentity.RunInput
+	mu           sync.Mutex
 }
 
 func (s *specialistRuntimeStub) Run(context.Context, *runtimeentity.RunInput) (*runtimeentity.Completion, error) {
@@ -34,12 +36,19 @@ func (s *specialistRuntimeStub) Run(context.Context, *runtimeentity.RunInput) (*
 
 func (s *specialistRuntimeStub) RunStream(_ context.Context, input *runtimeentity.RunInput, emit runtimerepo.StreamFunc) error {
 	s.calls.Add(1)
+	s.mu.Lock()
 	s.last = input
+	s.mu.Unlock()
 	if err := emit(&runtimeentity.StreamEvent{Type: runtimeentity.StreamTypeToolCall, ToolCall: &runtimeentity.ToolCallEvent{ID: "call-1", Tool: "internet_search"}}); err != nil {
 		return err
 	}
 	if s.withEvidence {
-		if err := emit(&runtimeentity.StreamEvent{Type: runtimeentity.StreamTypeToolResult, ToolResult: &runtimeentity.ToolResultEvent{ID: "call-1", Tool: "internet_search", Success: true, Output: map[string]any{"url": "https://example.com/source"}}}); err != nil {
+		suffix := strings.TrimPrefix(contextString(input.Context, "task_id"), "task-")
+		suffix = strings.NewReplacer("/", "-", " ", "-").Replace(suffix)
+		if suffix == "" {
+			suffix = "default"
+		}
+		if err := emit(&runtimeentity.StreamEvent{Type: runtimeentity.StreamTypeToolResult, ToolResult: &runtimeentity.ToolResultEvent{ID: "call-1", Tool: "internet_search", Success: true, Output: map[string]any{"url": "https://example.com/source/" + suffix}}}); err != nil {
 			return err
 		}
 	}
@@ -105,11 +114,14 @@ func TestExecutionServicePersistsCompleteSingleSpecialistChain(t *testing.T) {
 	if verification.Status != delegationentity.VerificationSatisfied || !strings.Contains(verification.EvidenceRefs, "example.com/source") {
 		t.Fatalf("verification = %+v", verification)
 	}
-	if runtime.last == nil || len(runtime.last.Capabilities) != 1 || runtime.last.Capabilities[0].ID != "internet.search" {
-		t.Fatalf("admitted runtime capabilities = %+v", runtime.last)
+	runtime.mu.Lock()
+	last := runtime.last
+	runtime.mu.Unlock()
+	if last == nil || len(last.Capabilities) != 1 || last.Capabilities[0].ID != "internet.search" {
+		t.Fatalf("admitted runtime capabilities = %+v", last)
 	}
-	if len(runtime.last.SubAgents) != 0 || len(runtime.last.MCPs) != 0 || len(runtime.last.Messages) != 0 {
-		t.Fatalf("specialist received unbounded execution inputs: %+v", runtime.last)
+	if len(last.SubAgents) != 0 || len(last.MCPs) != 0 || len(last.Messages) != 0 {
+		t.Fatalf("specialist received unbounded execution inputs: %+v", last)
 	}
 
 	var linkedChains int64
@@ -188,6 +200,7 @@ func newExecutionFixture(t *testing.T, evidence bool) (*ExecutionService, *speci
 		&po.ContextSlice{}, &po.CapabilityView{}, &po.ActorBinding{}, &po.InvocationManifest{},
 		&po.Run{}, &po.Attempt{}, &po.DecisionTurn{}, &po.ModelInvocation{}, &po.BudgetAccount{},
 		&po.BudgetReservation{}, &po.ResourceLease{}, &po.CandidateResult{}, &po.VerificationResult{}, &po.Event{},
+		&po.ParallelPlan{}, &po.ParallelNode{}, &po.ParallelAggregate{},
 	); err != nil {
 		t.Fatal(err)
 	}

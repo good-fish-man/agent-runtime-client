@@ -310,6 +310,7 @@ func newTestStore(t *testing.T) (*Store, *gorm.DB) {
 		&po.BudgetReservation{}, &po.ResourceLease{}, &po.CandidateResult{}, &po.VerificationResult{}, &po.Event{},
 		&po.ActionProposal{}, &po.PlanCandidate{}, &po.ExecutionContext{}, &po.ActionPolicyDecision{},
 		&po.ActionPlanRun{}, &po.GovernedActionAttempt{}, &po.ActionVerification{},
+		&po.ParallelPlan{}, &po.ParallelNode{}, &po.ParallelAggregate{},
 	); err != nil {
 		t.Fatal(err)
 	}
