@@ -311,6 +311,7 @@ func newTestStore(t *testing.T) (*Store, *gorm.DB) {
 		&po.ActionProposal{}, &po.PlanCandidate{}, &po.ExecutionContext{}, &po.ActionPolicyDecision{},
 		&po.ActionPlanRun{}, &po.GovernedActionAttempt{}, &po.ActionVerification{},
 		&po.ParallelPlan{}, &po.ParallelNode{}, &po.ParallelAggregate{},
+		&po.AdHocOverlay{}, &po.OverlayAdmission{}, &po.AdHocRunOutcome{}, &po.ProfileCandidate{},
 	); err != nil {
 		t.Fatal(err)
 	}

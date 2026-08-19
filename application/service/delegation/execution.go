@@ -42,16 +42,19 @@ type ExecutionService struct {
 	contexts      *ContextBuilder
 	artifacts     *ArtifactResolver
 	parallelStore delegationrepo.ParallelStore
+	adHocStore    delegationrepo.AdHocStore
+	adHocBuilder  *AdHocSpecialistBuilder
 	now           func() time.Time
 }
 
 func NewExecutionService(orchestrator *Orchestrator, runtime RuntimeExecutor, judge DelegationJudge) *ExecutionService {
 	service := &ExecutionService{
 		orchestrator: orchestrator, runtime: runtime, policy: NewRoutePolicy(judge),
-		contexts: NewContextBuilder(), artifacts: NewArtifactResolver(), now: func() time.Time { return time.Now().UTC() },
+		contexts: NewContextBuilder(), artifacts: NewArtifactResolver(), adHocBuilder: NewAdHocSpecialistBuilder(), now: func() time.Time { return time.Now().UTC() },
 	}
 	if orchestrator != nil {
 		service.parallelStore, _ = orchestrator.store.(delegationrepo.ParallelStore)
+		service.adHocStore, _ = orchestrator.store.(delegationrepo.AdHocStore)
 	}
 	return service
 }
@@ -93,10 +96,11 @@ func (s *ExecutionService) runSingleSpecialist(ctx context.Context, input *runti
 	specID := "spec-" + ulid.New()
 	actorBindingID := "actor-" + ulid.New()
 	specialistRole := firstNonEmpty(contextString(input.Context, ContextSpecialistRole), "research_specialist")
-	specialistProfile := firstNonEmpty(contextString(input.Context, ContextSpecialistProfile), researchProfileRef)
-	specialistPrompt := firstNonEmpty(contextString(input.Context, ContextSpecialistPrompt), researchPromptRef)
+	explicitProfile := contextString(input.Context, ContextSpecialistProfile)
 	parentCapabilities := capabilityIDs(input.Capabilities)
 	admitted := admitCapabilities(parentCapabilities, route.RequestedCapabilities)
+	specialistScope := dso.ContextScope{AllowedClasses: []string{dso.ClassInternal, dso.ClassPublic}, MaxBytes: defaultContextBytes}
+	specialistBudget := defaultSpecialistBudget(input.Options)
 
 	outcome := dso.DelegatedOutcomeSpec{
 		DelegatedOutcomeID: outcomeID, ParentOutcomeRef: firstNonEmpty(contextString(input.Context, "outcome_id"), goalID),
@@ -108,15 +112,30 @@ func (s *ExecutionService) runSingleSpecialist(ctx context.Context, input *runti
 		CreatedAt: now,
 	}
 	outcome.DefinitionHash = outcomeDefinitionHash(outcome)
-	spec := dso.SubagentSpec{
-		SubagentSpecID: specID, TaskStepRef: taskStepID, DelegatedOutcomeRef: outcomeID, Role: specialistRole,
-		RequestedCapabilities: append([]string(nil), route.RequestedCapabilities...),
-		RequestedContextScope: dso.ContextScope{AllowedClasses: []string{dso.ClassPublic, dso.ClassInternal}, MaxBytes: defaultContextBytes},
-		PermissionCeilingRef:  "capability-ceiling://parent/" + taskStepID, RiskCeiling: "low",
-		BudgetRequest: defaultSpecialistBudget(input.Options), OutputSchemaRef: candidateSchemaRef,
-		DelegationPolicy: dso.DelegationPolicy{MayDelegate: false, MaxDepth: 0}, CreatedAt: now,
+	resolution, err := s.resolveSpecialist(
+		ctx, ownerID, taskStepID, outcomeID, specialistRole,
+		firstNonEmpty(contextString(input.Context, ContextSpecialistRoleDescription), specialistRole), explicitProfile,
+		admitted, parentCapabilities, specialistScope, specialistBudget, contextBool(input.Context, ContextAdHocSpecialists),
+	)
+	if err != nil {
+		return err
 	}
-	spec.DefinitionHash = subagentSpecDefinitionHash(spec)
+	specialistProfile, specialistPrompt := resolution.ProfileRef, resolution.PromptRef
+	var spec dso.SubagentSpec
+	if resolution.Temporary && resolution.Build != nil {
+		spec = resolution.Build.Spec
+		specID = spec.SubagentSpecID
+	} else {
+		spec = dso.SubagentSpec{
+			SubagentSpecID: specID, TaskStepRef: taskStepID, DelegatedOutcomeRef: outcomeID, Role: firstNonEmpty(resolution.Role, specialistRole),
+			RequestedCapabilities: append([]string(nil), route.RequestedCapabilities...),
+			RequestedContextScope: specialistScope,
+			PermissionCeilingRef:  "capability-ceiling://parent/" + taskStepID, RiskCeiling: "low",
+			BudgetRequest: specialistBudget, OutputSchemaRef: candidateSchemaRef,
+			DelegationPolicy: dso.DelegationPolicy{MayDelegate: false, MaxDepth: 0}, CreatedAt: now,
+		}
+		spec.DefinitionHash = subagentSpecDefinitionHash(spec)
+	}
 	inputHash, err := dso.Hash(map[string]any{"owner_id": ownerID, "goal_id": goalID, "task_step_id": taskStepID, "prompt": input.Prompt, "capabilities": route.RequestedCapabilities})
 	if err != nil {
 		return err
@@ -124,7 +143,7 @@ func (s *ExecutionService) runSingleSpecialist(ctx context.Context, input *runti
 	proposal := dso.DelegationProposal{
 		Schema: dso.Schema, ProposalID: proposalID, OwnerID: ownerID, GoalID: goalID, TaskStepRef: taskStepID,
 		DraftOutcome: outcome, DraftSubagentSpec: spec, RequestedCapabilitySet: append([]string(nil), route.RequestedCapabilities...),
-		RequestedContextScope: spec.RequestedContextScope, CandidateSpecialistRefs: []string{specialistProfile},
+		RequestedContextScope: spec.RequestedContextScope, CandidateSpecialistRefs: uniqueStrings([]string{specialistProfile, resolution.OverlayRef}),
 		CostBenefitEstimate: dso.CostBenefitEstimate{ExpectedQualityGain: 0.35, CoordinationCost: 0.10, ExpectedLatencyMS: 3000, ExpectedTokens: spec.BudgetRequest.Tokens},
 		Reasons:             append([]string(nil), route.Reasons...), InputHash: inputHash, Status: dso.ProposalSubmitted,
 		Revision: 1, CreatedBy: "main-agent-supervisor", CreatedAt: now,
@@ -163,13 +182,16 @@ func (s *ExecutionService) runSingleSpecialist(ctx context.Context, input *runti
 		SubagentSpecID: specID, DelegatedOutcomeID: outcomeID, ActorBindingID: actorBindingID,
 		DeviceID: contextString(input.Context, "requested_device_id"), EnvironmentRef: "server",
 		RuntimeBuildRef: contextString(input.Context, "runtime_build_ref"), SpecialistProfileRef: specialistProfile,
-		PromptArtifactRef: specialistPrompt, AdmittedCapabilities: admitted,
+		SpecialistOverlayRef: resolution.OverlayRef, PromptArtifactRef: specialistPrompt, AdmittedCapabilities: admitted,
 		Context: contextBundle, Model: model, Now: now,
 	})
 	if err != nil {
 		return err
 	}
 	if err := s.orchestrator.store.CreateInvocationBundle(ctx, artifacts.Records); err != nil {
+		return err
+	}
+	if err := emitTemporarySpecialistProgress(emit, input.TraceID, goalID, resolution, s.now().UTC()); err != nil {
 		return err
 	}
 
@@ -244,6 +266,9 @@ func (s *ExecutionService) runSingleSpecialist(ctx context.Context, input *runti
 		terminal = delegationentity.AttemptFailed
 	}
 	if err := s.orchestrator.CompleteAttempt(ctx, attempt, terminal, resultID); err != nil {
+		return err
+	}
+	if err := s.recordAdHocOutcome(ctx, resolution, ownerID, runID, verification, runErr, ended); err != nil {
 		return err
 	}
 	return runErr

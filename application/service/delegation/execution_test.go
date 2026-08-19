@@ -201,6 +201,7 @@ func newExecutionFixture(t *testing.T, evidence bool) (*ExecutionService, *speci
 		&po.Run{}, &po.Attempt{}, &po.DecisionTurn{}, &po.ModelInvocation{}, &po.BudgetAccount{},
 		&po.BudgetReservation{}, &po.ResourceLease{}, &po.CandidateResult{}, &po.VerificationResult{}, &po.Event{},
 		&po.ParallelPlan{}, &po.ParallelNode{}, &po.ParallelAggregate{},
+		&po.AdHocOverlay{}, &po.OverlayAdmission{}, &po.AdHocRunOutcome{}, &po.ProfileCandidate{},
 	); err != nil {
 		t.Fatal(err)
 	}

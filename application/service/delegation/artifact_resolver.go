@@ -28,6 +28,7 @@ type ArtifactResolveInput struct {
 	EnvironmentRef       string
 	RuntimeBuildRef      string
 	SpecialistProfileRef string
+	SpecialistOverlayRef string
 	PromptArtifactRef    string
 	AdmittedCapabilities []string
 	Context              ContextBundle
@@ -107,6 +108,7 @@ func (r *ArtifactResolver) Resolve(input ArtifactResolveInput) (ResolvedArtifact
 		InvocationManifestID: "manifest-" + input.RunID, ParentRunManifestRef: input.ParentRunManifestID,
 		SubagentSpecRef: input.SubagentSpecID, DelegatedOutcomeRef: input.DelegatedOutcomeID,
 		SpecialistProfileRef: firstNonEmpty(strings.TrimSpace(input.SpecialistProfileRef), researchProfileRef),
+		SpecialistOverlayRef: strings.TrimSpace(input.SpecialistOverlayRef),
 		PromptArtifactRef:    firstNonEmpty(strings.TrimSpace(input.PromptArtifactRef), researchPromptRef),
 		ContextSliceRef:      input.Context.Slice.ContextSliceID, ContextHash: input.Context.Slice.ContentHash,
 		ModelRef: modelRef, ModelBuildRef: modelBuildRef, ModelParametersHash: modelParametersHash,
