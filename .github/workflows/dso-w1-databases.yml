@@ -1,0 +1,69 @@
+name: DSO W1 Database Gates
+
+on:
+  push:
+    branches:
+      - main
+      - architecture/agent-os-roadmap-v1.0
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: athena
+          POSTGRES_PASSWORD: athena_test
+          POSTGRES_DB: athena_dso_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U athena -d athena_dso_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run PostgreSQL transaction and concurrency gates
+        env:
+          GOWORK: "off"
+          ATHENA_DSO_TEST_POSTGRES_DSN: host=127.0.0.1 user=athena password=athena_test dbname=athena_dso_test port=5432 sslmode=disable TimeZone=UTC
+        run: go test -count=1 -run TestDatabaseConcurrencyGate/postgres ./infra/repository/repo/delegation
+
+  mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root_test
+          MYSQL_DATABASE: athena_dso_test
+          MYSQL_USER: athena
+          MYSQL_PASSWORD: athena_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uathena -pathena_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run MySQL transaction and concurrency gates
+        env:
+          GOWORK: "off"
+          ATHENA_DSO_TEST_MYSQL_DSN: athena:athena_test@tcp(127.0.0.1:3306)/athena_dso_test?charset=utf8mb4&parseTime=True&loc=UTC
+        run: go test -count=1 -run TestDatabaseConcurrencyGate/mysql ./infra/repository/repo/delegation

@@ -15,6 +15,7 @@ import (
 	channelpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/channel"
 	chatpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/chat"
 	controlpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/control"
+	delegationpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/delegation"
 	deploymentpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/deployment"
 	experiencepo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/experience"
 	jobpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/job"
@@ -78,6 +79,20 @@ func InitTables(ctx context.Context, d *data.Data) error {
 		&controlpo.Artifact{},
 		&controlpo.Event{},
 		&controlpo.Outbox{},
+		&delegationpo.Proposal{},
+		&delegationpo.Decision{},
+		&delegationpo.DelegatedOutcome{},
+		&delegationpo.SubagentSpec{},
+		&delegationpo.InvocationManifest{},
+		&delegationpo.Run{},
+		&delegationpo.Attempt{},
+		&delegationpo.DecisionTurn{},
+		&delegationpo.ModelInvocation{},
+		&delegationpo.BudgetAccount{},
+		&delegationpo.BudgetReservation{},
+		&delegationpo.ResourceLease{},
+		&delegationpo.CandidateResult{},
+		&delegationpo.Event{},
 		&controlpo.WorldState{},
 		&controlpo.WorldEntity{},
 		&controlpo.WorldRelation{},

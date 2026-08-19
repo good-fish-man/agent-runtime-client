@@ -22,6 +22,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/api/http/middleware"
 	"github.com/good-fish-man/agent-runtime-client/api/http/router/public"
 	controlsvc "github.com/good-fish-man/agent-runtime-client/application/service/control"
+	delegationsvc "github.com/good-fish-man/agent-runtime-client/application/service/delegation"
 	deploymentsvc "github.com/good-fish-man/agent-runtime-client/application/service/deployment"
 	experiencesvc "github.com/good-fish-man/agent-runtime-client/application/service/experience"
 	knowledgesvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge"
@@ -39,6 +40,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/db"
 	"github.com/good-fish-man/agent-runtime-client/infra/repository/migration"
 	controlrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/control"
+	delegationrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/delegation"
 	deploymentrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/deployment"
 	experiencerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/experience"
 	knowledgerepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/knowledge"
@@ -90,6 +92,7 @@ type App struct {
 	client        *inruntime.Client
 	data          *data.Data
 	Control       *controlsvc.Hub
+	Delegation    *delegationsvc.Orchestrator
 	Experience    *experiencesvc.Service
 	Deployment    *deploymentsvc.Service
 	Knowledge     *knowledgesvc.Service
@@ -149,6 +152,7 @@ func Init(cfgPath string) (*App, error) {
 	var deploymentService *deploymentsvc.Service
 	var knowledgeService *knowledgesvc.Service
 	var orchestrationService *orchestrationsvc.Service
+	var delegationOrchestrator *delegationsvc.Orchestrator
 	if store != nil {
 		controlStore := controlrepo.NewStore(store)
 		if err := controlStore.MarkAllDevicesOffline(context.Background(), time.Now().UTC()); err != nil {
@@ -162,6 +166,7 @@ func Init(cfgPath string) (*App, error) {
 		deploymentService = deploymentsvc.NewService(deploymentrepo.NewStore(store))
 		knowledgeService = knowledgesvc.NewService(knowledgerepo.NewStore(store))
 		orchestrationService = orchestrationsvc.NewService(orchestrationrepo.NewStore(store))
+		delegationOrchestrator = delegationsvc.NewOrchestrator(delegationrepo.NewStore(store), delegationsvc.Config{}, nil)
 		controlHub.OnTaskTerminal(func(_ context.Context, taskID string) { experienceService.Enqueue(taskID) })
 	} else {
 		controlHub = controlsvc.NewHub()
@@ -199,6 +204,12 @@ func Init(cfgPath string) (*App, error) {
 	pub.Operations = operationshandler.NewHandler(operationsService)
 	engine := httpapi.NewEngine(h, pub, cfg.Server.PublicPrefix, cfg.Server.Mode)
 	controlhandler.NewHandler(controlHub, cfg.Control.DeviceToken).Register(engine, pub.Auth, cfg.Server.PublicPrefix)
+	if delegationOrchestrator != nil {
+		if err := delegationOrchestrator.Start(context.Background()); err != nil {
+			_ = client.Close()
+			return nil, err
+		}
+	}
 	controlHub.Start(context.Background())
 	if experienceService != nil {
 		experienceService.Start(context.Background())
@@ -207,6 +218,9 @@ func Init(cfgPath string) (*App, error) {
 	if orchestrationService != nil && cfg.Orchestration.Enabled {
 		supervisor = orchestrationsvc.NewSupervisor(orchestrationService, appService, controlHub, orchestrationsvc.SupervisorConfig{ScanInterval: time.Duration(cfg.Orchestration.ScanIntervalSec) * time.Second, MaxConcurrentRuns: cfg.Orchestration.MaxConcurrentRuns})
 		if err := supervisor.Start(context.Background()); err != nil {
+			if delegationOrchestrator != nil {
+				delegationOrchestrator.Stop()
+			}
 			controlHub.Stop()
 			if experienceService != nil {
 				experienceService.Stop()
@@ -216,7 +230,7 @@ func Init(cfgPath string) (*App, error) {
 		}
 	}
 
-	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store, Control: controlHub, Experience: experienceService, Deployment: deploymentService, Knowledge: knowledgeService, Orchestration: orchestrationService, Supervisor: supervisor}, nil
+	return &App{Cfg: cfg, Engine: engine, Restart: restart, client: client, data: store, Control: controlHub, Delegation: delegationOrchestrator, Experience: experienceService, Deployment: deploymentService, Knowledge: knowledgeService, Orchestration: orchestrationService, Supervisor: supervisor}, nil
 }
 
 // buildPublicHandlers wires the agent-frame-compatible resource handlers. The
@@ -270,6 +284,9 @@ func (a *App) PingRuntime() (*entity.HealthStatus, error) {
 
 // Close releases resources (the gRPC connection).
 func (a *App) Close() error {
+	if a.Delegation != nil {
+		a.Delegation.Stop()
+	}
 	if a.Supervisor != nil {
 		a.Supervisor.Stop()
 	}
