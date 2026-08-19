@@ -40,11 +40,13 @@ const (
 	BudgetReleased  = "RELEASED"
 	BudgetExpired   = "EXPIRED"
 
-	LeaseRequested = "REQUESTED"
-	LeaseActive    = "ACTIVE"
-	LeaseReleased  = "RELEASED"
-	LeaseExpired   = "EXPIRED"
-	LeaseRevoked   = "REVOKED"
+	LeaseRequested      = "REQUESTED"
+	LeaseActive         = "ACTIVE"
+	LeaseReleased       = "RELEASED"
+	LeaseExpired        = "EXPIRED"
+	LeaseRevoked        = "REVOKED"
+	LeaseSharedRead     = "shared_read"
+	LeaseExclusiveWrite = "exclusive_write"
 )
 
 type BudgetAmount struct {

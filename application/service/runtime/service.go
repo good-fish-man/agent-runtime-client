@@ -22,6 +22,7 @@ import (
 	memorysvc "github.com/good-fish-man/agent-runtime-client/application/service/memory"
 	agententity "github.com/good-fish-man/agent-runtime-client/domain/entity/agent"
 	controlentity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
+	delegationentity "github.com/good-fish-man/agent-runtime-client/domain/entity/delegation"
 	deploymententity "github.com/good-fish-man/agent-runtime-client/domain/entity/deployment"
 	knowledgeentity "github.com/good-fish-man/agent-runtime-client/domain/entity/knowledge"
 	modelentity "github.com/good-fish-man/agent-runtime-client/domain/entity/model"
@@ -44,16 +45,17 @@ type StreamFunc = irepo.StreamFunc
 
 // RuntimeService is the application service for runtime invocation.
 type RuntimeService struct {
-	svc        *dsrv.RuntimeSvc
-	agentSvc   *agentsrv.SysAgentSvc
-	modelSvc   *modelsrv.SysModelSvc
-	memorySvc  *memorysvc.Service
-	mediaRepo  irepo.MediaJobRepository
-	controlHub *controlsvc.Hub
-	deployment *deploymentsvc.Service
-	knowledge  *knowledgesvc.Service
-	delegation *delegationsvc.ExecutionService
-	chat       *chatRecorder
+	svc              *dsrv.RuntimeSvc
+	agentSvc         *agentsrv.SysAgentSvc
+	modelSvc         *modelsrv.SysModelSvc
+	memorySvc        *memorysvc.Service
+	mediaRepo        irepo.MediaJobRepository
+	controlHub       *controlsvc.Hub
+	deployment       *deploymentsvc.Service
+	knowledge        *knowledgesvc.Service
+	delegation       *delegationsvc.ExecutionService
+	actionGovernance *delegationsvc.GovernedActionService
+	chat             *chatRecorder
 }
 
 func (s *RuntimeService) SetControlHub(hub *controlsvc.Hub)                 { s.controlHub = hub }
@@ -61,6 +63,9 @@ func (s *RuntimeService) SetDeploymentService(value *deploymentsvc.Service) { s.
 func (s *RuntimeService) SetKnowledgeService(value *knowledgesvc.Service)   { s.knowledge = value }
 func (s *RuntimeService) SetDelegationService(value *delegationsvc.ExecutionService) {
 	s.delegation = value
+}
+func (s *RuntimeService) SetActionGovernance(value *delegationsvc.GovernedActionService) {
+	s.actionGovernance = value
 }
 
 func (s *RuntimeService) ListCapabilities(ctx context.Context) ([]entity.CapabilityDefinition, error) {
@@ -451,12 +456,29 @@ func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDev
 	if action.Policy.Decision == controlentity.AskUser && action.Policy.ApprovalID == "" {
 		action.Policy.ApprovalID = controlentity.NewID("approval")
 	}
-	if err := emitControlAction(ctx, emit, action); err != nil {
-		return nil, err
-	}
-	observation, err := s.controlHub.Dispatch(ctx, deviceID, *action, func(progress controlentity.Progress) error {
-		return emitControlProgress(ctx, emit, &progress)
+	dispatcher := delegationsvc.ActionDispatcherFunc(func(dispatchCtx context.Context, governedAction controlentity.Action) (*controlentity.Observation, error) {
+		if emitErr := emitControlAction(dispatchCtx, emit, &governedAction); emitErr != nil {
+			return nil, emitErr
+		}
+		return s.controlHub.Dispatch(dispatchCtx, deviceID, governedAction, func(progress controlentity.Progress) error {
+			return emitControlProgress(dispatchCtx, emit, &progress)
+		})
 	})
+	var observation *controlentity.Observation
+	if s.actionGovernance != nil {
+		observation, err = s.actionGovernance.Execute(ctx, delegationsvc.GovernedActionInput{
+			OwnerID: userID, GoalID: runtimeContextString(values, "goal_id"), TaskStepID: taskID,
+			OutcomeID: runtimeContextString(values, "outcome_id"), SubagentRunID: runtimeContextString(values, "dso_run_id"),
+			SubagentAttemptID: runtimeContextString(values, "dso_attempt_id"), DecisionTurnID: action.DecisionID,
+			CapabilitySnapshotID: runtimeContextString(values, "dso_capability_view_id"), BudgetRef: runtimeContextString(values, "dso_budget_ref"),
+			EnvironmentRef: "desktop://" + deviceID, ActorDeviceID: deviceID, Action: *action,
+			ReadResource: func(readCtx context.Context) (delegationentity.ResourceSnapshot, error) {
+				return s.controlResourceSnapshot(readCtx, taskID, *action)
+			},
+		}, dispatcher)
+	} else {
+		observation, err = dispatcher.Dispatch(ctx, *action)
+	}
 	if err != nil {
 		observation = failedControlObservation(action, fmt.Sprintf("Athena Desktop action failed: %v", err), map[string]any{
 			"capability": action.Capability,

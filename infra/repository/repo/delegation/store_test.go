@@ -308,6 +308,8 @@ func newTestStore(t *testing.T) (*Store, *gorm.DB) {
 		&po.Proposal{}, &po.Decision{}, &po.DelegatedOutcome{}, &po.SubagentSpec{}, &po.ContextSlice{}, &po.CapabilityView{}, &po.ActorBinding{}, &po.InvocationManifest{},
 		&po.Run{}, &po.Attempt{}, &po.DecisionTurn{}, &po.ModelInvocation{}, &po.BudgetAccount{},
 		&po.BudgetReservation{}, &po.ResourceLease{}, &po.CandidateResult{}, &po.VerificationResult{}, &po.Event{},
+		&po.ActionProposal{}, &po.PlanCandidate{}, &po.ExecutionContext{}, &po.ActionPolicyDecision{},
+		&po.ActionPlanRun{}, &po.GovernedActionAttempt{}, &po.ActionVerification{},
 	); err != nil {
 		t.Fatal(err)
 	}

@@ -200,10 +200,13 @@ type ResourceLease struct {
 	ActionAttemptID string `gorm:"column:action_attempt_id;size:64;not null;index"`
 	OwnerInstanceID string `gorm:"column:owner_instance_id;size:128;not null"`
 	Status          string `gorm:"column:status;size:24;not null;index:idx_dso_resource_lease,priority:3"`
-	AcquiredAt      int64  `gorm:"column:acquired_at"`
-	ExpiresAt       int64  `gorm:"column:expires_at;not null;index"`
-	HeartbeatAt     int64  `gorm:"column:heartbeat_at"`
-	Revision        int64  `gorm:"column:revision;not null"`
+	// ActiveKey is set only while an exclusive lease is active. A nullable
+	// unique key provides cross-instance single-writer fencing on every DB.
+	ActiveKey   *string `gorm:"column:active_key;size:192;uniqueIndex"`
+	AcquiredAt  int64   `gorm:"column:acquired_at"`
+	ExpiresAt   int64   `gorm:"column:expires_at;not null;index"`
+	HeartbeatAt int64   `gorm:"column:heartbeat_at"`
+	Revision    int64   `gorm:"column:revision;not null"`
 }
 
 func (ResourceLease) TableName() string { return "os_resource_lease" }
