@@ -61,9 +61,7 @@ func assertSingleAttemptOwner(t *testing.T, store *Store, suffix string) {
 	t.Helper()
 	ctx := context.Background()
 	runID := "run-owner-" + suffix
-	if err := store.CreateAcceptedDelegation(ctx, acceptedBundle(runID)); err != nil {
-		t.Fatal(err)
-	}
+	createAcceptedWithManifest(t, store, runID)
 	var successful atomic.Int64
 	var wg sync.WaitGroup
 	for index := 0; index < 32; index++ {
@@ -132,17 +130,18 @@ func assertBudgetConservation(t *testing.T, store *Store, db *gorm.DB, suffix st
 func resetDelegationTables(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	tables := []any{
-		&po.Event{}, &po.CandidateResult{}, &po.ResourceLease{}, &po.BudgetReservation{}, &po.BudgetAccount{},
+		&po.Event{}, &po.VerificationResult{}, &po.CandidateResult{}, &po.ResourceLease{}, &po.BudgetReservation{}, &po.BudgetAccount{},
 		&po.ModelInvocation{}, &po.DecisionTurn{}, &po.Attempt{}, &po.Run{}, &po.InvocationManifest{},
+		&po.ActorBinding{}, &po.CapabilityView{}, &po.ContextSlice{},
 		&po.SubagentSpec{}, &po.DelegatedOutcome{}, &po.Decision{}, &po.Proposal{},
 	}
 	for _, table := range tables {
 		_ = db.Migrator().DropTable(table)
 	}
 	if err := db.AutoMigrate(
-		&po.Proposal{}, &po.Decision{}, &po.DelegatedOutcome{}, &po.SubagentSpec{}, &po.InvocationManifest{},
+		&po.Proposal{}, &po.Decision{}, &po.DelegatedOutcome{}, &po.SubagentSpec{}, &po.ContextSlice{}, &po.CapabilityView{}, &po.ActorBinding{}, &po.InvocationManifest{},
 		&po.Run{}, &po.Attempt{}, &po.DecisionTurn{}, &po.ModelInvocation{}, &po.BudgetAccount{},
-		&po.BudgetReservation{}, &po.ResourceLease{}, &po.CandidateResult{}, &po.Event{},
+		&po.BudgetReservation{}, &po.ResourceLease{}, &po.CandidateResult{}, &po.VerificationResult{}, &po.Event{},
 	); err != nil {
 		t.Fatal(err)
 	}

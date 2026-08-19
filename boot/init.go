@@ -153,6 +153,7 @@ func Init(cfgPath string) (*App, error) {
 	var knowledgeService *knowledgesvc.Service
 	var orchestrationService *orchestrationsvc.Service
 	var delegationOrchestrator *delegationsvc.Orchestrator
+	var delegationExecution *delegationsvc.ExecutionService
 	if store != nil {
 		controlStore := controlrepo.NewStore(store)
 		if err := controlStore.MarkAllDevicesOffline(context.Background(), time.Now().UTC()); err != nil {
@@ -166,7 +167,9 @@ func Init(cfgPath string) (*App, error) {
 		deploymentService = deploymentsvc.NewService(deploymentrepo.NewStore(store))
 		knowledgeService = knowledgesvc.NewService(knowledgerepo.NewStore(store))
 		orchestrationService = orchestrationsvc.NewService(orchestrationrepo.NewStore(store))
-		delegationOrchestrator = delegationsvc.NewOrchestrator(delegationrepo.NewStore(store), delegationsvc.Config{}, nil)
+		delegationStore := delegationrepo.NewStore(store)
+		delegationOrchestrator = delegationsvc.NewOrchestrator(delegationStore, delegationsvc.Config{}, nil)
+		delegationExecution = delegationsvc.NewExecutionService(delegationOrchestrator, domainSvc, nil)
 		controlHub.OnTaskTerminal(func(_ context.Context, taskID string) { experienceService.Enqueue(taskID) })
 	} else {
 		controlHub = controlsvc.NewHub()
@@ -174,6 +177,7 @@ func Init(cfgPath string) (*App, error) {
 	appService.SetControlHub(controlHub)
 	appService.SetDeploymentService(deploymentService)
 	appService.SetKnowledgeService(knowledgeService)
+	appService.SetDelegationService(delegationExecution)
 	h := handler.NewHandler(appService)
 
 	restart := make(chan struct{}, 1)

@@ -19,6 +19,9 @@ var (
 
 type Store interface {
 	CreateAcceptedDelegation(context.Context, entity.AcceptedDelegation) error
+	CreateInvocationBundle(context.Context, entity.InvocationBundle) error
+	RecordDecisionTurn(context.Context, entity.DecisionTurn, entity.ModelInvocation) error
+	RecordCandidateResult(context.Context, entity.CandidateResult, []entity.VerificationResult) error
 	FindRun(context.Context, string, string) (*entity.Run, error)
 	ListRecoverableRuns(context.Context, time.Time, int) ([]entity.Run, error)
 	RecoverRun(context.Context, string, string, int64, string, string, time.Time, entity.Event) error

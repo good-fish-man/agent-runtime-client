@@ -16,6 +16,7 @@ import (
 	assembler "github.com/good-fish-man/agent-runtime-client/application/assembler/runtime"
 	dto "github.com/good-fish-man/agent-runtime-client/application/dto/runtime"
 	controlsvc "github.com/good-fish-man/agent-runtime-client/application/service/control"
+	delegationsvc "github.com/good-fish-man/agent-runtime-client/application/service/delegation"
 	deploymentsvc "github.com/good-fish-man/agent-runtime-client/application/service/deployment"
 	knowledgesvc "github.com/good-fish-man/agent-runtime-client/application/service/knowledge"
 	memorysvc "github.com/good-fish-man/agent-runtime-client/application/service/memory"
@@ -51,12 +52,16 @@ type RuntimeService struct {
 	controlHub *controlsvc.Hub
 	deployment *deploymentsvc.Service
 	knowledge  *knowledgesvc.Service
+	delegation *delegationsvc.ExecutionService
 	chat       *chatRecorder
 }
 
 func (s *RuntimeService) SetControlHub(hub *controlsvc.Hub)                 { s.controlHub = hub }
 func (s *RuntimeService) SetDeploymentService(value *deploymentsvc.Service) { s.deployment = value }
 func (s *RuntimeService) SetKnowledgeService(value *knowledgesvc.Service)   { s.knowledge = value }
+func (s *RuntimeService) SetDelegationService(value *delegationsvc.ExecutionService) {
+	s.delegation = value
+}
 
 func (s *RuntimeService) ListCapabilities(ctx context.Context) ([]entity.CapabilityDefinition, error) {
 	result, err := s.svc.ListCapabilities(ctx, traceID(ctx))
@@ -149,9 +154,17 @@ func (s *RuntimeService) RunStream(ctx context.Context, req *dto.RunReq, emit St
 	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, in.KnowledgeBases, in.Options); err != nil {
 		return log.WrapError(err, "RuntimeService.RunStream.attachRunManifest")
 	}
+	in.Context["requested_device_id"] = req.DeviceID
 	capture := newStreamCapture()
 	started := time.Now()
-	err := s.runControlLoop(ctx, in, req.DeviceID, s.memoryAwareEmitter(ctx, in.Context, capture.Wrap(emit)))
+	wrappedEmit := s.memoryAwareEmitter(ctx, in.Context, capture.Wrap(emit))
+	handled, err := false, error(nil)
+	if s.delegation != nil {
+		handled, err = s.delegation.MaybeRunStream(ctx, in, wrappedEmit)
+	}
+	if !handled {
+		err = s.runControlLoop(ctx, in, req.DeviceID, wrappedEmit)
+	}
 	s.recordStream(ctx, in.Context, in.Models, in.Prompt, capture, err)
 	s.recordCanaryOutcome(ctx, in.Context, err == nil && capture.errEvent == nil && capture.done != nil && len(capture.approvals) == 0, time.Since(started), capture.approvals, streamMetadata(capture), err)
 	return log.WrapError(err, "RuntimeService.RunStream.controlLoop")

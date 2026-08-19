@@ -50,6 +50,39 @@ type SubagentSpec struct {
 
 func (SubagentSpec) TableName() string { return "os_subagent_spec" }
 
+type ContextSlice struct {
+	ContextSliceID string `gorm:"column:context_slice_id;primaryKey;size:64"`
+	OwnerID        string `gorm:"column:owner_id;size:64;not null;index"`
+	RunID          string `gorm:"column:run_id;size:64;not null;index"`
+	ContentHash    string `gorm:"column:content_hash;size:64;not null;uniqueIndex"`
+	Content        string `gorm:"column:content;type:text;not null"`
+	CreatedAt      int64  `gorm:"column:created_at;not null;index"`
+}
+
+func (ContextSlice) TableName() string { return "os_context_slice" }
+
+type CapabilityView struct {
+	CapabilityViewID string `gorm:"column:capability_view_id;primaryKey;size:64"`
+	OwnerID          string `gorm:"column:owner_id;size:64;not null;index"`
+	RunID            string `gorm:"column:run_id;size:64;not null;index"`
+	ContentHash      string `gorm:"column:content_hash;size:64;not null;uniqueIndex"`
+	Content          string `gorm:"column:content;type:text;not null"`
+	CreatedAt        int64  `gorm:"column:created_at;not null;index"`
+}
+
+func (CapabilityView) TableName() string { return "os_capability_view" }
+
+type ActorBinding struct {
+	ActorBindingID string `gorm:"column:actor_binding_id;primaryKey;size:64"`
+	OwnerID        string `gorm:"column:owner_id;size:64;not null;index"`
+	RunID          string `gorm:"column:run_id;size:64;not null;index"`
+	ContentHash    string `gorm:"column:content_hash;size:64;not null;uniqueIndex"`
+	Content        string `gorm:"column:content;type:text;not null"`
+	CreatedAt      int64  `gorm:"column:created_at;not null;index"`
+}
+
+func (ActorBinding) TableName() string { return "os_actor_binding" }
+
 type InvocationManifest struct {
 	ManifestID  string `gorm:"column:manifest_id;primaryKey;size:64"`
 	OwnerID     string `gorm:"column:owner_id;size:64;not null;index"`
@@ -186,6 +219,24 @@ type CandidateResult struct {
 }
 
 func (CandidateResult) TableName() string { return "os_candidate_result" }
+
+type VerificationResult struct {
+	VerificationID string  `gorm:"column:verification_id;primaryKey;size:64"`
+	OwnerID        string  `gorm:"column:owner_id;size:64;not null;index"`
+	OutcomeID      string  `gorm:"column:outcome_id;size:64;not null;index"`
+	RunID          string  `gorm:"column:run_id;size:64;not null;index"`
+	AttemptID      string  `gorm:"column:attempt_id;size:64;not null;index"`
+	EffectClauseID string  `gorm:"column:effect_clause_id;size:128;not null;index"`
+	Status         string  `gorm:"column:status;size:32;not null;index"`
+	ExpectedValue  string  `gorm:"column:expected_value;type:text"`
+	ObservedValue  string  `gorm:"column:observed_value;type:text"`
+	EvidenceRefs   string  `gorm:"column:evidence_refs;type:text;not null"`
+	Confidence     float64 `gorm:"column:confidence;not null"`
+	Content        string  `gorm:"column:content;type:text;not null"`
+	VerifiedAt     int64   `gorm:"column:verified_at;not null;index"`
+}
+
+func (VerificationResult) TableName() string { return "os_dso_verification_result" }
 
 type Event struct {
 	EventID        string `gorm:"column:event_id;primaryKey;size:64"`

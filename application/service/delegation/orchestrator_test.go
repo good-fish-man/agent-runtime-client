@@ -28,6 +28,7 @@ func TestRunOnceRecoversExpiredAttemptAndFencesLateResult(t *testing.T) {
 	if err := store.CreateAcceptedDelegation(ctx, bundle); err != nil {
 		t.Fatal(err)
 	}
+	persistOrchestratorManifest(t, store, bundle.Run.RunID)
 	attempt := orchestratorAttempt("attempt-expired", bundle.Run.RunID, entity.AttemptRunning, orchestratorNow.Add(-time.Second))
 	if err := store.AcquireAttempt(ctx, attempt, 1, orchestratorEvent("attempt-started", bundle.Run.RunID, 2)); err != nil {
 		t.Fatal(err)
@@ -76,6 +77,7 @@ func TestRunOnceRecoversEveryRestartBoundary(t *testing.T) {
 			if err := store.CreateAcceptedDelegation(ctx, bundle); err != nil {
 				t.Fatal(err)
 			}
+			persistOrchestratorManifest(t, store, bundle.Run.RunID)
 			if test.withAttempt {
 				attempt := orchestratorAttempt("attempt-boundary", bundle.Run.RunID, entity.AttemptStarting, orchestratorNow.Add(-time.Second))
 				if err := store.AcquireAttempt(ctx, attempt, 1, orchestratorEvent("attempt-started", bundle.Run.RunID, 2)); err != nil {
@@ -189,9 +191,9 @@ func newOrchestratorTestFixture(t *testing.T, publisher EventPublisher) (*Orches
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	if err := db.AutoMigrate(
-		&po.Proposal{}, &po.Decision{}, &po.DelegatedOutcome{}, &po.SubagentSpec{}, &po.InvocationManifest{},
+		&po.Proposal{}, &po.Decision{}, &po.DelegatedOutcome{}, &po.SubagentSpec{}, &po.ContextSlice{}, &po.CapabilityView{}, &po.ActorBinding{}, &po.InvocationManifest{},
 		&po.Run{}, &po.Attempt{}, &po.DecisionTurn{}, &po.ModelInvocation{}, &po.BudgetAccount{},
-		&po.BudgetReservation{}, &po.ResourceLease{}, &po.CandidateResult{}, &po.Event{},
+		&po.BudgetReservation{}, &po.ResourceLease{}, &po.CandidateResult{}, &po.VerificationResult{}, &po.Event{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +201,18 @@ func newOrchestratorTestFixture(t *testing.T, publisher EventPublisher) (*Orches
 	orchestrator := NewOrchestrator(store, Config{InstanceID: "orchestrator-test", ScanInterval: time.Hour, LeaseTTL: time.Minute}, publisher)
 	orchestrator.now = func() time.Time { return orchestratorNow }
 	return orchestrator, store, db
+}
+
+func persistOrchestratorManifest(t *testing.T, store *delegationrepo.Store, runID string) {
+	t.Helper()
+	record := func(kind string) entity.ImmutableRecord {
+		return entity.ImmutableRecord{ID: kind + "-1", OwnerID: "owner-1", RunID: runID, ContentHash: strings.Repeat(kind[:1], 64), Content: `{}`, CreatedAt: orchestratorNow}
+	}
+	if err := store.CreateInvocationBundle(context.Background(), entity.InvocationBundle{
+		ContextSlice: record("context"), CapabilityView: record("capability"), ActorBinding: record("actor"), Manifest: record("manifest"),
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func orchestratorAcceptedBundle(runID string, deadline time.Time) entity.AcceptedDelegation {

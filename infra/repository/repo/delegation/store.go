@@ -322,6 +322,10 @@ func (s *Store) transitionBudgetReservation(ctx context.Context, ownerID, reserv
 
 func (s *Store) AcquireAttempt(ctx context.Context, attempt entity.Attempt, expectedRunRevision int64, event entity.Event) error {
 	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
+		var manifest po.InvocationManifest
+		if err := tx.Where("manifest_id = ? AND run_id = ? AND owner_id = ?", attempt.InvocationManifestID, attempt.RunID, attempt.OwnerID).Take(&manifest).Error; err != nil {
+			return fmt.Errorf("acquire attempt requires a persisted invocation manifest: %w", err)
+		}
 		var run po.Run
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("run_id = ? AND owner_id = ?", attempt.RunID, attempt.OwnerID).Take(&run).Error; err != nil {
 			return err

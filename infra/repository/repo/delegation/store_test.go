@@ -52,9 +52,7 @@ func TestCreateAcceptedDelegationIsAtomicAndIdempotent(t *testing.T) {
 func TestConcurrentAttemptAcquisitionHasOneOwner(t *testing.T) {
 	store, _ := newTestStore(t)
 	ctx := context.Background()
-	if err := store.CreateAcceptedDelegation(ctx, acceptedBundle("run-1")); err != nil {
-		t.Fatal(err)
-	}
+	createAcceptedWithManifest(t, store, "run-1")
 	var successes atomic.Int64
 	var wg sync.WaitGroup
 	for index := 0; index < 20; index++ {
@@ -85,9 +83,7 @@ func TestConcurrentAttemptAcquisitionHasOneOwner(t *testing.T) {
 func TestExpiredAttemptIsRecoverableAndLateResultIsFenced(t *testing.T) {
 	store, _ := newTestStore(t)
 	ctx := context.Background()
-	if err := store.CreateAcceptedDelegation(ctx, acceptedBundle("run-1")); err != nil {
-		t.Fatal(err)
-	}
+	createAcceptedWithManifest(t, store, "run-1")
 	first := testAttempt("attempt-1", "run-1", 1, testNow.Add(-time.Second))
 	if err := store.AcquireAttempt(ctx, first, 1, event("event-attempt-1", "run-1", 2)); err != nil {
 		t.Fatal(err)
@@ -223,9 +219,7 @@ func TestBudgetCommitRejectsUsageBeyondReservation(t *testing.T) {
 func TestCancelRunReleasesBudgetAndResourceLeases(t *testing.T) {
 	store, db := newTestStore(t)
 	ctx := context.Background()
-	if err := store.CreateAcceptedDelegation(ctx, acceptedBundle("run-1")); err != nil {
-		t.Fatal(err)
-	}
+	createAcceptedWithManifest(t, store, "run-1")
 	account := entity.BudgetAccount{BudgetRef: "budget-1", OwnerID: "owner-1", Total: entity.BudgetAmount{Tokens: 100}, Revision: 1, CreatedAt: testNow, UpdatedAt: testNow}
 	if err := store.CreateBudgetAccount(ctx, account); err != nil {
 		t.Fatal(err)
@@ -311,13 +305,30 @@ func newTestStore(t *testing.T) (*Store, *gorm.DB) {
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	if err := db.AutoMigrate(
-		&po.Proposal{}, &po.Decision{}, &po.DelegatedOutcome{}, &po.SubagentSpec{}, &po.InvocationManifest{},
+		&po.Proposal{}, &po.Decision{}, &po.DelegatedOutcome{}, &po.SubagentSpec{}, &po.ContextSlice{}, &po.CapabilityView{}, &po.ActorBinding{}, &po.InvocationManifest{},
 		&po.Run{}, &po.Attempt{}, &po.DecisionTurn{}, &po.ModelInvocation{}, &po.BudgetAccount{},
-		&po.BudgetReservation{}, &po.ResourceLease{}, &po.CandidateResult{}, &po.Event{},
+		&po.BudgetReservation{}, &po.ResourceLease{}, &po.CandidateResult{}, &po.VerificationResult{}, &po.Event{},
 	); err != nil {
 		t.Fatal(err)
 	}
 	return NewStore(data.New(db)), db
+}
+
+func createAcceptedWithManifest(t *testing.T, store *Store, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := store.CreateAcceptedDelegation(ctx, acceptedBundle(runID)); err != nil {
+		t.Fatal(err)
+	}
+	record := func(kind string) entity.ImmutableRecord {
+		return entity.ImmutableRecord{ID: kind + "-1", OwnerID: "owner-1", RunID: runID, ContentHash: strings.Repeat(kind[:1], 64), Content: `{}`, CreatedAt: testNow}
+	}
+	bundle := entity.InvocationBundle{
+		ContextSlice: record("context"), CapabilityView: record("capability"), ActorBinding: record("actor"), Manifest: record("manifest"),
+	}
+	if err := store.CreateInvocationBundle(ctx, bundle); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func acceptedBundle(runID string) entity.AcceptedDelegation {
