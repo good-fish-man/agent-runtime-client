@@ -18,13 +18,18 @@ const (
 	defaultScanInterval = 5 * time.Second
 	defaultLeaseTTL     = 30 * time.Second
 	defaultScanLimit    = 500
+	defaultLeaderLease  = 20 * time.Second
+	defaultLeaderKey    = "athena-dso-scheduler"
 )
 
 type Config struct {
-	InstanceID   string
-	ScanInterval time.Duration
-	LeaseTTL     time.Duration
-	ScanLimit    int
+	InstanceID            string
+	ScanInterval          time.Duration
+	LeaseTTL              time.Duration
+	ScanLimit             int
+	LeaderLeaseKey        string
+	LeaderLeaseTTL        time.Duration
+	DisableLeaderElection bool
 }
 
 type EventPublisher interface {
@@ -38,12 +43,14 @@ func (f EventPublisherFunc) Publish(ctx context.Context, event entity.Event) err
 }
 
 type RecoveryReport struct {
-	RecoveredAttempts int
-	RequeuedRuns      int
-	ExpiredRuns       int
-	ReadyRuns         int
-	FencedResults     int
-	PublishedEvents   int
+	RecoveredAttempts  int
+	RequeuedRuns       int
+	ExpiredRuns        int
+	ReadyRuns          int
+	FencedResults      int
+	PublishedEvents    int
+	Standby            bool
+	LeaderFencingToken int64
 }
 
 // Orchestrator is the sole durable delegation authority. Runtime workers may
@@ -72,6 +79,12 @@ func NewOrchestrator(store repository.Store, config Config, publisher EventPubli
 	}
 	if config.ScanLimit <= 0 || config.ScanLimit > 1000 {
 		config.ScanLimit = defaultScanLimit
+	}
+	if config.LeaderLeaseKey == "" {
+		config.LeaderLeaseKey = defaultLeaderKey
+	}
+	if config.LeaderLeaseTTL <= 0 {
+		config.LeaderLeaseTTL = defaultLeaderLease
 	}
 	if publisher == nil {
 		publisher = EventPublisherFunc(func(context.Context, entity.Event) error { return nil })
@@ -152,6 +165,22 @@ func (o *Orchestrator) RunOnce(ctx context.Context) (RecoveryReport, error) {
 		return report, fmt.Errorf("delegation orchestrator is not configured")
 	}
 	now := o.now().UTC()
+	if !o.config.DisableLeaderElection {
+		if recoveryStore, ok := o.store.(repository.RecoveryStore); ok {
+			lease, owned, err := recoveryStore.AcquireSchedulerLease(ctx, o.config.LeaderLeaseKey, o.config.InstanceID, now, o.config.LeaderLeaseTTL)
+			if errors.Is(err, repository.ErrRevisionConflict) {
+				lease, owned, err = recoveryStore.AcquireSchedulerLease(ctx, o.config.LeaderLeaseKey, o.config.InstanceID, now, o.config.LeaderLeaseTTL)
+			}
+			if err != nil {
+				return report, log.WrapError(err, "DelegationOrchestrator.RunOnce.acquireLeaderLease")
+			}
+			report.LeaderFencingToken = lease.FencingToken
+			if !owned {
+				report.Standby = true
+				return report, nil
+			}
+		}
+	}
 	attempts, err := o.store.ListRecoverableAttempts(ctx, now, o.config.ScanLimit)
 	if err != nil {
 		return report, log.WrapError(err, "DelegationOrchestrator.RunOnce.listAttempts")

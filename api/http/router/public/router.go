@@ -17,6 +17,7 @@ import (
 	commandh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/command"
 	confighh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/config"
 	dashboardh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/dashboard"
+	delegationopsh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/delegationops"
 	deploymenth "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/deployment"
 	experienceh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/experience"
 	jobh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/job"
@@ -53,6 +54,7 @@ type Handlers struct {
 	Command           *commandh.Handler
 	Callback          *callbackh.Handler
 	Dashboard         *dashboardh.Handler
+	DelegationOps     *delegationopsh.Handler
 	Deployment        *deploymenth.Handler
 	Knowledge         *knowledgeh.Handler
 	Experience        *experienceh.Handler
@@ -103,6 +105,11 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		g.POST("/operations/backups", h.Operations.CreateBackup)
 		g.POST("/operations/backups/:backup_id/verify", h.Operations.VerifyBackup)
 		g.POST("/operations/backups/:backup_id/restore", h.Operations.RestoreBackup)
+	}
+	if h.DelegationOps != nil {
+		g.POST("/delegation/replays", h.DelegationOps.Replay)
+		g.GET("/delegation/export", h.DelegationOps.Export)
+		g.DELETE("/delegation/data", h.DelegationOps.Delete)
 	}
 	if h.User != nil {
 		g.GET("/auth/me", h.User.Me)

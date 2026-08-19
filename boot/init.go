@@ -13,6 +13,7 @@ import (
 
 	httpapi "github.com/good-fish-man/agent-runtime-client/api/http"
 	controlhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/control"
+	delegationopshandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/delegationops"
 	deploymenthandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/deployment"
 	knowledgehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/knowledge"
 	operationshandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/operations"
@@ -155,6 +156,8 @@ func Init(cfgPath string) (*App, error) {
 	var delegationOrchestrator *delegationsvc.Orchestrator
 	var delegationExecution *delegationsvc.ExecutionService
 	var actionGovernance *delegationsvc.GovernedActionService
+	var delegationRecovery *delegationsvc.RecoveryService
+	var delegationReplay *delegationsvc.ReplayRunner
 	if store != nil {
 		controlStore := controlrepo.NewStore(store)
 		if err := controlStore.MarkAllDevicesOffline(context.Background(), time.Now().UTC()); err != nil {
@@ -172,6 +175,10 @@ func Init(cfgPath string) (*App, error) {
 		delegationOrchestrator = delegationsvc.NewOrchestrator(delegationStore, delegationsvc.Config{}, nil)
 		delegationExecution = delegationsvc.NewExecutionService(delegationOrchestrator, domainSvc, nil)
 		actionGovernance = delegationsvc.NewGovernedActionService(delegationStore, "")
+		delegationRecovery = delegationsvc.NewRecoveryService(delegationStore)
+		// Live replay is fail-closed until a policy-verifying executor is
+		// explicitly injected. Exact and recorded-observation modes remain usable.
+		delegationReplay = delegationsvc.NewReplayRunner(delegationStore, nil)
 		controlHub.OnTaskTerminal(func(_ context.Context, taskID string) { experienceService.Enqueue(taskID) })
 	} else {
 		controlHub = controlsvc.NewHub()
@@ -199,6 +206,7 @@ func Init(cfgPath string) (*App, error) {
 	}
 	operationsService := operationssvc.New(cfg.Runtime.HTTPAddr, databaseProbe, controlHub).
 		WithBackupManager(backupManager).
+		WithDelegationDiagnostics(delegationRecovery).
 		WithGAConfig(operationssvc.GAConfig{
 			DataStore: store != nil, Conversation: appService != nil, Memory: store != nil,
 			Knowledge: knowledgeService != nil, Deployment: deploymentService != nil,
@@ -209,6 +217,9 @@ func Init(cfgPath string) (*App, error) {
 		operationsService = operationsService.WithGAEvidenceStore(operationsrepo.NewStore(store))
 	}
 	pub.Operations = operationshandler.NewHandler(operationsService)
+	if delegationRecovery != nil && delegationReplay != nil {
+		pub.DelegationOps = delegationopshandler.NewHandler(delegationRecovery, delegationReplay)
+	}
 	engine := httpapi.NewEngine(h, pub, cfg.Server.PublicPrefix, cfg.Server.Mode)
 	controlhandler.NewHandler(controlHub, cfg.Control.DeviceToken).Register(engine, pub.Auth, cfg.Server.PublicPrefix)
 	if delegationOrchestrator != nil {

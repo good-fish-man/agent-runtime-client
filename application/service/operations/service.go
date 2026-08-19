@@ -16,6 +16,7 @@ import (
 
 	controlsvc "github.com/good-fish-man/agent-runtime-client/application/service/control"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
+	dso "github.com/good-fish-man/athena-protocol/draft/dso/v0alpha"
 	ga "github.com/good-fish-man/athena-protocol/protocol/ga/v1"
 	operationsv1 "github.com/good-fish-man/athena-protocol/protocol/operations/v1"
 )
@@ -27,6 +28,10 @@ type DeviceSource interface {
 }
 
 type DatabaseProbe func(context.Context) error
+
+type DelegationDiagnostics interface {
+	Diagnostics(context.Context, time.Time, time.Time) (dso.OperationalSLOSnapshot, error)
+}
 
 // GAEvidenceStore persists append-only golden-journey suites. Implementations
 // must scope every read and write by owner ID and verify stored content hashes.
@@ -45,12 +50,18 @@ type Service struct {
 	backup     *BackupManager
 	gaConfig   GAConfig
 	gaStore    GAEvidenceStore
+	delegation DelegationDiagnostics
 	gaMu       sync.RWMutex
 	gaRuns     map[string][][]ga.GoldenJourneyResult
 }
 
 func (s *Service) WithBackupManager(manager *BackupManager) *Service {
 	s.backup = manager
+	return s
+}
+
+func (s *Service) WithDelegationDiagnostics(diagnostics DelegationDiagnostics) *Service {
+	s.delegation = diagnostics
 	return s
 }
 
@@ -61,6 +72,7 @@ type Snapshot struct {
 	Health          operationsv1.HealthSnapshot  `json:"health"`
 	RuntimeHealth   *operationsv1.HealthSnapshot `json:"runtime_health,omitempty"`
 	SLO             *operationsv1.SLOSnapshot    `json:"slo,omitempty"`
+	DelegationSLO   *dso.OperationalSLOSnapshot  `json:"delegation_slo,omitempty"`
 	OnlineDevices   int                          `json:"online_devices"`
 	TotalDevices    int                          `json:"total_devices"`
 	RecoveryManaged bool                         `json:"recovery_managed"`
@@ -141,6 +153,23 @@ func (s *Service) Snapshot(ctx context.Context, userID string) Snapshot {
 		}
 	}
 
+	var delegationSLO *dso.OperationalSLOSnapshot
+	if s.delegation != nil {
+		measured, err := s.delegation.Diagnostics(ctx, now.Add(-24*time.Hour), now)
+		if err != nil {
+			status = worstHealth(status, operationsv1.HealthDegraded)
+			checks = append(checks, healthCheck("delegation-recovery", operationsv1.HealthDegraded, 0, "delegation diagnostics unavailable"))
+		} else {
+			delegationSLO = &measured
+			delegationStatus, message := operationsv1.HealthHealthy, ""
+			if measured.DuplicateConfirmedSideEffects > 0 || measured.Availability < 0.999 || measured.CancelPropagationP95MS > 5000 {
+				delegationStatus, message = operationsv1.HealthDegraded, "delegation recovery SLO requires attention"
+				status = worstHealth(status, delegationStatus)
+			}
+			checks = append(checks, healthCheck("delegation-recovery", delegationStatus, 0, message))
+		}
+	}
+
 	return Snapshot{
 		Schema: operationsv1.Schema,
 		Health: operationsv1.HealthSnapshot{
@@ -148,7 +177,7 @@ func (s *Service) Snapshot(ctx context.Context, userID string) Snapshot {
 			InstanceID: s.instanceID, Status: status, UptimeMS: time.Since(s.startedAt).Milliseconds(),
 			Checks: checks, ObservedAt: now,
 		},
-		RuntimeHealth: runtimeHealth, SLO: runtimeSLO, OnlineDevices: onlineDevices,
+		RuntimeHealth: runtimeHealth, SLO: runtimeSLO, DelegationSLO: delegationSLO, OnlineDevices: onlineDevices,
 		TotalDevices: totalDevices, RecoveryManaged: s.backup != nil, ObservedAt: now,
 	}
 }
