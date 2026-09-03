@@ -5,9 +5,9 @@ go 1.25.0
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-playground/validator/v10 v10.30.3
-	github.com/good-fish-man/agent-runtime v0.2.0
-	github.com/good-fish-man/athena-protocol v0.2.0
-	github.com/good-fish-man/logx v0.2.0
+	github.com/good-fish-man/agent-runtime v1.0.0
+	github.com/good-fish-man/athena-protocol v1.0.0
+	github.com/good-fish-man/logx v1.0.0
 	github.com/jinzhu/copier v0.4.0
 	golang.org/x/crypto v0.52.0
 	golang.org/x/net v0.54.0
@@ -59,9 +59,3 @@ require (
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 )
-
-replace github.com/good-fish-man/agent-runtime v0.2.0 => ../agent-runtime
-
-replace github.com/good-fish-man/athena-protocol v0.2.0 => ../athena-protocol
-
-replace github.com/good-fish-man/logx v0.2.0 => ../logx
