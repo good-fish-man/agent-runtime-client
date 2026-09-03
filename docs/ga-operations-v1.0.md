@@ -17,7 +17,7 @@ All routes use the configured public prefix, normally
 | `GET` | `/operations/readiness` | authenticated | Aggregated Runtime, database, backup, device, and domain readiness. |
 | `GET` | `/operations/golden-journeys` | authenticated | Stable catalog of ten GA user journeys. |
 | `POST` | `/operations/golden-journeys/run` | administrator | Non-destructive infrastructure preflight; never reports `PASS`. |
-| `POST` | `/operations/golden-journeys/evidence` | administrator | Record one complete independently executed E2E suite. |
+| `POST` | `/internal/operations/golden-journeys/evidence` | trusted E2E runner | Record one complete independently executed E2E suite. Requires `X-Athena-Internal-Token` and an explicit `owner_id`; browser administrator sessions cannot write release evidence. |
 | `GET` | `/operations/health` | authenticated | Health, SLO, device, queue, and backup summary. |
 | `POST` | `/operations/backups` | administrator | Create an encrypted backup. |
 | `POST` | `/operations/backups/:id/verify` | administrator | Verify manifest and payload integrity. |
@@ -44,8 +44,9 @@ cd /path/to/athena-protocol
 go run ./cmd/validate-ga-evidence -file /path/to/golden-suite.json
 ```
 
-The evidence API rejects unknown JSON fields, trailing JSON values, requests
-larger than 4 MiB, incomplete suites, and mixed run IDs.
+The internal evidence API rejects invalid service tokens, missing or invalid
+owners, unknown JSON fields, trailing JSON values, requests larger than 4 MiB,
+incomplete suites, and mixed run IDs.
 
 ## Traceability
 
@@ -56,7 +57,7 @@ deployment provenance before they are accepted by durable storage.
 
 ## Administration
 
-1. Replace the bootstrap `athena` password before network exposure.
+1. Rotate the installation-generated bootstrap administrator password after first login and before network exposure.
 2. Keep model and website credentials in their server-side vaults.
 3. Require signed Providers, explicit grants, and bounded resources.
 4. Create and verify encrypted backups before upgrade.

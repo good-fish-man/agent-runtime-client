@@ -14,7 +14,13 @@ import (
 
 	service "github.com/good-fish-man/agent-runtime-client/application/service/control"
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
+	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
 )
+
+type handlerTestConnection struct{}
+
+func (handlerTestConnection) Send(any) error { return nil }
+func (handlerTestConnection) Close() error   { return nil }
 
 func protocolTestAction(taskID, actionID, capability string) entity.Action {
 	now := time.Now().UTC()
@@ -206,6 +212,33 @@ func TestDeviceWebSocketRequiresToken(t *testing.T) {
 	engine.ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestUnbindDeviceRouteReleasesOwnedDevice(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	hub := service.NewHub()
+	connection := handlerTestConnection{}
+	if err := hub.Register(context.Background(), entity.DeviceMessage{DeviceID: "device-1", Capabilities: []string{"app.open"}}, connection); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.BindDevice(context.Background(), "device-1", "user-1"); err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	auth := func(c *gin.Context) {
+		c.Request = c.Request.WithContext(authctx.WithUserID(c.Request.Context(), "user-1"))
+		c.Next()
+	}
+	NewHandler(hub, "").Register(engine, auth)
+	request := httptest.NewRequest(http.MethodDelete, "/v1/control/devices/device-1/binding", nil)
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"bound":false`) {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	if err := hub.BindDevice(context.Background(), "device-1", "user-2"); err != nil {
+		t.Fatalf("device was not released for another account: %v", err)
 	}
 }
 

@@ -92,6 +92,7 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 	}
 	if h.Operations != nil {
 		g.POST("/internal/operations/backups", h.Operations.CreateBackupInternal)
+		g.POST("/internal/operations/golden-journeys/evidence", h.Operations.RecordGoldenJourneyEvidenceInternal)
 	}
 	if h.Auth != nil {
 		g.Use(h.Auth)
@@ -102,7 +103,6 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		g.GET("/operations/readiness", h.Operations.Readiness)
 		g.GET("/operations/golden-journeys", h.Operations.GoldenJourneys)
 		g.POST("/operations/golden-journeys/run", h.Operations.RunGoldenJourneys)
-		g.POST("/operations/golden-journeys/evidence", h.Operations.RecordGoldenJourneyEvidence)
 		g.GET("/operations/backups", h.Operations.ListBackups)
 		g.POST("/operations/backups", h.Operations.CreateBackup)
 		g.POST("/operations/backups/:backup_id/verify", h.Operations.VerifyBackup)
@@ -228,6 +228,8 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 	if h.Learning != nil {
 		r := g.Group("/learning")
 		r.POST("/candidates/generate", h.Learning.GenerateCandidate)
+		r.GET("/evolution/status", h.Learning.EvolutionStatus)
+		r.POST("/evolution/scan", h.Learning.ScanEvolution)
 		r.GET("/candidates", h.Learning.ListCandidates)
 		r.GET("/candidates/:id", h.Learning.FindCandidate)
 		r.PUT("/candidates/:id", h.Learning.UpdateCandidate)
@@ -297,6 +299,7 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 	if h.Orchestration != nil {
 		r := g.Group("/goals")
 		r.POST("", h.Orchestration.CreateGoal)
+		r.POST("/planned", h.Orchestration.CreatePlannedGoal)
 		r.GET("", h.Orchestration.ListGoals)
 		r.GET("/schedule-triggers", h.Orchestration.ListScheduleTriggers)
 		r.GET("/:id", h.Orchestration.GetGoal)

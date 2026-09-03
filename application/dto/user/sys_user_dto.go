@@ -11,6 +11,7 @@ type (
 		NickName   string              `json:"nick_name"`
 		TrueName   string              `json:"true_name"`
 		LevelId    string              `json:"level_id"`
+		DepId      string              `json:"organization_id"`
 		Password   string              `json:"password"`
 		AdminLevel uint                `json:"admin_level"`
 		Exp        CreateSysUserReqExp `json:"exp"`
@@ -35,6 +36,7 @@ type (
 		AvatarURL  string `json:"avatar_url"`
 		Unionid    string `json:"unionid"`
 		LevelId    string `json:"level_id"`
+		DepId      string `json:"organization_id"`
 	}
 
 	FindSysUserByIdReq struct {
@@ -105,6 +107,7 @@ type (
 		AvatarURL  string              `json:"avatar_url"`
 		Unionid    string              `json:"unionid"`
 		LevelId    string              `json:"level_id"`
+		DepId      string              `json:"organization_id"`
 		AdminLevel uint                `json:"admin_level"`
 		Exp        CreateSysUserRspExp `json:"exp"`
 	}

@@ -19,7 +19,7 @@ func TestUnit_Trace_UsesIncomingRequestID(t *testing.T) {
 	router := gin.New()
 	router.Use(Trace())
 	router.GET("/ping", func(c *gin.Context) {
-		got, _ := c.Request.Context().Value(log.ReqIDKey).(string)
+		got := log.ReqID(c.Request.Context())
 		if got != want {
 			t.Fatalf("request context trace id = %q, want %q", got, want)
 		}

@@ -10,6 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +38,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
 	"github.com/good-fish-man/agent-runtime-client/pkg/query"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
+	runtimeartifact "github.com/good-fish-man/athena-protocol/draft/runtimeartifact"
 	knowledgev1 "github.com/good-fish-man/athena-protocol/protocol/knowledge/v1"
 	log "github.com/good-fish-man/logx"
 )
@@ -127,7 +131,7 @@ func (s *RuntimeService) Run(ctx context.Context, req *dto.RunReq) (*entity.Comp
 	} else if err != nil {
 		s.recordCompletion(ctx, in.Context, in.Models, in.Prompt, "", nil, nil, err)
 	}
-	s.recordCanaryOutcome(ctx, in.Context, err == nil && result != nil && len(result.PendingApprovals) == 0, time.Since(started), completionApprovals(result), completionMetadata(result), err)
+	s.recordCanaryOutcome(ctx, in.Context, in.Models, err == nil && result != nil && len(result.PendingApprovals) == 0, time.Since(started), completionApprovals(result), completionMetadata(result), err)
 	return result, log.WrapError(err, "RuntimeService.Run.gateway")
 }
 
@@ -171,7 +175,7 @@ func (s *RuntimeService) RunStream(ctx context.Context, req *dto.RunReq, emit St
 		err = s.runControlLoop(ctx, in, req.DeviceID, wrappedEmit)
 	}
 	s.recordStream(ctx, in.Context, in.Models, in.Prompt, capture, err)
-	s.recordCanaryOutcome(ctx, in.Context, err == nil && capture.errEvent == nil && capture.done != nil && len(capture.approvals) == 0, time.Since(started), capture.approvals, streamMetadata(capture), err)
+	s.recordCanaryOutcome(ctx, in.Context, in.Models, err == nil && capture.errEvent == nil && capture.done != nil && len(capture.approvals) == 0, time.Since(started), capture.approvals, streamMetadata(capture), err)
 	return log.WrapError(err, "RuntimeService.RunStream.controlLoop")
 }
 
@@ -206,7 +210,7 @@ func (s *RuntimeService) RunAgent(ctx context.Context, req *dto.AgentReq) (*enti
 	} else if err != nil {
 		s.recordCompletion(ctx, in.Context, in.Models, in.Task, "", nil, nil, err)
 	}
-	s.recordCanaryOutcome(ctx, in.Context, err == nil && value != nil, time.Since(started), nil, agentMetadata(value), err)
+	s.recordCanaryOutcome(ctx, in.Context, in.Models, err == nil && value != nil, time.Since(started), nil, agentMetadata(value), err)
 	return value, log.WrapError(err, "RuntimeService.RunAgent")
 }
 
@@ -239,7 +243,7 @@ func (s *RuntimeService) RunAgentStream(ctx context.Context, req *dto.AgentReq, 
 	started := time.Now()
 	err := s.runAgentControlLoop(ctx, in, req.DeviceID, s.memoryAwareEmitter(ctx, in.Context, capture.Wrap(emit)))
 	s.recordStream(ctx, in.Context, in.Models, in.Task, capture, err)
-	s.recordCanaryOutcome(ctx, in.Context, err == nil && capture.errEvent == nil && capture.done != nil && len(capture.approvals) == 0, time.Since(started), capture.approvals, streamMetadata(capture), err)
+	s.recordCanaryOutcome(ctx, in.Context, in.Models, err == nil && capture.errEvent == nil && capture.done != nil && len(capture.approvals) == 0, time.Since(started), capture.approvals, streamMetadata(capture), err)
 	return log.WrapError(err, "RuntimeService.RunAgentStream.controlLoop")
 }
 
@@ -264,7 +268,7 @@ func (s *RuntimeService) runControlLoop(ctx context.Context, in *entity.RunInput
 			if err != nil && s.controlHub != nil {
 				_ = s.controlHub.SetTaskStatus(context.WithoutCancel(ctx), taskID, controlentity.StatusFailed)
 			} else if s.controlHub != nil {
-				_ = s.controlHub.SetTaskStatus(context.WithoutCancel(ctx), taskID, controlentity.StatusCompleted)
+				s.finishSemanticTask(context.WithoutCancel(ctx), taskID, in.Context)
 			}
 			return err
 		}
@@ -314,7 +318,7 @@ func (s *RuntimeService) runAgentControlLoop(ctx context.Context, in *entity.Age
 		}
 		if pending == nil {
 			if s.controlHub != nil {
-				_ = s.controlHub.SetTaskStatus(context.WithoutCancel(ctx), taskID, controlentity.StatusCompleted)
+				s.finishSemanticTask(context.WithoutCancel(ctx), taskID, in.Context)
 			}
 			return nil
 		}
@@ -396,11 +400,14 @@ func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDev
 	if err := attachControlDeploymentProvenance(values, action); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.validateControlAction")
 	}
+	if err := prepareSemanticAction(action, requestedDevice); err != nil {
+		return nil, log.WrapError(err, "RuntimeService.prepareSemanticAction")
+	}
 	userID := authctx.UserID(ctx)
 	deviceID, capabilityInstanceID, err := s.controlHub.ResolveCapability(ctx, userID, requestedDevice, action.Capability, action.CapabilityInstanceID)
 	if err != nil {
 		diagnostics := s.controlHub.Diagnostics(userID, action.Capability)
-		log.WarnwCtx(ctx, "desktop control device resolution failed",
+		log.Warnw(ctx, "desktop control device resolution failed",
 			"capability", action.Capability,
 			"requested_device", strings.TrimSpace(requestedDevice),
 			"user_authenticated", diagnostics.UserAuthenticated,
@@ -429,6 +436,9 @@ func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDev
 			"connected":          connected,
 			"device_diagnostics": diagnostics,
 		})
+		if semanticErr := ensureSemanticObservation(action, observation); semanticErr != nil {
+			return observation, log.WrapError(semanticErr, "RuntimeService.finalizeResolutionFailure")
+		}
 		if emitErr := emitControlObservation(ctx, emit, observation); emitErr != nil {
 			return observation, emitErr
 		}
@@ -440,10 +450,23 @@ func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDev
 	if err := s.controlHub.BeginTask(ctx, taskID, userID, conversationID, deviceID); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.beginControlTask")
 	}
-	if err := s.controlHub.DescribeTask(ctx, taskID, goal, map[string]any{"intent": map[string]any{
+	action.DeviceID = deviceID
+	action.CapabilityInstanceID = capabilityInstanceID
+	if err := bindSemanticActor(action, deviceID, capabilityInstanceID); err != nil {
+		return nil, log.WrapError(err, "RuntimeService.bindSemanticActor")
+	}
+	intent := map[string]any{
 		"primary_capability": action.Capability,
 		"operation":          action.Operation,
-	}}); err != nil {
+	}
+	if siteScope := browserActionSiteScope(action); siteScope != "" {
+		intent["site_scope"] = siteScope
+	}
+	metadata := map[string]any{"intent": intent}
+	if semantic := semanticMetadata(action); semantic != nil {
+		metadata["effect_trace"] = semantic
+	}
+	if err := s.controlHub.DescribeTask(ctx, taskID, goal, metadata); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.describeControlTask")
 	}
 	if task, ok, taskErr := s.controlHub.Task(ctx, taskID); taskErr != nil {
@@ -451,8 +474,6 @@ func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDev
 	} else if ok {
 		action.Revision = task.Revision
 	}
-	action.DeviceID = deviceID
-	action.CapabilityInstanceID = capabilityInstanceID
 	if action.Policy.Decision == controlentity.AskUser && action.Policy.ApprovalID == "" {
 		action.Policy.ApprovalID = controlentity.NewID("approval")
 	}
@@ -484,15 +505,62 @@ func (s *RuntimeService) dispatchControlAction(ctx context.Context, requestedDev
 			"capability": action.Capability,
 			"device_id":  deviceID,
 		})
+		if semanticErr := ensureSemanticObservation(action, observation); semanticErr != nil {
+			return observation, log.WrapError(semanticErr, "RuntimeService.finalizeDispatchFailure")
+		}
 		if emitErr := emitControlObservation(ctx, emit, observation); emitErr != nil {
 			return observation, emitErr
 		}
 		return observation, log.WrapError(err, "RuntimeService.dispatchAction")
 	}
+	if err := ensureSemanticObservation(action, observation); err != nil {
+		return observation, log.WrapError(err, "RuntimeService.finalizeSemanticObservation")
+	}
 	if err := emitControlObservation(ctx, emit, observation); err != nil {
 		return nil, err
 	}
 	return observation, nil
+}
+
+// browserActionSiteScope returns only a normalized hostname. Full URLs,
+// paths, queries, fragments, and credentials never enter learning metadata.
+func browserActionSiteScope(action *controlentity.Action) string {
+	if action == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(action.Capability)), "browser.") {
+		return ""
+	}
+	for _, values := range []map[string]any{action.Arguments, action.Target} {
+		for _, key := range []string{"url", "target_url", "origin", "target"} {
+			if scope := normalizedHTTPSiteScope(values[key]); scope != "" {
+				return scope
+			}
+		}
+	}
+	return ""
+}
+
+func normalizedHTTPSiteScope(value any) string {
+	raw, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Hostname() == "" {
+		return ""
+	}
+	return strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+}
+
+func (s *RuntimeService) finishSemanticTask(ctx context.Context, taskID string, values map[string]any) {
+	status, reason, semantic := semanticTaskTerminal(values)
+	if !semantic {
+		_ = s.controlHub.SetTaskStatus(ctx, taskID, controlentity.StatusCompleted)
+		return
+	}
+	if status == controlentity.TaskStatusPaused {
+		_ = s.controlHub.PauseTask(ctx, taskID, reason)
+		return
+	}
+	_ = s.controlHub.SetTaskStatus(ctx, taskID, status)
 }
 
 func attachControlDeploymentProvenance(values map[string]any, action *controlentity.Action) error {
@@ -748,6 +816,9 @@ func (s *RuntimeService) GenerateMedia(ctx context.Context, req *dto.MediaGenera
 
 // CreateMediaJob persists a generation before executing it in the background.
 func (s *RuntimeService) CreateMediaJob(ctx context.Context, req *dto.MediaGenerationReq) (*entity.MediaGenerationJob, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if s.mediaRepo == nil {
 		return nil, apierror.ErrRuntimeUnavailable.WithMessage("媒体任务存储未启用")
 	}
@@ -765,17 +836,20 @@ func (s *RuntimeService) CreateMediaJob(ctx context.Context, req *dto.MediaGener
 		return nil, log.WrapError(err, "RuntimeService.CreateMediaJob.create")
 	}
 	jobCopy, inputCopy := *job, *input
-	go s.runMediaJob(&jobCopy, &inputCopy)
+	backgroundCtx := context.WithoutCancel(ctx)
+	if job.TraceID != "" {
+		backgroundCtx = log.WithReqID(backgroundCtx, job.TraceID)
+	}
+	log.Go(backgroundCtx, func(jobCtx context.Context) {
+		s.runMediaJob(jobCtx, &jobCopy, &inputCopy)
+	})
 	return job, nil
 }
 
-func (s *RuntimeService) runMediaJob(job *entity.MediaGenerationJob, input *entity.MediaGenerationInput) {
-	ctx := log.WithReqID(context.Background(), job.TraceID)
-	release := log.BindCtx(ctx)
-	defer release()
+func (s *RuntimeService) runMediaJob(ctx context.Context, job *entity.MediaGenerationJob, input *entity.MediaGenerationInput) {
 	job.Status, job.Progress, job.StartedAt = entity.MediaJobStatusRunning, 10, time.Now().UnixMilli()
 	if err := s.mediaRepo.UpdateMediaJob(ctx, job); err != nil {
-		log.Errorf("update media job %s to running: %v", job.Ulid, err)
+		log.Errorf(ctx, "update media job %s to running: %v", job.Ulid, err)
 	}
 	result, err := s.svc.GenerateMedia(ctx, input)
 	job.FinishedAt, job.Progress = time.Now().UnixMilli(), 100
@@ -786,7 +860,7 @@ func (s *RuntimeService) runMediaJob(job *entity.MediaGenerationJob, input *enti
 		job.ProviderJobID = result.ProviderJobID
 	}
 	if updateErr := s.mediaRepo.UpdateMediaJob(ctx, job); updateErr != nil {
-		log.Errorf("finish media job %s: %v", job.Ulid, updateErr)
+		log.Errorf(ctx, "finish media job %s: %v", job.Ulid, updateErr)
 	}
 }
 
@@ -941,13 +1015,7 @@ func (s *RuntimeService) hydrateControlContext(ctx context.Context, values map[s
 
 // traceID reads the request trace id bound to the context by the trace middleware.
 func traceID(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	if v, ok := ctx.Value(log.ReqIDKey).(string); ok {
-		return v
-	}
-	return ""
+	return log.ReqID(ctx)
 }
 
 type storedAgentConfig struct {
@@ -1022,6 +1090,11 @@ func agentIDFromContext(ctx map[string]any) string {
 }
 
 func (s *RuntimeService) attachRunManifest(ctx context.Context, values map[string]any, taskID, deviceID string, models map[string]entity.ModelConfig, capabilities []entity.CapabilityConfig, knowledge []entity.KnowledgeBaseConfig, options *entity.RunOptions) error {
+	// This key belongs to the trusted control plane. Never forward a value
+	// supplied by a public caller, including in database-free proxy mode.
+	if values != nil {
+		delete(values, runtimeartifact.ContextKey)
+	}
 	if s.deployment == nil {
 		return nil
 	}
@@ -1042,6 +1115,7 @@ func (s *RuntimeService) attachRunManifest(ctx context.Context, values map[strin
 		modelFingerprint[role] = map[string]any{
 			"provider": model.Provider, "name": model.Name, "api_base": model.APIBase,
 			"temperature": model.Temperature, "max_tokens": model.MaxTokens, "top_p": model.TopP,
+			"runtime": modelFingerprintExtras(model.ExtraFields),
 		}
 	}
 	capabilityInstances := make([]string, 0, len(capabilities)+1)
@@ -1052,6 +1126,15 @@ func (s *RuntimeService) attachRunManifest(ctx context.Context, values map[strin
 	}
 	if value := contextString(values, "capability_instance_id"); value != "" {
 		capabilityInstances = append(capabilityInstances, value)
+	}
+	capabilityInstances = uniqueSortedStrings(capabilityInstances)
+	if values != nil {
+		values["capabilities"] = append([]string(nil), capabilityInstances...)
+		if contextString(values, "environment_fingerprint") == "" {
+			values["environment_fingerprint"] = hashValue(map[string]any{
+				"agent_id": agentID, "device_id": deviceID, "capabilities": capabilityInstances,
+			})
+		}
 	}
 	knowledgeFingerprint := make([]map[string]any, 0, len(knowledge))
 	for _, item := range knowledge {
@@ -1066,15 +1149,24 @@ func (s *RuntimeService) attachRunManifest(ctx context.Context, values map[strin
 		TaskID: taskID, AgentID: agentID, ModelConfigVersion: modelConfigVersion,
 		CapabilityInstances: capabilityInstances, DeviceID: deviceID,
 		WorldRevision: contextInt64(values, "world_revision"), KnowledgeSnapshot: knowledgeSnapshot,
-		Budget: runBudget(options), FeatureFlags: map[string]bool{"deployment_manifest": true, "evidence_knowledge": contextString(values, "knowledge_snapshot_id") != ""},
+		Budget: runBudget(options), FeatureFlags: map[string]bool{"deployment_manifest": true, "runtime_artifacts": true, "evidence_knowledge": contextString(values, "knowledge_snapshot_id") != ""},
 	})
 	if err != nil {
-		return err
+		return log.WrapError(err, "RuntimeService.attachRunManifest.create")
+	}
+	bundle, err := s.deployment.ResolveRuntimeArtifacts(ctx, ownerID, *manifest)
+	if err != nil {
+		return log.WrapError(err, "RuntimeService.attachRunManifest.resolveArtifacts")
+	}
+	artifactContext, err := bundle.ContextValue()
+	if err != nil {
+		return log.WrapError(err, "RuntimeService.attachRunManifest.encodeArtifacts")
 	}
 	if values != nil {
 		values["agent_build_id"] = manifest.AgentBuildID
 		values["run_manifest_id"] = manifest.ManifestID
 		values["model_config_version"] = modelConfigVersion
+		values[runtimeartifact.ContextKey] = artifactContext
 		if manifest.ExposureID != "" {
 			values["exposure_id"] = manifest.ExposureID
 		}
@@ -1087,7 +1179,7 @@ func (s *RuntimeService) attachRunManifest(ctx context.Context, values map[strin
 	return nil
 }
 
-func (s *RuntimeService) recordCanaryOutcome(ctx context.Context, values map[string]any, succeeded bool, elapsed time.Duration, approvals []entity.PendingApproval, metadata *entity.ResponseMetadata, runErr error) {
+func (s *RuntimeService) recordCanaryOutcome(ctx context.Context, values map[string]any, models map[string]entity.ModelConfig, succeeded bool, elapsed time.Duration, approvals []entity.PendingApproval, metadata *entity.ResponseMetadata, runErr error) {
 	if s == nil || s.deployment == nil {
 		return
 	}
@@ -1115,11 +1207,105 @@ func (s *RuntimeService) recordCanaryOutcome(ctx context.Context, values map[str
 		}
 	}
 	_, _, err := s.deployment.RecordRunOutcome(context.WithoutCancel(ctx), authctx.UserID(ctx), manifestID, deploymentsvc.RunOutcome{
-		Succeeded: succeeded, LatencyMS: latency, SafetyScore: safety, Intervention: len(approvals) > 0,
+		Succeeded: succeeded, LatencyMS: latency, CostMicros: estimatedRunCostMicros(metadata, models), SafetyScore: safety, Intervention: len(approvals) > 0,
 	})
 	if err != nil {
-		log.WarnwCtx(ctx, "record canary outcome failed", "manifest_id", manifestID, "error", err)
+		log.Warnw(ctx, "record canary outcome failed", "manifest_id", manifestID, "error", err)
 	}
+}
+
+const (
+	inputCostMicrosPerMillionKey  = "input_cost_micros_per_million_tokens"
+	outputCostMicrosPerMillionKey = "output_cost_micros_per_million_tokens"
+)
+
+func modelFingerprintExtras(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make(map[string]any)
+	for _, key := range []string{"model_id", "runtime_mode", "capabilities", inputCostMicrosPerMillionKey, outputCostMicrosPerMillionKey} {
+		if value, ok := values[key]; ok {
+			result[key] = value
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func estimatedRunCostMicros(metadata *entity.ResponseMetadata, models map[string]entity.ModelConfig) int64 {
+	if metadata == nil || len(models) == 0 {
+		return 0
+	}
+	usage := append([]entity.ModelUsageMetadata(nil), metadata.ModelUsage...)
+	if len(usage) == 0 {
+		usage = []entity.ModelUsageMetadata{{
+			Model: metadata.Model, PromptTokens: metadata.PromptTokens,
+			CompletionTokens: metadata.CompletionTokens, TotalTokens: metadata.TokensUsed, RequestCount: 1,
+		}}
+	}
+	var total int64
+	for _, item := range usage {
+		model, ok := pricedModelForUsage(models, item)
+		if !ok {
+			continue
+		}
+		inputRate := extraInt64(model.ExtraFields, inputCostMicrosPerMillionKey)
+		outputRate := extraInt64(model.ExtraFields, outputCostMicrosPerMillionKey)
+		total += tokenCostMicros(int64(item.PromptTokens), inputRate)
+		total += tokenCostMicros(int64(item.CompletionTokens), outputRate)
+	}
+	return total
+}
+
+func pricedModelForUsage(models map[string]entity.ModelConfig, usage entity.ModelUsageMetadata) (entity.ModelConfig, bool) {
+	for _, model := range models {
+		id, _ := model.ExtraFields["model_id"].(string)
+		if strings.TrimSpace(usage.ModelID) != "" && strings.TrimSpace(id) == strings.TrimSpace(usage.ModelID) {
+			return model, true
+		}
+		if strings.TrimSpace(usage.Model) != "" && strings.EqualFold(strings.TrimSpace(model.Name), strings.TrimSpace(usage.Model)) {
+			return model, true
+		}
+	}
+	model, ok := models["default"]
+	return model, ok
+}
+
+func extraInt64(values map[string]any, key string) int64 {
+	if len(values) == 0 {
+		return 0
+	}
+	switch value := values[key].(type) {
+	case int:
+		return int64(value)
+	case int32:
+		return int64(value)
+	case int64:
+		return value
+	case float32:
+		return int64(value)
+	case float64:
+		return int64(value)
+	case json.Number:
+		result, _ := value.Int64()
+		return result
+	case string:
+		result, _ := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		return result
+	default:
+		return 0
+	}
+}
+
+func tokenCostMicros(tokens, rate int64) int64 {
+	if tokens <= 0 || rate <= 0 {
+		return 0
+	}
+	const million = int64(1_000_000)
+	return (tokens*rate + million - 1) / million
 }
 
 func completionApprovals(value *entity.Completion) []entity.PendingApproval {
@@ -1176,6 +1362,22 @@ func hashValue(value any) string {
 	}
 	sum := sha256.Sum256(payload)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func uniqueSortedStrings(values []string) []string {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			set[value] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(set))
+	for value := range set {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func contextInt64(values map[string]any, key string) int64 {
@@ -1591,7 +1793,7 @@ func (s *RuntimeService) injectKnowledge(ctx context.Context, values map[string]
 		return nil
 	}
 	result, err := s.knowledge.Retrieve(ctx, ownerID, knowledgeentity.RetrievalQuery{
-		Text: queryText, Scopes: []string{knowledgev1.ScopeUser, knowledgev1.ScopePublic}, MaxSensitivity: knowledgev1.SensitivityInternal,
+		Text: queryText, Scopes: []string{knowledgev1.ScopeUser, knowledgev1.ScopeOrganization, knowledgev1.ScopePublic}, MaxSensitivity: knowledgev1.SensitivityInternal,
 		RelationDepth: 1, MinEvidenceAuthority: .25,
 		Budget: knowledgev1.RetrievalBudget{MaxResults: 8, MaxTokens: 6000, MaxTimeMS: 1200},
 	})
@@ -1671,7 +1873,7 @@ func (s *RuntimeService) storeMemories(ctx context.Context, values map[string]an
 		entries = append(entries, memorysvc.CreateReq{Name: item.Name, Description: item.Description, MemoryType: item.Type, Content: item.Content, Importance: item.Importance})
 	}
 	if err := s.memorySvc.StoreExtracted(ctx, authctx.UserID(ctx), agentIDFromContext(values), sessionIDFromContext(values), entries); err != nil {
-		log.Warnf("store extracted memories failed: %v", err)
+		log.Warnf(ctx, "store extracted memories failed: %v", err)
 	}
 }
 

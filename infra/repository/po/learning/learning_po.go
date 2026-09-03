@@ -47,16 +47,17 @@ type CandidateEvaluation struct {
 func (*CandidateEvaluation) TableName() string { return "os_candidate_evaluation" }
 
 type Skill struct {
-	SkillID       string `gorm:"column:skill_id;primaryKey;type:varchar(160)"`
-	OwnerID       string `gorm:"column:owner_id;type:varchar(128);not null;index:idx_os_skill_owner_created,priority:1"`
-	LatestVersion string `gorm:"column:latest_version;type:varchar(32);not null"`
-	Status        string `gorm:"column:status;type:varchar(32);not null;index"`
-	Visibility    string `gorm:"column:visibility;type:varchar(24);not null;index"`
-	Revision      int64  `gorm:"column:revision;type:bigint;not null;default:1"`
-	TraceID       string `gorm:"column:trace_id;type:varchar(128);index"`
-	CreatedAt     int64  `gorm:"column:created_at;type:bigint;not null;index:idx_os_skill_owner_created,priority:2"`
-	UpdatedAt     int64  `gorm:"column:updated_at;type:bigint;not null"`
-	DeletedAt     int64  `gorm:"column:deleted_at;type:bigint;not null;default:0;index"`
+	SkillID        string `gorm:"column:skill_id;primaryKey;type:varchar(160)"`
+	OwnerID        string `gorm:"column:owner_id;type:varchar(128);not null;index:idx_os_skill_owner_created,priority:1"`
+	OrganizationID string `gorm:"column:organization_id;type:varchar(128);not null;default:'';index:idx_os_skill_org_visibility,priority:1"`
+	LatestVersion  string `gorm:"column:latest_version;type:varchar(32);not null"`
+	Status         string `gorm:"column:status;type:varchar(32);not null;index"`
+	Visibility     string `gorm:"column:visibility;type:varchar(24);not null;index;index:idx_os_skill_org_visibility,priority:2"`
+	Revision       int64  `gorm:"column:revision;type:bigint;not null;default:1"`
+	TraceID        string `gorm:"column:trace_id;type:varchar(128);index"`
+	CreatedAt      int64  `gorm:"column:created_at;type:bigint;not null;index:idx_os_skill_owner_created,priority:2"`
+	UpdatedAt      int64  `gorm:"column:updated_at;type:bigint;not null"`
+	DeletedAt      int64  `gorm:"column:deleted_at;type:bigint;not null;default:0;index"`
 }
 
 func (*Skill) TableName() string { return "os_skill" }
@@ -76,16 +77,17 @@ type SkillVersion struct {
 func (*SkillVersion) TableName() string { return "os_skill_version" }
 
 type Strategy struct {
-	StrategyID    string `gorm:"column:strategy_id;primaryKey;type:varchar(160)"`
-	OwnerID       string `gorm:"column:owner_id;type:varchar(128);not null;index:idx_os_strategy_owner_created,priority:1"`
-	LatestVersion string `gorm:"column:latest_version;type:varchar(32);not null"`
-	Status        string `gorm:"column:status;type:varchar(32);not null;index"`
-	Visibility    string `gorm:"column:visibility;type:varchar(24);not null;index"`
-	Revision      int64  `gorm:"column:revision;type:bigint;not null;default:1"`
-	TraceID       string `gorm:"column:trace_id;type:varchar(128);index"`
-	CreatedAt     int64  `gorm:"column:created_at;type:bigint;not null;index:idx_os_strategy_owner_created,priority:2"`
-	UpdatedAt     int64  `gorm:"column:updated_at;type:bigint;not null"`
-	DeletedAt     int64  `gorm:"column:deleted_at;type:bigint;not null;default:0;index"`
+	StrategyID     string `gorm:"column:strategy_id;primaryKey;type:varchar(160)"`
+	OwnerID        string `gorm:"column:owner_id;type:varchar(128);not null;index:idx_os_strategy_owner_created,priority:1"`
+	OrganizationID string `gorm:"column:organization_id;type:varchar(128);not null;default:'';index:idx_os_strategy_org_visibility,priority:1"`
+	LatestVersion  string `gorm:"column:latest_version;type:varchar(32);not null"`
+	Status         string `gorm:"column:status;type:varchar(32);not null;index"`
+	Visibility     string `gorm:"column:visibility;type:varchar(24);not null;index;index:idx_os_strategy_org_visibility,priority:2"`
+	Revision       int64  `gorm:"column:revision;type:bigint;not null;default:1"`
+	TraceID        string `gorm:"column:trace_id;type:varchar(128);index"`
+	CreatedAt      int64  `gorm:"column:created_at;type:bigint;not null;index:idx_os_strategy_owner_created,priority:2"`
+	UpdatedAt      int64  `gorm:"column:updated_at;type:bigint;not null"`
+	DeletedAt      int64  `gorm:"column:deleted_at;type:bigint;not null;default:0;index"`
 }
 
 func (*Strategy) TableName() string { return "os_strategy" }
@@ -113,6 +115,7 @@ type Demonstration struct {
 	Content         string `gorm:"column:content;type:text;not null"`
 	PauseCount      int    `gorm:"column:pause_count;not null;default:0"`
 	ConfirmedBy     string `gorm:"column:confirmed_by;type:varchar(128)"`
+	ConfirmedAt     int64  `gorm:"column:confirmed_at;type:bigint;not null;default:0;index"`
 	Revision        int64  `gorm:"column:revision;type:bigint;not null;default:1"`
 	TraceID         string `gorm:"column:trace_id;type:varchar(128);index"`
 	CreatedAt       int64  `gorm:"column:created_at;type:bigint;not null;index:idx_os_demo_owner_created,priority:2"`

@@ -56,12 +56,16 @@ func (h *Handler) RunGoldenJourneys(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": results})
 }
 
-func (h *Handler) RecordGoldenJourneyEvidence(c *gin.Context) {
-	if !requireAdmin(c) {
+// RecordGoldenJourneyEvidenceInternal accepts suites only from the trusted E2E
+// runner. A browser administrator session cannot manufacture GA evidence.
+func (h *Handler) RecordGoldenJourneyEvidenceInternal(c *gin.Context) {
+	if !middleware.InternalTokenValid(c.GetHeader(consts.HeaderAthenaInternalToken)) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid internal service token"})
 		return
 	}
 	var request struct {
-		Items []ga.GoldenJourneyResult `json:"items"`
+		OwnerID string                   `json:"owner_id"`
+		Items   []ga.GoldenJourneyResult `json:"items"`
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<20)
 	decoder := json.NewDecoder(c.Request.Body)
@@ -74,7 +78,7 @@ func (h *Handler) RecordGoldenJourneyEvidence(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "request body must contain exactly one JSON value"})
 		return
 	}
-	if err := h.service.RecordGoldenJourneyResults(c.Request.Context(), authctx.UserID(c.Request.Context()), request.Items); err != nil {
+	if err := h.service.RecordGoldenJourneyResults(c.Request.Context(), strings.TrimSpace(request.OwnerID), request.Items); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
 	}
@@ -87,7 +91,11 @@ func (h *Handler) ListBackups(c *gin.Context) {
 	}
 	manager := h.service.BackupManager()
 	if manager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "backup management is not configured"})
+		c.JSON(http.StatusOK, gin.H{
+			"items":      []operationsv1.BackupManifest{},
+			"configured": false,
+			"reason":     "backup management is not configured",
+		})
 		return
 	}
 	items, err := manager.List()
@@ -95,7 +103,7 @@ func (h *Handler) ListBackups(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	c.JSON(http.StatusOK, gin.H{"items": items, "configured": true})
 }
 
 func (h *Handler) CreateBackup(c *gin.Context) {

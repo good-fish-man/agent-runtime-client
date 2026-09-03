@@ -151,7 +151,7 @@ func testService(t *testing.T, visibility string) (*Service, InstallRequest) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	trust := trustStore{Schema: "athena.plugin-trust.v1", Keys: []trustKey{{KeyID: "test", Algorithm: pluginv1.SignatureEd25519, PublicKey: base64.StdEncoding.EncodeToString(publicKey)}}}
+	trust := trustStore{Schema: pluginv1.TrustStoreSchema, Keys: []trustKey{{KeyID: "test", Algorithm: pluginv1.SignatureEd25519, PublicKey: base64.StdEncoding.EncodeToString(publicKey)}}}
 	writeTestJSON(t, cfg.TrustStorePath, trust)
 	providerPackage, err := pluginsdk.Build(testManifest(), map[string]any{"bomFormat": "CycloneDX", "specVersion": "1.5"}, "test", privateKey)
 	if err != nil {

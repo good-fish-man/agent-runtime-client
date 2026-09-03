@@ -143,7 +143,7 @@ func (s *SysUserService) DeleteSysUser(ctx context.Context, req *dto.DelSysUsers
 		return log.WrapError(err, "SysUserService.DeleteSysUser")
 	}
 	if _, err := s.logSvc.CreateSysLog(ctx, &entity.SysLog{CreatedBy: req.DeletedBy, Msg: "SysUser.Delete"}); err != nil {
-		log.WarnwCtx(ctx, "audit log write failed", "operation", "SysUser.Delete", "error_chain", log.FormatError(log.WrapError(err, "SysUserService.DeleteSysUser.audit")))
+		log.Warnw(ctx, "audit log write failed", "operation", "SysUser.Delete", "error_chain", log.FormatError(log.WrapError(err, "SysUserService.DeleteSysUser.audit")))
 	}
 	return nil
 }
@@ -154,7 +154,7 @@ func (s *SysUserService) UpdateSysUser(ctx context.Context, req *dto.UpdateSysUs
 		return log.WrapError(err, "SysUserService.UpdateSysUser")
 	}
 	if _, err := s.logSvc.CreateSysLog(ctx, &entity.SysLog{CreatedBy: req.UpdatedBy, Msg: "SysUser.Update"}); err != nil {
-		log.WarnwCtx(ctx, "audit log write failed", "operation", "SysUser.Update", "error_chain", log.FormatError(log.WrapError(err, "SysUserService.UpdateSysUser.audit")))
+		log.Warnw(ctx, "audit log write failed", "operation", "SysUser.Update", "error_chain", log.FormatError(log.WrapError(err, "SysUserService.UpdateSysUser.audit")))
 	}
 	return nil
 }

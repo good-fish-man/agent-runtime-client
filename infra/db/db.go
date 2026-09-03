@@ -24,11 +24,13 @@ func New(cfg config.DBConfig) (*gorm.DB, error) {
 		return nil, err
 	}
 
+	databaseLogLevel := logLevel(cfg.LogMode)
 	gdb, err := gorm.Open(dialector, &gorm.Config{
-		Logger: (&log.GormLogger{
-			LogLevel:      logLevel(cfg.LogMode),
-			SlowThreshold: time.Duration(cfg.SlowThreshold) * time.Millisecond,
-		}).LogMode(logLevel(cfg.LogMode)),
+		Logger: newContextualLogger(&log.GormLogger{
+			LogLevel:             logLevel(cfg.LogMode),
+			SlowThreshold:        time.Duration(cfg.SlowThreshold) * time.Millisecond,
+			AdditionalCallerSkip: 1,
+		}, databaseLogLevel),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("db: open %s: %w", cfg.DBType, err)

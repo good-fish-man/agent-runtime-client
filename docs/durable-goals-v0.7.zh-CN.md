@@ -6,7 +6,7 @@ Athena v0.7 将用户明确要求的长期任务转换为有限、耐久的任�
 
 1. Runtime 只把明确提出后台、跨天、跨设备或稍后恢复的请求识别为长期 Goal。
 2. `PersistentGoalCreate` 提交声明式任务图，最多 64 个节点、深度 4、并发专家 8 个。
-3. Runtime Client 原子保存 Goal、任务、专家结果、调度触发记录和 Checkpoint。
+3. Runtime Client 通过 `POST /goals/planned` 原子保存 Goal、任务图和首个 Checkpoint，避免两段式创建留下孤立 Draft。
 4. Supervisor 直接执行服务端专家；浏览器和桌面专家只会路由到同时在线且具备全部所需能力的设备。
 5. Runtime 继续使用现有 Control Hub。外部副作用只有收到成功的真实设备 Observation 后才算确认，其幂等键会写入下一个 Checkpoint。
 6. 服务重启时，孤立的 `RUNNING` 任务恢复为 `READY`，同时保留已确认副作用和按设备隔离的世界状态。
@@ -26,8 +26,8 @@ Cron 只负责触发。每个时间槽都会创建与交互任务完全相同的
 - 任务图必须有限，每个任务的预算必须为正且不能超过 Goal 总预算。
 - Supervisor 禁止递归创建长期 Goal、隐藏子 Agent、生成代码直接执行或无限循环。
 - `WAITING_USER`、审批、设备离线、截止时间和预算耗尽都会落盘，绝不伪装成成功。
-- 专家只能读取声明的 world slice；凭据、Cookie、原始截图和无限制设备状态不会写入 Goal。
-- 每个专家结果必须包含 RunManifest、AgentBuild、模型配置指纹、执行实例、设备、Trace、预算、证据、Observation 和已确认副作用来源。
+- 专家只能读取声明的 world slice；嵌套凭据、Cookie、Token、原始截图和无限制设备状态会被递归裁剪，不能写入 Goal。
+- 每个专家结果必须有 Producer、Trace 和运行来源。Runtime 结果还必须绑定 RunManifest、AgentBuild 和模型配置指纹；设备 Specialist 只有收到成功 Observation 才能完成，外部副作用必须同时保留 Observation 引用。
 
 ## 运维配置
 
@@ -38,7 +38,7 @@ orchestration:
   max_concurrent_runs: 2
 ```
 
-对应环境变量是 `ARC_ORCHESTRATION_ENABLED`、`ARC_ORCHESTRATION_SCAN_INTERVAL_SEC` 和 `ARC_ORCHESTRATION_MAX_CONCURRENT_RUNS`。用户接口位于 `/goals`；Runtime 通过带内部令牌的 `/internal/goals` 创建已规划 Goal。
+对应环境变量是 `ARC_ORCHESTRATION_ENABLED`、`ARC_ORCHESTRATION_SCAN_INTERVAL_SEC` 和 `ARC_ORCHESTRATION_MAX_CONCURRENT_RUNS`。用户接口位于 `/goals`；`POST /goals/planned` 提供用户级原子创建，Runtime 通过带内部令牌的 `/internal/goals` 创建已规划 Goal。任务启动、结果写入和手工 Checkpoint 写入同样要求严格匹配的内部服务令牌。
 
 常用只读接口：
 
@@ -51,7 +51,7 @@ Inbox 会显示触发来源、执行尝试、设备路由、Specialist 来源、
 
 ## 验收证据
 
-自动化测试覆盖有限旅行规划图、跨设备过滤 World Slice、预算耗尽进入 `WAITING_USER`、重启恢复不重置活跃尝试、稳定 Action 幂等、时间槽去重、重试状态、用户归属审批消费、缺少证据拒绝完成，以及损坏或断裂 Checkpoint 链拒绝恢复。
+自动化测试覆盖五天旅行规划与追问、离线等待后跨设备接管、递归过滤 World Slice、Token/时间/查询/页面/Action 预算、重启恢复不重复已确认副作用、稳定 Action 幂等、时间槽去重、调度扫描器生命周期、用户归属审批消费、无 Observation 的设备假成功拒绝、失败结果不能验证成功条件，以及损坏或断裂 Checkpoint 链拒绝恢复。
 
 ## 回滚
 

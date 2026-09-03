@@ -87,6 +87,7 @@ func (w *responseLogWriter) bodyString() string {
 // buffered; only status, bytes, write count, event count, and cost are logged.
 func ReqBody() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		ctx := c.Request.Context()
 		start := time.Now()
 		requestBody := readRequestBodyForLog(c.Request)
 		requestPath := requestPathForLog(c.Request)
@@ -98,8 +99,8 @@ func ReqBody() gin.HandlerFunc {
 		}
 		c.Writer = blw
 
-		log.Infof("==== Request ====")
-		log.Infof("Path=%s,Method=%s,Query=%s,Headers=%v,Body=%s",
+		log.Infof(ctx, "==== Request ====")
+		log.Infof(ctx, "Path=%s,Method=%s,Query=%s,Headers=%v,Body=%s",
 			requestPath,
 			c.Request.Method,
 			c.Request.URL.RawQuery,
@@ -111,9 +112,9 @@ func ReqBody() gin.HandlerFunc {
 
 		cost := time.Since(start)
 		logRequestError(c, requestPath, cost)
-		log.Infof("==== Response ====")
+		log.Infof(ctx, "==== Response ====")
 		if blw.isStream() {
-			log.Infof("Path=%s,Method=%s,Status=%d,Stream=true,Bytes=%d,Writes=%d,Events=%d,Cost=%v",
+			log.Infof(ctx, "Path=%s,Method=%s,Status=%d,Stream=true,Bytes=%d,Writes=%d,Events=%d,Cost=%v",
 				requestPath,
 				c.Request.Method,
 				blw.Status(),
@@ -124,7 +125,7 @@ func ReqBody() gin.HandlerFunc {
 			)
 			return
 		}
-		log.Infof("Path=%s,Method=%s,Status=%d,Body=%s,Bytes=%d,Cost=%v",
+		log.Infof(ctx, "Path=%s,Method=%s,Status=%d,Body=%s,Bytes=%d,Cost=%v",
 			requestPath,
 			c.Request.Method,
 			blw.Status(),
@@ -163,10 +164,10 @@ func logRequestError(c *gin.Context, path string, cost time.Duration) {
 		kv = append(kv, "error_chain", log.FormatError(requestErr))
 	}
 	if status >= http.StatusInternalServerError || requestErr != nil && status < http.StatusBadRequest {
-		log.ErrorwCtx(c.Request.Context(), "http request failed", kv...)
+		log.Errorw(c.Request.Context(), "http request failed", kv...)
 		return
 	}
-	log.WarnwCtx(c.Request.Context(), "http request rejected", kv...)
+	log.Warnw(c.Request.Context(), "http request rejected", kv...)
 }
 
 func redactSensitiveHeaders(headers http.Header) http.Header {

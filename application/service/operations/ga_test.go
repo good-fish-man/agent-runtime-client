@@ -104,6 +104,9 @@ func TestRecordGoldenJourneyResultsRequiresCompleteE2EEvidence(t *testing.T) {
 	store := newMemoryGAEvidenceStore()
 	service := New("", nil, nil).WithGAEvidenceStore(store)
 	results := completeE2EResults("e2e-run-1")
+	if err := service.RecordGoldenJourneyResults(context.Background(), "", results); err == nil {
+		t.Fatal("expected empty evidence owner to be rejected")
+	}
 	if err := service.RecordGoldenJourneyResults(context.Background(), "owner-1", results); err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +120,26 @@ func TestRecordGoldenJourneyResultsRequiresCompleteE2EEvidence(t *testing.T) {
 	results[0].Steps[0].Evidence = results[0].Steps[0].Evidence[1:]
 	if err := service.RecordGoldenJourneyResults(context.Background(), "owner-1", results); err == nil {
 		t.Fatal("expected missing E2E evidence to be rejected")
+	}
+}
+
+func TestTraceCoverageRejectsEvidenceCombinedAcrossSteps(t *testing.T) {
+	results := completeE2EResults("e2e-fragmented-trace")
+	for resultIndex := range results {
+		if results[resultIndex].JourneyID != "browser-handoff" {
+			continue
+		}
+		for stepIndex := range results[resultIndex].Steps {
+			if results[resultIndex].Steps[stepIndex].StepID == "interact" {
+				results[resultIndex].Steps[stepIndex].Evidence = []ga.EvidenceRef{
+					{Kind: "action_id", Reference: "action-value"},
+					{Kind: "observation_id", Reference: "observation-value"},
+				}
+			}
+		}
+	}
+	if coverage := traceCoverageFromJourneys(results); coverage != nil {
+		t.Fatalf("fragmented evidence produced trace coverage: %+v", coverage)
 	}
 }
 

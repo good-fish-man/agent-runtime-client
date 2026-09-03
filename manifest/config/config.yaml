@@ -25,6 +25,26 @@ orchestration:
   scan_interval_sec: 3
   max_concurrent_runs: 2
 
+evolution:
+  # Discovers declarative Skill candidates from independent Experience records.
+  # Candidates always require offline evaluation and explicit human review.
+  enabled: true
+  scan_interval_sec: 60
+  owner_batch_size: 100
+  experience_limit: 1000
+  max_candidates_per_scan: 10
+  minimum_novel_experiences: 2
+  codex:
+    # Opt in explicitly because synthesis sends bounded evidence to OpenAI and incurs API usage.
+    # Codex only proposes declarative artifacts; it cannot generate executable code or deploy them.
+    enabled: false
+    model: "gpt-5.3-codex"
+    api_key: "${OPENAI_API_KEY}"
+    api_base: "https://api.openai.com/v1"
+    reasoning_effort: "medium"
+    timeout_sec: 120
+    max_output_tokens: 4096
+
 plugins:
   # Signed, immutable Capability Provider packages. Empty values use ~/.athena/plugins.
   directory: ""
@@ -47,7 +67,7 @@ log:
 db:
   db_type: "postgres"
   username: "postgres"
-  password: "a123456"
+  password: "a123456" # set ARC_DB_PASSWORD or let Athena Launcher generate it
   db_host: "127.0.0.1"
   db_port: 5432
   db_name: "agent_runtime"

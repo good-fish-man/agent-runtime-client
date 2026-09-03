@@ -8,6 +8,7 @@ import (
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/experience"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
+	controlpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/control"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/experience"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -116,6 +117,33 @@ func TestStoreRetentionAndDisabledPreference(t *testing.T) {
 	}
 }
 
+func TestListReadyOwnersUsesStableKeysetAndExcludesTombstones(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+	deleteAt := time.Now().UTC().Add(time.Hour)
+	for _, fixture := range []*entity.StoredExperience{
+		testStoredExperience("experience-c", "task-c", "user-c", deleteAt),
+		testStoredExperience("experience-a", "task-a", "user-a", deleteAt),
+		testStoredExperience("experience-b", "task-b", "user-b", deleteAt),
+	} {
+		if created, err := store.Create(ctx, fixture); err != nil || !created {
+			t.Fatalf("create %s: created=%v err=%v", fixture.Experience.ExperienceID, created, err)
+		}
+	}
+	if err := store.DeletePayload(ctx, "user-b", "experience-b", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.ListReadyOwners(ctx, "", 1)
+	if err != nil || len(first) != 1 || first[0] != "user-a" {
+		t.Fatalf("first owner page = %#v, err=%v", first, err)
+	}
+	second, err := store.ListReadyOwners(ctx, first[0], 10)
+	if err != nil || len(second) != 1 || second[0] != "user-c" {
+		t.Fatalf("second owner page = %#v, err=%v", second, err)
+	}
+}
+
 func TestStoreDeleteAllPayloadsIsOwnerScoped(t *testing.T) {
 	store, db := newTestStore(t)
 	ctx := context.Background()
@@ -160,6 +188,82 @@ func TestStoreDeleteAllPayloadsIsOwnerScoped(t *testing.T) {
 	}
 }
 
+func TestStoreStatsReportsOwnerScopedTerminalCoverage(t *testing.T) {
+	store, db := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	tasks := []controlpo.Task{
+		{TaskID: "task-covered", UserID: "user-1", Status: "COMPLETED", Revision: 1, CreatedAt: millis(now), UpdatedAt: millis(now)},
+		{TaskID: "task-pending", UserID: "user-1", Status: "FAILED", Revision: 1, CreatedAt: millis(now), UpdatedAt: millis(now)},
+		{TaskID: "task-running", UserID: "user-1", Status: "RUNNING", Revision: 1, CreatedAt: millis(now), UpdatedAt: millis(now)},
+		{TaskID: "task-other", UserID: "user-2", Status: "CANCELLED", Revision: 1, CreatedAt: millis(now), UpdatedAt: millis(now)},
+	}
+	if err := db.Create(&tasks).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []*entity.StoredExperience{
+		testStoredExperience("experience-covered", "task-covered", "user-1", now.Add(time.Hour)),
+		testStoredExperience("experience-other", "task-other", "user-2", now.Add(time.Hour)),
+	} {
+		if created, err := store.Create(ctx, fixture); err != nil || !created {
+			t.Fatalf("create %s: created=%v err=%v", fixture.Experience.ExperienceID, created, err)
+		}
+	}
+	stats, err := store.Stats(ctx, "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TerminalTasks != 2 || stats.CoveredTasks != 1 || stats.PendingTasks != 1 || stats.CoverageRate != 0.5 {
+		t.Fatalf("unexpected owner coverage: %#v", stats)
+	}
+	other, err := store.Stats(ctx, "user-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.TerminalTasks != 1 || other.CoveredTasks != 1 || other.PendingTasks != 0 || other.CoverageRate != 1 {
+		t.Fatalf("cross-owner coverage leaked: %#v", other)
+	}
+}
+
+func TestStoreEvaluationRoundTripPreservesBaselineAndRegression(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	run := entity.EvaluationRun{
+		RunID: "run-roundtrip", OwnerID: "user-1", SuiteID: "suite-roundtrip", Status: entity.EvaluationCompleted,
+		Seed: 42, CandidateID: "candidate-v3", BaselineID: "baseline-v2",
+		Metrics:         entity.EvaluationMetrics{Correctness: 0.5, SuccessRate: 0.5, SafetyScore: 1, LatencyMS: 20},
+		BaselineMetrics: entity.EvaluationMetrics{Correctness: 1, SuccessRate: 1, SafetyScore: 1, LatencyMS: 20},
+		MetricDelta:     entity.EvaluationMetrics{Correctness: -0.5, SuccessRate: -0.5},
+		Regression:      true, RegressionCount: 1, StartedAt: now, FinishedAt: now.Add(time.Second),
+	}
+	result := entity.EvaluationResult{
+		ResultID: "result-roundtrip", RunID: run.RunID, FixtureID: "fixture-roundtrip", Passed: false,
+		Metrics: run.Metrics, BaselineMetrics: run.BaselineMetrics, MetricDelta: run.MetricDelta,
+		Regression: true, Summary: "candidate regressed", EvidenceIDs: []string{"snapshot:test"}, CreatedAt: now,
+	}
+	if err := store.CreateRun(ctx, run, []entity.EvaluationResult{result}); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := store.ListRuns(ctx, "user-1", 10)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("list runs: items=%#v err=%v", runs, err)
+	}
+	if !runs[0].Regression || runs[0].RegressionCount != 1 || runs[0].MetricDelta.Correctness != -0.5 || runs[0].BaselineMetrics.Correctness != 1 {
+		t.Fatalf("evaluation run lost comparison fields: %#v", runs[0])
+	}
+	results, err := store.ListResults(ctx, "user-1", run.RunID)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("list results: items=%#v err=%v", results, err)
+	}
+	if !results[0].Regression || results[0].MetricDelta.SuccessRate != -0.5 || len(results[0].EvidenceIDs) != 1 {
+		t.Fatalf("evaluation result lost comparison fields: %#v", results[0])
+	}
+	if leaked, err := store.ListRuns(ctx, "user-2", 10); err != nil || len(leaked) != 0 {
+		t.Fatalf("cross-owner evaluation run leaked: items=%#v err=%v", leaked, err)
+	}
+}
+
 func newTestStore(t *testing.T) (*Store, *gorm.DB) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
@@ -167,6 +271,7 @@ func newTestStore(t *testing.T) (*Store, *gorm.DB) {
 		t.Fatal(err)
 	}
 	if err := db.AutoMigrate(
+		&controlpo.Task{},
 		&po.Experience{}, &po.ExperiencePayload{}, &po.ExperienceEventRef{}, &po.ExperienceRedaction{},
 		&po.FailureClassification{}, &po.ExperiencePreference{}, &po.EvaluationFixture{}, &po.EvaluationSuite{},
 		&po.EvaluationRun{}, &po.EvaluationResult{},

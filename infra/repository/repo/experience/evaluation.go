@@ -98,6 +98,8 @@ func (s *Store) CreateRun(ctx context.Context, run entity.EvaluationRun, results
 		value := po.EvaluationRun{
 			RunID: run.RunID, OwnerID: run.OwnerID, SuiteID: run.SuiteID, Status: run.Status, Seed: run.Seed,
 			CandidateID: run.CandidateID, BaselineID: run.BaselineID, Metrics: encodeJSON(run.Metrics),
+			BaselineMetrics: encodeJSON(run.BaselineMetrics), MetricDelta: encodeJSON(run.MetricDelta),
+			Regression: run.Regression, RegressionCount: run.RegressionCount,
 			StartedAt: millis(run.StartedAt), FinishedAt: millis(run.FinishedAt), Error: run.Error,
 			CreatedAt: millis(run.StartedAt), UpdatedAt: millis(firstTime(run.FinishedAt, run.StartedAt)),
 		}
@@ -107,7 +109,8 @@ func (s *Store) CreateRun(ctx context.Context, run entity.EvaluationRun, results
 		for _, result := range results {
 			item := po.EvaluationResult{
 				ResultID: result.ResultID, OwnerID: run.OwnerID, RunID: run.RunID, FixtureID: result.FixtureID,
-				Passed: result.Passed, Metrics: encodeJSON(result.Metrics), Summary: result.Summary,
+				Passed: result.Passed, Metrics: encodeJSON(result.Metrics), BaselineMetrics: encodeJSON(result.BaselineMetrics),
+				MetricDelta: encodeJSON(result.MetricDelta), Regression: result.Regression, Summary: result.Summary,
 				EvidenceIDs: encodeJSON(result.EvidenceIDs), CreatedAt: millis(result.CreatedAt),
 			}
 			if err := tx.Create(&item).Error; err != nil {
@@ -125,7 +128,11 @@ func (s *Store) ListRuns(ctx context.Context, ownerID string, limit int) ([]enti
 	}
 	items := make([]entity.EvaluationRun, 0, len(values))
 	for _, value := range values {
-		items = append(items, decodeRun(value))
+		item, err := decodeRun(value)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
 	}
 	return items, nil
 }
@@ -137,13 +144,26 @@ func (s *Store) ListResults(ctx context.Context, ownerID, runID string) ([]entit
 	}
 	items := make([]entity.EvaluationResult, 0, len(values))
 	for _, value := range values {
-		var metrics entity.EvaluationMetrics
-		_ = json.Unmarshal([]byte(value.Metrics), &metrics)
+		metrics, err := decodeEvaluationMetrics(value.Metrics, "ExperienceStore.ListResults.metrics")
+		if err != nil {
+			return nil, err
+		}
+		baselineMetrics, err := decodeEvaluationMetrics(value.BaselineMetrics, "ExperienceStore.ListResults.baseline_metrics")
+		if err != nil {
+			return nil, err
+		}
+		metricDelta, err := decodeEvaluationMetrics(value.MetricDelta, "ExperienceStore.ListResults.metric_delta")
+		if err != nil {
+			return nil, err
+		}
 		var evidenceIDs []string
-		_ = json.Unmarshal([]byte(value.EvidenceIDs), &evidenceIDs)
+		if err := json.Unmarshal([]byte(value.EvidenceIDs), &evidenceIDs); err != nil {
+			return nil, log.WrapError(err, "ExperienceStore.ListResults.evidence_ids")
+		}
 		items = append(items, entity.EvaluationResult{
 			ResultID: value.ResultID, RunID: value.RunID, FixtureID: value.FixtureID, Passed: value.Passed,
-			Metrics: metrics, Summary: value.Summary, EvidenceIDs: evidenceIDs, CreatedAt: fromMillis(value.CreatedAt),
+			Metrics: metrics, BaselineMetrics: baselineMetrics, MetricDelta: metricDelta, Regression: value.Regression,
+			Summary: value.Summary, EvidenceIDs: evidenceIDs, CreatedAt: fromMillis(value.CreatedAt),
 		})
 	}
 	return items, nil
@@ -166,14 +186,33 @@ func decodeSuite(value po.EvaluationSuite) entity.EvaluationSuite {
 	}
 }
 
-func decodeRun(value po.EvaluationRun) entity.EvaluationRun {
-	var metrics entity.EvaluationMetrics
-	_ = json.Unmarshal([]byte(value.Metrics), &metrics)
+func decodeRun(value po.EvaluationRun) (entity.EvaluationRun, error) {
+	metrics, err := decodeEvaluationMetrics(value.Metrics, "ExperienceStore.decodeRun.metrics")
+	if err != nil {
+		return entity.EvaluationRun{}, err
+	}
+	baselineMetrics, err := decodeEvaluationMetrics(value.BaselineMetrics, "ExperienceStore.decodeRun.baseline_metrics")
+	if err != nil {
+		return entity.EvaluationRun{}, err
+	}
+	metricDelta, err := decodeEvaluationMetrics(value.MetricDelta, "ExperienceStore.decodeRun.metric_delta")
+	if err != nil {
+		return entity.EvaluationRun{}, err
+	}
 	return entity.EvaluationRun{
 		RunID: value.RunID, OwnerID: value.OwnerID, SuiteID: value.SuiteID, Status: value.Status,
 		Seed: value.Seed, CandidateID: value.CandidateID, BaselineID: value.BaselineID, Metrics: metrics,
+		BaselineMetrics: baselineMetrics, MetricDelta: metricDelta, Regression: value.Regression, RegressionCount: value.RegressionCount,
 		StartedAt: fromMillis(value.StartedAt), FinishedAt: fromMillis(value.FinishedAt), Error: value.Error,
+	}, nil
+}
+
+func decodeEvaluationMetrics(value, operation string) (entity.EvaluationMetrics, error) {
+	var metrics entity.EvaluationMetrics
+	if err := json.Unmarshal([]byte(value), &metrics); err != nil {
+		return entity.EvaluationMetrics{}, log.WrapError(err, operation)
 	}
+	return metrics, nil
 }
 
 func firstTime(values ...time.Time) time.Time {

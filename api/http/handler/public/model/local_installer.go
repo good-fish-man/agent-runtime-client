@@ -25,6 +25,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
 	"github.com/good-fish-man/agent-runtime-client/types/response"
+	log "github.com/good-fish-man/logx"
 )
 
 type localModelInstallJob struct {
@@ -82,7 +83,7 @@ func (h *Handler) InstallLocalModel(c *gin.Context) {
 		_ = c.Error(apierror.ErrBadRequest.WithMessage(environment.Message))
 		return
 	}
-	job := h.installer.start(c.GetString("user_id"), catalog)
+	job := h.installer.start(c.Request.Context(), c.GetString("user_id"), catalog)
 	response.OkStatus(c, http.StatusAccepted, &dto.LocalModelInstallRsp{JobID: job.JobID})
 }
 
@@ -95,7 +96,7 @@ func (h *Handler) LocalModelInstallJob(c *gin.Context) {
 	response.Ok(c, &job.LocalModelInstallJobRsp)
 }
 
-func (i *localModelInstaller) start(userID string, catalog *dto.FindModelCatalogRsp) *localModelInstallJob {
+func (i *localModelInstaller) start(ctx context.Context, userID string, catalog *dto.FindModelCatalogRsp) *localModelInstallJob {
 	job := &localModelInstallJob{
 		UserID: userID,
 		LocalModelInstallJobRsp: dto.LocalModelInstallJobRsp{
@@ -112,7 +113,10 @@ func (i *localModelInstaller) start(userID string, catalog *dto.FindModelCatalog
 	}
 	i.jobs[job.JobID] = job
 	i.mu.Unlock()
-	go i.run(job.JobID, catalog)
+	backgroundCtx := context.WithoutCancel(ctx)
+	log.Go(backgroundCtx, func(installCtx context.Context) {
+		i.run(installCtx, job.JobID, catalog)
+	})
 	return job
 }
 
@@ -148,7 +152,7 @@ func (i *localModelInstaller) lockModel(model string) func() {
 	return lock.Unlock
 }
 
-func (i *localModelInstaller) run(jobID string, catalog *dto.FindModelCatalogRsp) {
+func (i *localModelInstaller) run(ctx context.Context, jobID string, catalog *dto.FindModelCatalogRsp) {
 	fail := func(err error) {
 		i.update(jobID, func(job *localModelInstallJob) {
 			job.Status = "failed"
@@ -178,18 +182,18 @@ func (i *localModelInstaller) run(jobID string, catalog *dto.FindModelCatalogRsp
 			return
 		}
 	}
-	if !ollamaRunning(context.Background()) {
+	if !ollamaRunning(ctx) {
 		i.update(jobID, func(job *localModelInstallJob) {
 			job.Stage = "runtime"
 			job.Progress = 10
 			job.Message = "正在启动 Ollama 运行时"
 		})
-		if err := startOllama(binary); err != nil {
+		if err := startOllama(ctx, binary); err != nil {
 			fail(err)
 			return
 		}
 	}
-	if ollamaModelInstalled(context.Background(), catalog.ModelVersion) {
+	if ollamaModelInstalled(ctx, catalog.ModelVersion) {
 		i.update(jobID, func(job *localModelInstallJob) {
 			job.Status = "completed"
 			job.Stage = "complete"
@@ -650,7 +654,7 @@ func installOllamaRuntime() (string, error) {
 	return "", fmt.Errorf("Ollama 安装完成，但当前进程尚未找到 ollama 命令，请重启 agent-runtime-client")
 }
 
-func startOllama(binary string) error {
+func startOllama(ctx context.Context, binary string) error {
 	logPath := filepath.Join(os.TempDir(), consts.OllamaStartupLogFileName)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -665,7 +669,7 @@ func startOllama(binary string) error {
 	}
 	_ = logFile.Close()
 	for attempt := 0; attempt < ollamaStartupProbeAttempts; attempt++ {
-		if ollamaRunning(context.Background()) {
+		if ollamaRunning(ctx) {
 			return nil
 		}
 		time.Sleep(ollamaStartupProbeInterval)

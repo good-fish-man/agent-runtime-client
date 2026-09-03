@@ -9,8 +9,10 @@ import (
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/deployment"
 	repository "github.com/good-fish-man/agent-runtime-client/domain/irepository/deployment"
+	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
 	"github.com/good-fish-man/agent-runtime-client/pkg/ulid"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
+	runtimeartifact "github.com/good-fish-man/athena-protocol/draft/runtimeartifact"
 	deploymentv1 "github.com/good-fish-man/athena-protocol/protocol/deployment/v1"
 	log "github.com/good-fish-man/logx"
 )
@@ -117,12 +119,51 @@ type RunManifestInput struct {
 	FeatureFlags        map[string]bool
 }
 
+// ResolveRuntimeArtifacts loads and verifies the exact reviewed definitions
+// selected by a run manifest. Resolution fails closed if a build, checksum,
+// approval, or owner scope no longer matches.
+func (s *Service) ResolveRuntimeArtifacts(ctx context.Context, ownerID string, manifest entity.RunManifest) (*runtimeartifact.Bundle, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("deployment service is not configured")
+	}
+	if manifest.OwnerID != ownerID {
+		return nil, apierror.ErrForbidden.WithMessage("run manifest crosses owner boundary")
+	}
+	build, err := s.store.FindBuild(ctx, ownerID, manifest.AgentBuildID)
+	if err != nil {
+		return nil, log.WrapError(err, "DeploymentService.ResolveRuntimeArtifacts.build")
+	}
+	if build == nil {
+		return nil, apierror.ErrNotFound.WithMessage("run manifest build is missing")
+	}
+	if err := build.Validate(); err != nil {
+		return nil, log.WrapError(err, "DeploymentService.ResolveRuntimeArtifacts.buildIntegrity")
+	}
+	if err := manifest.Validate(*build); err != nil {
+		return nil, log.WrapError(err, "DeploymentService.ResolveRuntimeArtifacts.manifestIntegrity")
+	}
+	skills, strategies, err := s.store.LoadApprovedRuntimeArtifacts(ctx, ownerID, authctx.OrganizationID(ctx), *build)
+	if err != nil {
+		return nil, log.WrapError(err, "DeploymentService.ResolveRuntimeArtifacts.load")
+	}
+	bundle := &runtimeartifact.Bundle{
+		Schema: runtimeartifact.Schema, OwnerID: ownerID, AgentID: manifest.AgentID,
+		BuildID: build.BuildID, BuildChecksum: build.Checksum, ManifestID: manifest.ManifestID,
+		Skills: skills, Strategies: strategies, ResolvedAt: time.Now().UTC(),
+	}
+	bundle.Normalize()
+	if err := bundle.Validate(); err != nil {
+		return nil, log.WrapError(err, "DeploymentService.ResolveRuntimeArtifacts.validate")
+	}
+	return bundle, nil
+}
+
 func (s *Service) CreateBuild(ctx context.Context, ownerID, actorID string, request CreateBuildRequest) (*entity.AgentBuild, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("deployment service is not configured")
 	}
 	request = defaults(request)
-	approvals, err := s.store.ResolveApprovedArtifacts(ctx, ownerID, request.SkillVersions, request.StrategyVersions)
+	approvals, err := s.store.ResolveApprovedArtifacts(ctx, ownerID, authctx.OrganizationID(ctx), request.SkillVersions, request.StrategyVersions)
 	if err != nil {
 		return nil, log.WrapError(err, "DeploymentService.CreateBuild.artifacts")
 	}
@@ -471,8 +512,12 @@ func (s *Service) Exposure(ctx context.Context, ownerID, agentID string) (*entit
 	if err != nil || exposure != nil {
 		return exposure, err
 	}
-	bucket, variant := deploymentv1.AssignVariant(ownerID, agentID, promotion.PromotionID, promotion.CanaryPercent, false)
-	exposure = &entity.Exposure{ExposureID: ulid.New(), PromotionID: promotion.PromotionID, OwnerID: ownerID, AgentID: agentID, Bucket: bucket, Variant: variant, CreatedAt: time.Now().UTC()}
+	optedOut, _, err := s.store.FindLatestExposurePreference(ctx, ownerID, agentID)
+	if err != nil {
+		return nil, log.WrapError(err, "DeploymentService.Exposure.preference")
+	}
+	bucket, variant := deploymentv1.AssignVariant(ownerID, agentID, promotion.PromotionID, promotion.CanaryPercent, optedOut)
+	exposure = &entity.Exposure{ExposureID: ulid.New(), PromotionID: promotion.PromotionID, OwnerID: ownerID, AgentID: agentID, Bucket: bucket, Variant: variant, OptedOut: optedOut, CreatedAt: time.Now().UTC()}
 	if err := s.store.CreateExposure(ctx, *exposure); err != nil {
 		if existing, findErr := s.store.FindExposure(ctx, promotion.PromotionID, ownerID, agentID); findErr == nil && existing != nil {
 			return existing, nil
@@ -518,6 +563,9 @@ func (s *Service) Rollback(ctx context.Context, ownerID, actorID, promotionID st
 	}
 	if promotion == nil {
 		return nil, nil, apierror.ErrNotFound.WithMessage("promotion not found")
+	}
+	if promotion.Status != entity.StatusActive && promotion.Status != entity.StatusCanary && promotion.Status != entity.StatusPaused {
+		return nil, nil, apierror.ErrBadRequest.WithMessage("rollback requires an ACTIVE, CANARY, or PAUSED promotion")
 	}
 	if promotion.PreviousBuildID == "" {
 		return nil, nil, apierror.ErrBadRequest.WithMessage("promotion has no previous build")
@@ -742,8 +790,7 @@ func shadowSummary(control, candidate ShadowPlan, passed bool) string {
 }
 
 func traceID(ctx context.Context) string {
-	value, _ := ctx.Value(log.ReqIDKey).(string)
-	return strings.TrimSpace(value)
+	return strings.TrimSpace(log.ReqID(ctx))
 }
 
 func unique(input []string) []string {

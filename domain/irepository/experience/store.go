@@ -11,6 +11,7 @@ type Store interface {
 	GetPreference(context.Context, string) (*entity.Preference, error)
 	SavePreference(context.Context, entity.Preference) (*entity.Preference, error)
 	ListPendingTerminalTasks(context.Context, int) ([]entity.PendingTask, error)
+	ListReadyOwners(context.Context, string, int) ([]string, error)
 	Create(context.Context, *entity.StoredExperience) (bool, error)
 	Find(context.Context, string, string) (*entity.Experience, error)
 	List(context.Context, string, entity.ListFilter) ([]entity.Experience, int64, error)

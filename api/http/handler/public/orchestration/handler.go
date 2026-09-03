@@ -18,9 +18,16 @@ type Handler struct{ service *service.Service }
 
 func NewHandler(value *service.Service) *Handler { return &Handler{service: value} }
 
+func requireInternal(c *gin.Context) bool {
+	if middleware.InternalTokenValid(c.GetHeader(consts.HeaderAthenaInternalToken)) {
+		return true
+	}
+	_ = c.Error(apierror.ErrUnauthorized)
+	return false
+}
+
 func (h *Handler) CreateInternal(c *gin.Context) {
-	if !middleware.InternalTokenValid(c.GetHeader(consts.HeaderAthenaInternalToken)) {
-		_ = c.Error(apierror.ErrUnauthorized)
+	if !requireInternal(c) {
 		return
 	}
 	var request struct {
@@ -46,6 +53,20 @@ func (h *Handler) CreateGoal(c *gin.Context) {
 		return
 	}
 	value, err := h.service.CreateGoal(c.Request.Context(), userID(c), request)
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.OkStatus(c, http.StatusCreated, value)
+}
+
+func (h *Handler) CreatePlannedGoal(c *gin.Context) {
+	var request service.CreatePlannedGoalRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
+		return
+	}
+	value, err := h.service.CreatePlannedGoal(c.Request.Context(), userID(c), request)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -96,6 +117,9 @@ func (h *Handler) PlanGoal(c *gin.Context) {
 }
 
 func (h *Handler) StartTask(c *gin.Context) {
+	if !requireInternal(c) {
+		return
+	}
 	var request service.StartTaskRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
@@ -110,6 +134,9 @@ func (h *Handler) StartTask(c *gin.Context) {
 }
 
 func (h *Handler) RecordResult(c *gin.Context) {
+	if !requireInternal(c) {
+		return
+	}
 	var request service.RecordResultRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
@@ -124,6 +151,9 @@ func (h *Handler) RecordResult(c *gin.Context) {
 }
 
 func (h *Handler) SaveCheckpoint(c *gin.Context) {
+	if !requireInternal(c) {
+		return
+	}
 	var request service.CheckpointRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
@@ -156,13 +186,14 @@ func (h *Handler) Pause(c *gin.Context) {
 
 func (h *Handler) Resume(c *gin.Context) {
 	var request struct {
-		ExpectedRevision int64 `json:"expected_revision"`
+		ExpectedRevision int64  `json:"expected_revision"`
+		UserInput        string `json:"user_input"`
 	}
 	if err := c.ShouldBindJSON(&request); err != nil {
 		_ = c.Error(apierror.ErrBadRequest.WithMessage(err.Error()))
 		return
 	}
-	value, err := h.service.Resume(c.Request.Context(), userID(c), c.Param("id"), request.ExpectedRevision)
+	value, err := h.service.ResumeWithInput(c.Request.Context(), userID(c), c.Param("id"), request.UserInput, request.ExpectedRevision)
 	if err != nil {
 		_ = c.Error(err)
 		return

@@ -262,9 +262,10 @@ func (s *Service) Install(ctx context.Context, actorID string, request InstallRe
 		return nil, fmt.Errorf("persist plugin provider: %w", err)
 	}
 	if err := s.exportRegistry(ctx); err != nil {
-		_ = s.data.DB(context.Background()).Where("provider_key = ?", row.ProviderKey).Delete(&po.Provider{}).Error
+		cleanupCtx := context.WithoutCancel(ctx)
+		_ = s.data.DB(cleanupCtx).Where("provider_key = ?", row.ProviderKey).Delete(&po.Provider{}).Error
 		_ = os.RemoveAll(packagePath)
-		_ = s.exportRegistry(context.Background())
+		_ = s.exportRegistry(cleanupCtx)
 		return nil, err
 	}
 	return providerView(row)
@@ -493,7 +494,7 @@ func (s *Service) trustedKey(envelope pluginv1.SignatureEnvelope) (ed25519.Publi
 		return nil, fmt.Errorf("read plugin trust store: %w", err)
 	}
 	var store trustStore
-	if err := decodeStrict(data, &store); err != nil || store.Schema != "athena.plugin-trust.v1" {
+	if err := decodeStrict(data, &store); err != nil || store.Schema != pluginv1.TrustStoreSchema {
 		return nil, fmt.Errorf("invalid plugin trust store")
 	}
 	for _, item := range store.Keys {

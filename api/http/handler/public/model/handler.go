@@ -3,6 +3,7 @@ package model
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -25,7 +26,7 @@ func (h *Handler) WithRuntime(httpAddr string) *Handler {
 	return h
 }
 
-func (h *Handler) applyRuntimeMode(provider, model, mode string) {
+func (h *Handler) applyRuntimeMode(ctx context.Context, provider, model, mode string) {
 	if h.runtimeHTTP == "" {
 		return
 	}
@@ -35,12 +36,12 @@ func (h *Handler) applyRuntimeMode(provider, model, mode string) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Warnf("apply local model runtime mode failed: %v", err)
+		log.Warnf(ctx, "apply local model runtime mode failed: %v", err)
 		return
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		log.Warnf("apply local model runtime mode returned status=%d model=%s mode=%s", resp.StatusCode, model, mode)
+		log.Warnf(ctx, "apply local model runtime mode returned status=%d model=%s mode=%s", resp.StatusCode, model, mode)
 	}
 }
 

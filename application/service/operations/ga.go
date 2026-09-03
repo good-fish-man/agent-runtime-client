@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/good-fish-man/agent-runtime-client/pkg/ulid"
@@ -65,7 +66,17 @@ func (s *Service) Readiness(ctx context.Context, userID string) ga.ReadinessRepo
 	} else if len(backups) == 0 {
 		checks = append(checks, gaCheck("recovery.backup", "recovery", ga.StatusExternalRequired, "create and verify a backup before declaring GA readiness"))
 	} else {
-		checks = append(checks, gaCheck("recovery.backup", "recovery", ga.StatusPass, fmt.Sprintf("%d encrypted backup(s) are retained", len(backups))))
+		verified := 0
+		for _, backup := range backups {
+			if backup.Status == operationsv1.BackupVerified {
+				verified++
+			}
+		}
+		if verified == 0 {
+			checks = append(checks, gaCheck("recovery.backup", "recovery", ga.StatusExternalRequired, fmt.Sprintf("%d encrypted backup(s) exist but none has completed verification", len(backups))))
+		} else {
+			checks = append(checks, gaCheck("recovery.backup", "recovery", ga.StatusPass, fmt.Sprintf("%d verified encrypted backup(s) are retained", verified)))
+		}
 	}
 
 	if !s.gaConfig.Orchestration || !s.gaConfig.GoalSupervisor {
@@ -120,27 +131,27 @@ func traceCoverageFromJourneys(results []ga.GoldenJourneyResult) *ga.TraceCovera
 	if len(results) != len(ga.GoldenJourneys()) {
 		return nil
 	}
-	values := map[string]string{}
 	for _, result := range results {
 		if result.VerificationLevel != ga.VerificationE2E || result.Status != ga.StatusPass {
 			return nil
 		}
 		for _, step := range result.Steps {
+			values := map[string]string{}
 			for _, evidence := range step.Evidence {
 				if values[evidence.Kind] == "" {
 					values[evidence.Kind] = evidence.Reference
 				}
 			}
+			coverage := &ga.TraceCoverage{
+				AgentBuildID: values["agent_build_id"], RunManifestID: values["run_manifest_id"],
+				CapabilityID: values["capability_id"], ActionID: values["action_id"], ObservationID: values["observation_id"],
+			}
+			if coverage.Validate() == nil {
+				return coverage
+			}
 		}
 	}
-	coverage := &ga.TraceCoverage{
-		AgentBuildID: values["agent_build_id"], RunManifestID: values["run_manifest_id"],
-		CapabilityID: values["capability_id"], ActionID: values["action_id"], ObservationID: values["observation_id"],
-	}
-	if coverage.Validate() != nil {
-		return nil
-	}
-	return coverage
+	return nil
 }
 
 func goldenSuiteStatus(results []ga.GoldenJourneyResult) (string, string) {
@@ -233,6 +244,10 @@ func (s *Service) RunGoldenJourneys(ctx context.Context, userID string) ([]ga.Go
 func (s *Service) RecordGoldenJourneyResults(ctx context.Context, userID string, results []ga.GoldenJourneyResult) error {
 	if s.gaStore == nil {
 		return fmt.Errorf("durable golden journey evidence storage is not configured")
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" || len(userID) > 128 {
+		return fmt.Errorf("golden journey evidence owner is invalid")
 	}
 	if err := validateGoldenJourneySuite(results, ga.VerificationE2E); err != nil {
 		return err

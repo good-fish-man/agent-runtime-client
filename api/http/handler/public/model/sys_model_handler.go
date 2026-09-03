@@ -100,7 +100,7 @@ func (h *Handler) UpdateSysModelEnabled(c *gin.Context) {
 		} else if mode == "" {
 			mode = modelentity.RuntimeModeOnDemand
 		}
-		h.applyRuntimeMode(model.Provider, model.Name, mode)
+		h.applyRuntimeMode(c.Request.Context(), model.Provider, model.Name, mode)
 	}
 	response.Ok(c, nil)
 }
@@ -130,7 +130,7 @@ func (h *Handler) UpdateSysModelRuntimeMode(c *gin.Context) {
 	}
 	model, err := h.svc.FindSysModelAdminByID(c.Request.Context(), req.Ulid)
 	if err == nil && model != nil {
-		h.applyRuntimeMode(model.Provider, model.Name, req.RuntimeMode)
+		h.applyRuntimeMode(c.Request.Context(), model.Provider, model.Name, req.RuntimeMode)
 	}
 	response.Ok(c, nil)
 }

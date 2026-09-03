@@ -181,6 +181,32 @@ func TestPersistentGoalActionIdempotencySurvivesGeneratedActionIDs(t *testing.T)
 	}
 }
 
+func TestBrowserActionSiteScopeStoresOnlyNormalizedHostname(t *testing.T) {
+	action := &controlentity.Action{
+		Capability: "browser.task",
+		Arguments: map[string]any{
+			"target": "https://WWW.Example.COM:8443/private/path?token=secret#fragment",
+			"query":  "private search terms",
+		},
+	}
+	if got := browserActionSiteScope(action); got != "example.com" {
+		t.Fatalf("site scope = %q, want example.com", got)
+	}
+}
+
+func TestBrowserActionSiteScopeRejectsUnsafeOrUnrelatedValues(t *testing.T) {
+	tests := []controlentity.Action{
+		{Capability: "browser.task", Arguments: map[string]any{"target": "YouTube"}},
+		{Capability: "browser.open", Arguments: map[string]any{"url": "https://user:secret@example.com/private"}},
+		{Capability: "app.open", Arguments: map[string]any{"url": "https://example.com"}},
+	}
+	for _, action := range tests {
+		if got := browserActionSiteScope(&action); got != "" {
+			t.Fatalf("site scope for %#v = %q, want empty", action.Arguments, got)
+		}
+	}
+}
+
 func TestDesktopBoundToAnotherUserMessageDoesNotClaimOffline(t *testing.T) {
 	message := desktopBoundToAnotherUserMessage("browser.open", "device-1")
 	for _, want := range []string{"is connected", "bound to another user", "browser.open", "device-1"} {

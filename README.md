@@ -4,6 +4,8 @@
 
 GA operations: [Athena 1.0 control plane guide](docs/ga-operations-v1.0.md) | [简体中文](docs/ga-operations-v1.0.zh-CN.md)
 
+Code guide: [English](docs/code-guide/en/README.md) | [简体中文](docs/code-guide/zh-CN/README.md)
+
 Agent Runtime Client is Athena's control plane and public HTTP API. It manages users, agents, model credentials, model assignments, memories, skills, knowledge bases, workspaces, and service configuration, then forwards execution requests to [`agent-runtime`](https://github.com/good-fish-man/agent-runtime) over gRPC.
 
 Despite its historical name, this is a server application rather than an SDK. Browser clients should call this service and should never call the runtime with model API keys directly.
@@ -29,6 +31,7 @@ The authenticated dashboard is backed by this service's agent, task, token, appr
 - Source-aware error chains logged once at the HTTP boundary.
 - WebSocket Action/Observation control plane for capability-aware desktop devices ([protocol](docs/action-observation-protocol.md)).
 - Sanitized task Experience, per-user retention/deletion controls, failure taxonomy, and deterministic offline evaluation ([architecture](docs/experience-evaluation.md)).
+- Governed Evolution Orchestrator and exact Runtime Artifact Resolver: repeated outcomes may propose declarative Skill candidates, while only human-approved immutable versions can enter a run ([guide](docs/evolution-runtime-artifacts.md)).
 - Private signed Capability Provider Registry with immutable full-package
   verification, trusted machine scans, explicit least-privilege grants, public
   review gates, quarantine/revocation, Runtime reload, and invocation audit inspection.
@@ -99,15 +102,17 @@ Default endpoints:
 | Runtime readiness | `http://127.0.0.1:8090/health/ready` |
 | Public API prefix in the sample config | `/api/agent-runtime-client/v1` |
 
-When the database is enabled, migrations run during startup. A development administrator is initialized when absent:
+When the database is enabled, migrations run during startup. The service has no
+built-in administrator password. To bootstrap a standalone development instance,
+set `ATHENA_BOOTSTRAP_ADMIN_USERNAME` and
+`ATHENA_BOOTSTRAP_ADMIN_PASSWORD` in the process environment. The account is
+created only when both values are present and the username is absent; migrations
+never reset, activate, or elevate an existing account.
 
-```text
-username: athena
-password: athena
-```
-
-Change this password before exposing the service outside a trusted local environment.
-The account is seeded only when it is absent; restarting the service does not recreate it or reset a changed password.
+Athena Launcher generates a unique password during installation, keeps it in
+`~/.athena/secrets/bootstrap-admin.password` with owner-only permissions, and
+passes it to Runtime Client only through the child-process environment. The
+managed installation username is `athena`. Change the password after first login.
 
 For an automated local installation with managed PostgreSQL, use [`athena-launcher`](https://github.com/good-fish-man/athena-launcher).
 

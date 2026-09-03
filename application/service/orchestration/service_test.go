@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/orchestration"
 	repo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/orchestration"
-	orchestrationv1 "github.com/good-fish-man/athena-protocol/protocol/orchestration/v1"
+	orchestrationv2 "github.com/good-fish-man/athena-protocol/protocol/orchestration/v2"
 )
 
 func TestGoalPlanCheckpointAndCrossDeviceResume(t *testing.T) {
@@ -25,9 +26,9 @@ func TestGoalPlanCheckpointAndCrossDeviceResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, err := service.PlanGoal(ctx, "owner-1", goal.GoalID, PlanGoalRequest{ExpectedRevision: goal.Revision, Tasks: []PlanTaskRequest{
-		{TaskID: "research", Depth: 1, Specialist: orchestrationv1.SpecialistResearch, Objective: "research weather and transport", RequiredCapabilities: []string{"internet.search"}},
-		{TaskID: "browser", Depth: 1, Specialist: orchestrationv1.SpecialistBrowser, Objective: "verify official pages", RequiredCapabilities: []string{"browser.action"}},
-		{TaskID: "synthesis", Depth: 2, Specialist: orchestrationv1.SpecialistSynthesis, Objective: "synthesize itinerary", DependsOn: []string{"research", "browser"}},
+		{TaskID: "research", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "research weather and transport", RequiredCapabilities: []string{"internet.search"}},
+		{TaskID: "browser", Depth: 1, Specialist: orchestrationv2.SpecialistBrowser, Objective: "verify official pages", RequiredCapabilities: []string{"browser.action"}},
+		{TaskID: "synthesis", Depth: 2, Specialist: orchestrationv2.SpecialistSynthesis, Objective: "synthesize itinerary", DependsOn: []string{"research", "browser"}},
 	}})
 	if err != nil || len(state.Tasks) != 3 {
 		t.Fatalf("plan=%+v error=%v", state, err)
@@ -37,10 +38,10 @@ func TestGoalPlanCheckpointAndCrossDeviceResume(t *testing.T) {
 		t.Fatalf("decision=%+v error=%v", decision, err)
 	}
 	paused, err := service.Pause(ctx, "owner-1", goal.GoalID, "launcher disconnected", state.Goal.Revision)
-	if err != nil || paused.Goal.Status != orchestrationv1.GoalPaused {
+	if err != nil || paused.Goal.Status != orchestrationv2.GoalPaused {
 		t.Fatalf("paused=%+v error=%v", paused, err)
 	}
-	checkpoint, err := service.SaveCheckpoint(ctx, "owner-1", goal.GoalID, CheckpointRequest{ExpectedRevision: paused.Goal.Revision, Reason: "persist external effect", ConfirmedEffectKeys: []string{"action-open-tab"}, WorldSlicesByDevice: map[string]map[string]any{"mac": {"url": "https://example.com"}}})
+	checkpoint, err := service.SaveCheckpoint(ctx, "owner-1", goal.GoalID, CheckpointRequest{ExpectedRevision: paused.Goal.Revision, Reason: "persist external effect", ConfirmedEffectKeys: []string{"action-open-tab"}, ObservationRefs: []string{"observation-open-tab"}, WorldSlicesByDevice: map[string]map[string]any{"mac": {"url": "https://example.com"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,21 +51,35 @@ func TestGoalPlanCheckpointAndCrossDeviceResume(t *testing.T) {
 	}
 }
 
+func TestCheckpointRejectsNewEffectWithoutObservation(t *testing.T) {
+	service := newService(t)
+	state, err := service.CreatePlannedGoal(context.Background(), "owner-1", CreatePlannedGoalRequest{
+		CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "observe effects", SuccessCriteria: []entity.SuccessCriterion{{Description: "done", Required: true}}},
+		Tasks:             []PlanTaskRequest{{TaskID: "browser", Depth: 1, Specialist: orchestrationv2.SpecialistBrowser, Objective: "open"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SaveCheckpoint(context.Background(), "owner-1", state.Goal.GoalID, CheckpointRequest{ExpectedRevision: state.Goal.Revision, Reason: "unobserved claim", ConfirmedEffectKeys: []string{"open-tab"}}); err == nil {
+		t.Fatal("checkpoint accepted a newly confirmed effect without an observation")
+	}
+}
+
 func TestSpecialistResultsRequireProvenanceAndUnlockDependencies(t *testing.T) {
 	service := newService(t)
 	ctx := context.Background()
 	goal, _ := service.CreateGoal(ctx, "owner-1", CreateGoalRequest{AgentID: "agent-1", Objective: "research", SuccessCriteria: []entity.SuccessCriterion{{CriterionID: "criterion", Description: "has evidence", Required: true}}})
-	state, _ := service.PlanGoal(ctx, "owner-1", goal.GoalID, PlanGoalRequest{Tasks: []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv1.SpecialistResearch, Objective: "research"}, {TaskID: "synthesis", Depth: 2, Specialist: orchestrationv1.SpecialistSynthesis, Objective: "synthesize", DependsOn: []string{"research"}}}})
+	state, _ := service.PlanGoal(ctx, "owner-1", goal.GoalID, PlanGoalRequest{Tasks: []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "research"}, {TaskID: "synthesis", Depth: 2, Specialist: orchestrationv2.SpecialistSynthesis, Objective: "synthesize", DependsOn: []string{"research"}}}})
 	_, state, err := service.StartTask(ctx, "owner-1", goal.GoalID, "research", StartTaskRequest{ExpectedRevision: state.Goal.Revision, Devices: []entity.DeviceCandidate{{DeviceID: "server", Online: true}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := RecordResultRequest{ExpectedRevision: state.Goal.Revision, VerifiedCriteriaIDs: []string{"criterion"}, Result: entity.SpecialistResult{Status: orchestrationv1.TaskCompleted, Summary: "official source found", EvidenceRefs: []string{"evidence-1"}, Provenance: entity.Provenance{RunManifestID: "manifest-1", AgentBuildID: "build-1", ModelConfigVersion: "model-1", TraceID: "trace-1", ProducedAt: time.Now().UTC()}}}
+	request := RecordResultRequest{ExpectedRevision: state.Goal.Revision, VerifiedCriteriaIDs: []string{"criterion"}, Result: entity.SpecialistResult{Status: orchestrationv2.TaskCompleted, Summary: "official source found", EvidenceRefs: []string{"evidence-1"}, Provenance: runtimeTestProvenance()}}
 	state, err = service.RecordResult(ctx, "owner-1", goal.GoalID, "research", request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Tasks[1].Status != orchestrationv1.TaskReady {
+	if state.Tasks[1].Status != orchestrationv2.TaskReady {
 		t.Fatalf("dependency was not unlocked: %+v", state.Tasks)
 	}
 }
@@ -75,11 +90,43 @@ func TestBudgetStopsSupervisorInsteadOfLooping(t *testing.T) {
 	budget := defaultBudget
 	budget.MaxTokens = 10
 	goal, _ := service.CreateGoal(ctx, "owner-1", CreateGoalRequest{AgentID: "agent-1", Objective: "bounded", Budget: budget, SuccessCriteria: []entity.SuccessCriterion{{Description: "done", Required: true}}})
-	state, _ := service.PlanGoal(ctx, "owner-1", goal.GoalID, PlanGoalRequest{Tasks: []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv1.SpecialistResearch, Objective: "research"}}})
+	state, _ := service.PlanGoal(ctx, "owner-1", goal.GoalID, PlanGoalRequest{Tasks: []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "research"}}})
 	_, state, _ = service.StartTask(ctx, "owner-1", goal.GoalID, "research", StartTaskRequest{ExpectedRevision: state.Goal.Revision, Devices: []entity.DeviceCandidate{{DeviceID: "server", Online: true}}})
-	state, err := service.RecordResult(ctx, "owner-1", goal.GoalID, "research", RecordResultRequest{ExpectedRevision: state.Goal.Revision, Result: entity.SpecialistResult{Status: orchestrationv1.TaskCompleted, Summary: "used budget", Usage: entity.BudgetUsage{Tokens: 11}, Provenance: entity.Provenance{RunManifestID: "manifest", AgentBuildID: "build", ModelConfigVersion: "model", TraceID: "trace", ProducedAt: time.Now().UTC()}}})
-	if err != nil || state.Goal.Status != orchestrationv1.GoalWaitingUser {
+	state, err := service.RecordResult(ctx, "owner-1", goal.GoalID, "research", RecordResultRequest{ExpectedRevision: state.Goal.Revision, Result: entity.SpecialistResult{Status: orchestrationv2.TaskCompleted, Summary: "used budget", Usage: entity.BudgetUsage{Tokens: 11}, Provenance: runtimeTestProvenance()}})
+	if err != nil || state.Goal.Status != orchestrationv2.GoalWaitingUser {
 		t.Fatalf("goal did not stop: state=%+v error=%v", state, err)
+	}
+}
+
+func TestGoalSpecialistConcurrencyIsHardLimited(t *testing.T) {
+	service := newService(t)
+	budget := defaultBudget
+	budget.MaxConcurrentSpecialists = 1
+	state, err := service.CreatePlannedGoal(context.Background(), "owner-1", CreatePlannedGoalRequest{
+		CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "bounded parallel work", Budget: budget, SuccessCriteria: []entity.SuccessCriterion{{Description: "done", Required: true}}},
+		Tasks: []PlanTaskRequest{
+			{TaskID: "research-a", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "first"},
+			{TaskID: "research-b", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "second"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, running, err := service.StartTask(context.Background(), "owner-1", state.Goal.GoalID, "research-a", StartTaskRequest{ExpectedRevision: state.Goal.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.StartTask(context.Background(), "owner-1", state.Goal.GoalID, "research-b", StartTaskRequest{ExpectedRevision: running.Goal.Revision}); err == nil {
+		t.Fatal("second specialist exceeded the goal concurrency budget")
+	}
+	current, err := service.GetGoal(context.Background(), "owner-1", state.Goal.GoalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := findTask(current.Tasks, "research-a")
+	second, _ := findTask(current.Tasks, "research-b")
+	if first.Status != orchestrationv2.TaskRunning || second.Status != orchestrationv2.TaskReady {
+		t.Fatalf("concurrency rejection changed task state: first=%s second=%s", first.Status, second.Status)
 	}
 }
 
@@ -87,12 +134,19 @@ func TestSpecialistReceivesOnlyDeclaredWorldSlice(t *testing.T) {
 	service := newService(t)
 	ctx := context.Background()
 	goal, _ := service.CreateGoal(ctx, "owner-1", CreateGoalRequest{AgentID: "agent-1", Objective: "filtered context", SuccessCriteria: []entity.SuccessCriterion{{Description: "done", Required: true}}})
-	state, _ := service.PlanGoal(ctx, "owner-1", goal.GoalID, PlanGoalRequest{Tasks: []PlanTaskRequest{{TaskID: "browser", Depth: 1, Specialist: orchestrationv1.SpecialistBrowser, Objective: "inspect page", WorldSliceRefs: []string{"url"}, RequiredCapabilities: []string{"browser.action"}}}})
+	state, _ := service.PlanGoal(ctx, "owner-1", goal.GoalID, PlanGoalRequest{Tasks: []PlanTaskRequest{{TaskID: "browser", Depth: 1, Specialist: orchestrationv2.SpecialistBrowser, Objective: "inspect page", WorldSliceRefs: []string{"url", "session", "items"}, RequiredCapabilities: []string{"browser.action"}}}})
 	_, state, err := service.StartTask(ctx, "owner-1", goal.GoalID, "browser", StartTaskRequest{ExpectedRevision: state.Goal.Revision, Devices: []entity.DeviceCandidate{{DeviceID: "mac", Online: true, Capabilities: []string{"browser.action"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = service.SaveCheckpoint(ctx, "owner-1", goal.GoalID, CheckpointRequest{ExpectedRevision: state.Goal.Revision, Reason: "observed page", WorldSlicesByDevice: map[string]map[string]any{"mac": {"url": "https://example.com", "cookies": "must-not-share"}, "windows": {"url": "https://other.example"}}})
+	_, err = service.SaveCheckpoint(ctx, "owner-1", goal.GoalID, CheckpointRequest{ExpectedRevision: state.Goal.Revision, Reason: "observed page", WorldSlicesByDevice: map[string]map[string]any{
+		"mac": {
+			"url": "https://example.com", "cookies": "must-not-share",
+			"session": map[string]any{"profile": "Default", "cookie": "nested-secret", "nested": map[string]any{"api_key": "nested-key", "visible": "ok"}},
+			"items":   []any{map[string]any{"name": "video", "access_token": "item-secret"}},
+		},
+		"windows": {"url": "https://other.example"},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,21 +154,46 @@ func TestSpecialistReceivesOnlyDeclaredWorldSlice(t *testing.T) {
 	if err != nil || world["mac"]["url"] == nil || world["mac"]["cookies"] != nil || world["windows"] != nil {
 		t.Fatalf("world slice was not filtered: world=%+v error=%v", world, err)
 	}
-}
-
-func TestCreatePlannedGoalIsAtomic(t *testing.T) {
-	service := newService(t)
-	ctx := context.Background()
-	state, err := service.CreatePlannedGoal(ctx, "owner-1", CreatePlannedGoalRequest{CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "long-running research", SuccessCriteria: []entity.SuccessCriterion{{Description: "verified result", Required: true}}}, Tasks: []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv1.SpecialistResearch, Objective: "collect evidence"}}})
-	if err != nil || state.Goal.Status != orchestrationv1.GoalPlanned || len(state.Tasks) != 1 || state.Checkpoint == nil {
-		t.Fatalf("planned goal was not created atomically: state=%+v error=%v", state, err)
+	body, _ := json.Marshal(world)
+	if strings.Contains(string(body), "nested-secret") || strings.Contains(string(body), "nested-key") || strings.Contains(string(body), "item-secret") || !strings.Contains(string(body), "Default") || !strings.Contains(string(body), "visible") {
+		t.Fatalf("nested world state was not recursively redacted: %s", body)
 	}
 }
 
-func TestRequiredCriterionCannotBeVerifiedWithoutEvidence(t *testing.T) {
+func TestDeviceSpecialistCannotCompleteWithoutObservation(t *testing.T) {
 	service := newService(t)
 	ctx := context.Background()
-	state, err := service.CreatePlannedGoal(ctx, "owner-1", CreatePlannedGoalRequest{CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "prove it", SuccessCriteria: []entity.SuccessCriterion{{CriterionID: "criterion", Description: "has evidence", Required: true}}}, Tasks: []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv1.SpecialistResearch, Objective: "research"}}})
+	state, err := service.CreatePlannedGoal(ctx, "owner-1", CreatePlannedGoalRequest{
+		CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "open safely", SuccessCriteria: []entity.SuccessCriterion{{CriterionID: "opened", Description: "page opened", Required: true}}},
+		Tasks:             []PlanTaskRequest{{TaskID: "browser", Depth: 1, Specialist: orchestrationv2.SpecialistBrowser, Objective: "open", RequiredCapabilities: []string{"browser.open"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, state, err = service.StartTask(ctx, "owner-1", state.Goal.GoalID, "browser", StartTaskRequest{ExpectedRevision: state.Goal.Revision, Devices: []entity.DeviceCandidate{{DeviceID: "mac", Online: true, Capabilities: []string{"browser.open"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.RecordResult(ctx, "owner-1", state.Goal.GoalID, "browser", RecordResultRequest{ExpectedRevision: state.Goal.Revision, VerifiedCriteriaIDs: []string{"opened"}, Result: entity.SpecialistResult{Status: orchestrationv2.TaskCompleted, Summary: "claimed success", EvidenceRefs: []string{"https://example.com"}, Provenance: runtimeTestProvenance()}})
+	if err == nil {
+		t.Fatal("device specialist completed without an observation")
+	}
+	current, getErr := service.GetGoal(ctx, "owner-1", state.Goal.GoalID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if current.Goal.SuccessCriteria[0].Verified || current.Tasks[0].Status != orchestrationv2.TaskRunning {
+		t.Fatalf("rejected false success changed durable state: %+v", current)
+	}
+}
+
+func TestFailedSpecialistCannotVerifySuccessCriterion(t *testing.T) {
+	service := newService(t)
+	ctx := context.Background()
+	state, err := service.CreatePlannedGoal(ctx, "owner-1", CreatePlannedGoalRequest{
+		CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "fail honestly", SuccessCriteria: []entity.SuccessCriterion{{CriterionID: "done", Description: "work completed", Required: true}}},
+		Tasks:             []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "research"}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,11 +201,60 @@ func TestRequiredCriterionCannotBeVerifiedWithoutEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err = service.RecordResult(ctx, "owner-1", state.Goal.GoalID, "research", RecordResultRequest{ExpectedRevision: state.Goal.Revision, VerifiedCriteriaIDs: []string{"criterion"}, Result: entity.SpecialistResult{Status: orchestrationv1.TaskCompleted, Summary: "model asserted completion", Provenance: entity.Provenance{RunManifestID: "manifest", AgentBuildID: "build", ModelConfigVersion: "model", TraceID: "trace", ProducedAt: time.Now().UTC()}}})
+	state, err = service.RecordResult(ctx, "owner-1", state.Goal.GoalID, "research", RecordResultRequest{ExpectedRevision: state.Goal.Revision, VerifiedCriteriaIDs: []string{"done"}, Result: entity.SpecialistResult{Status: orchestrationv2.TaskFailed, Summary: "source fetch failed", EvidenceRefs: []string{"https://example.com"}, Provenance: runtimeTestProvenance()}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Goal.SuccessCriteria[0].Verified || state.Goal.Status != orchestrationv1.GoalWaitingUser {
+	if state.Goal.SuccessCriteria[0].Verified {
+		t.Fatal("failed specialist verified a goal criterion")
+	}
+}
+
+func TestCreatePlannedGoalIsAtomic(t *testing.T) {
+	service := newService(t)
+	ctx := context.Background()
+	state, err := service.CreatePlannedGoal(ctx, "owner-1", CreatePlannedGoalRequest{CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "long-running research", SuccessCriteria: []entity.SuccessCriterion{{Description: "verified result", Required: true}}}, Tasks: []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "collect evidence"}}})
+	if err != nil || state.Goal.Status != orchestrationv2.GoalPlanned || len(state.Tasks) != 1 || state.Checkpoint == nil {
+		t.Fatalf("planned goal was not created atomically: state=%+v error=%v", state, err)
+	}
+}
+
+func TestTaskKeysAreReusableAcrossGoalsButExecutionIDsAreGlobal(t *testing.T) {
+	service := newService(t)
+	request := CreatePlannedGoalRequest{
+		CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "first", SuccessCriteria: []entity.SuccessCriterion{{Description: "done", Required: true}}},
+		Tasks:             []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "research"}},
+	}
+	first, err := service.CreatePlannedGoal(context.Background(), "owner-1", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Objective = "second"
+	second, err := service.CreatePlannedGoal(context.Background(), "owner-1", request)
+	if err != nil {
+		t.Fatalf("second goal reused a human-readable task key and failed: %v", err)
+	}
+	if first.Tasks[0].TaskKey != "research" || second.Tasks[0].TaskKey != "research" || first.Tasks[0].TaskID == second.Tasks[0].TaskID {
+		t.Fatalf("task identity was not separated from task key: first=%+v second=%+v", first.Tasks[0], second.Tasks[0])
+	}
+}
+
+func TestRequiredCriterionCannotBeVerifiedWithoutEvidence(t *testing.T) {
+	service := newService(t)
+	ctx := context.Background()
+	state, err := service.CreatePlannedGoal(ctx, "owner-1", CreatePlannedGoalRequest{CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "prove it", SuccessCriteria: []entity.SuccessCriterion{{CriterionID: "criterion", Description: "has evidence", Required: true}}}, Tasks: []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "research"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, state, err = service.StartTask(ctx, "owner-1", state.Goal.GoalID, "research", StartTaskRequest{ExpectedRevision: state.Goal.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = service.RecordResult(ctx, "owner-1", state.Goal.GoalID, "research", RecordResultRequest{ExpectedRevision: state.Goal.Revision, VerifiedCriteriaIDs: []string{"criterion"}, Result: entity.SpecialistResult{Status: orchestrationv2.TaskCompleted, Summary: "model asserted completion", Provenance: runtimeTestProvenance()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Goal.SuccessCriteria[0].Verified || state.Goal.Status != orchestrationv2.GoalWaitingUser {
 		t.Fatalf("unsupported model assertion completed the goal: %+v", state.Goal)
 	}
 }
@@ -134,9 +262,9 @@ func TestRequiredCriterionCannotBeVerifiedWithoutEvidence(t *testing.T) {
 func TestResultMustMatchExecutionAndEffectsNeedObservation(t *testing.T) {
 	service := newService(t)
 	ctx := context.Background()
-	state, _ := service.CreatePlannedGoal(ctx, "owner-1", CreatePlannedGoalRequest{CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "open", SuccessCriteria: []entity.SuccessCriterion{{Description: "opened", Required: true}}}, Tasks: []PlanTaskRequest{{TaskID: "browser", Depth: 1, Specialist: orchestrationv1.SpecialistBrowser, Objective: "open"}}})
+	state, _ := service.CreatePlannedGoal(ctx, "owner-1", CreatePlannedGoalRequest{CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "open", SuccessCriteria: []entity.SuccessCriterion{{Description: "opened", Required: true}}}, Tasks: []PlanTaskRequest{{TaskID: "browser", Depth: 1, Specialist: orchestrationv2.SpecialistBrowser, Objective: "open"}}})
 	_, state, _ = service.StartTask(ctx, "owner-1", state.Goal.GoalID, "browser", StartTaskRequest{ExpectedRevision: state.Goal.Revision})
-	base := entity.SpecialistResult{ExecutionID: "wrong", Status: orchestrationv1.TaskCompleted, Summary: "opened", Provenance: entity.Provenance{RunManifestID: "manifest", AgentBuildID: "build", ModelConfigVersion: "model", TraceID: "trace", ProducedAt: time.Now().UTC()}}
+	base := entity.SpecialistResult{ExecutionID: "wrong", Status: orchestrationv2.TaskCompleted, Summary: "opened", Provenance: runtimeTestProvenance()}
 	if _, err := service.RecordResult(ctx, "owner-1", state.Goal.GoalID, "browser", RecordResultRequest{ExpectedRevision: state.Goal.Revision, Result: base}); err == nil {
 		t.Fatal("result from another execution was accepted")
 	}
@@ -148,11 +276,11 @@ func TestResultMustMatchExecutionAndEffectsNeedObservation(t *testing.T) {
 
 func TestCorruptCheckpointCannotResume(t *testing.T) {
 	service, db := newServiceWithDB(t)
-	state, err := service.CreatePlannedGoal(context.Background(), "owner-1", CreatePlannedGoalRequest{CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "resume safely", SuccessCriteria: []entity.SuccessCriterion{{Description: "done", Required: true}}}, Tasks: []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv1.SpecialistResearch, Objective: "work"}}})
+	state, err := service.CreatePlannedGoal(context.Background(), "owner-1", CreatePlannedGoalRequest{CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "resume safely", SuccessCriteria: []entity.SuccessCriterion{{Description: "done", Required: true}}}, Tasks: []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "work"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&po.GoalCheckpoint{}).Where("checkpoint_id = ?", state.Checkpoint.CheckpointID).Update("content", `{"schema":"athena.orchestration.v1","checkpoint_id":"tampered"}`).Error; err != nil {
+	if err := db.Model(&po.GoalCheckpoint{}).Where("checkpoint_id = ?", state.Checkpoint.CheckpointID).Update("content", `{"schema":"athena.orchestration.v2","checkpoint_id":"tampered"}`).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.GetGoal(context.Background(), "owner-1", state.Goal.GoalID); err == nil {
@@ -163,7 +291,7 @@ func TestCorruptCheckpointCannotResume(t *testing.T) {
 func TestCheckpointHistoryRejectsBrokenHashChain(t *testing.T) {
 	service, db := newServiceWithDB(t)
 	ctx := context.Background()
-	state, err := service.CreatePlannedGoal(ctx, "owner-1", CreatePlannedGoalRequest{CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "resume from an attributable chain", SuccessCriteria: []entity.SuccessCriterion{{Description: "done", Required: true}}}, Tasks: []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv1.SpecialistResearch, Objective: "work"}}})
+	state, err := service.CreatePlannedGoal(ctx, "owner-1", CreatePlannedGoalRequest{CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "resume from an attributable chain", SuccessCriteria: []entity.SuccessCriterion{{Description: "done", Required: true}}}, Tasks: []PlanTaskRequest{{TaskID: "research", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "work"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,8 +322,8 @@ func TestScheduledTriggerWaitsWhenRequiredEvidenceIsMissing(t *testing.T) {
 	ctx := context.Background()
 	created, err := service.CreateScheduledGoal(ctx, "owner-1", CreateScheduledGoalRequest{
 		CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "scheduled research", SuccessCriteria: []entity.SuccessCriterion{{CriterionID: "criterion", Description: "cited result", Required: true}}},
-		ScheduleID:        "schedule-1", Slot: "202608151230", ScheduledAt: time.Now().UTC(), Retry: orchestrationv1.RetryPolicy{MaxAttempts: 1},
-		Task: PlanTaskRequest{TaskID: "research", Depth: 1, Specialist: orchestrationv1.SpecialistResearch, Objective: "research"},
+		ScheduleID:        "schedule-1", Slot: "202608151230", ScheduledAt: time.Now().UTC(), Retry: orchestrationv2.RetryPolicy{MaxAttempts: 1},
+		Task: PlanTaskRequest{TaskID: "research", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "research"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -204,20 +332,46 @@ func TestScheduledTriggerWaitsWhenRequiredEvidenceIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := entity.SpecialistResult{ExecutionID: state.Tasks[0].ExecutionID, Status: orchestrationv1.TaskCompleted, Summary: "unsupported assertion", Provenance: entity.Provenance{RunManifestID: "manifest", AgentBuildID: "build", ModelConfigVersion: "model", TraceID: "trace", ProducedAt: time.Now().UTC()}}
+	result := entity.SpecialistResult{ExecutionID: state.Tasks[0].ExecutionID, Status: orchestrationv2.TaskCompleted, Summary: "unsupported assertion", Provenance: runtimeTestProvenance()}
 	state, err = service.RecordResult(ctx, "owner-1", state.Goal.GoalID, "research", RecordResultRequest{ExpectedRevision: state.Goal.Revision, VerifiedCriteriaIDs: []string{"criterion"}, Result: result})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Goal.Status != orchestrationv1.GoalWaitingUser {
+	if state.Goal.Status != orchestrationv2.GoalWaitingUser {
 		t.Fatalf("expected goal to wait for evidence, got %s", state.Goal.Status)
 	}
 	triggers, err := service.ListScheduleTriggers(ctx, "owner-1", "schedule-1", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(triggers) != 1 || triggers[0].Status != orchestrationv1.ScheduleTriggerWaitingUser {
+	if len(triggers) != 1 || triggers[0].Status != orchestrationv2.ScheduleTriggerWaitingUser {
 		t.Fatalf("expected schedule trigger to mirror WAITING_USER, got %+v", triggers)
+	}
+}
+
+func TestScheduledTriggerPreservesWaitingDeviceState(t *testing.T) {
+	service := newService(t)
+	created, err := service.CreateScheduledGoal(context.Background(), "owner-1", CreateScheduledGoalRequest{
+		CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "scheduled browser work", SuccessCriteria: []entity.SuccessCriterion{{Description: "opened", Required: true}}},
+		ScheduleID:        "schedule-device", Slot: "202608151235", ScheduledAt: time.Now().UTC(), Retry: orchestrationv2.RetryPolicy{MaxAttempts: 1},
+		Task: PlanTaskRequest{TaskID: "browser", Depth: 1, Specialist: orchestrationv2.SpecialistBrowser, Objective: "open", RequiredCapabilities: []string{"browser.open"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, state, err := service.StartTask(context.Background(), "owner-1", created.State.Goal.GoalID, "browser", StartTaskRequest{ExpectedRevision: created.State.Goal.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Status != orchestrationv2.TaskWaitingDevice || state.Goal.Status != orchestrationv2.GoalWaitingDevice {
+		t.Fatalf("offline scheduled task did not enter WAITING_DEVICE: decision=%+v state=%+v", decision, state.Goal)
+	}
+	triggers, err := service.ListScheduleTriggers(context.Background(), "owner-1", "schedule-device", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(triggers) != 1 || triggers[0].Status != orchestrationv2.ScheduleTriggerWaitingDevice {
+		t.Fatalf("schedule trigger collapsed device wait into user wait: %+v", triggers)
 	}
 }
 
@@ -226,9 +380,9 @@ func TestPendingApprovalCannotBeBypassedByPublicResume(t *testing.T) {
 	ctx := context.Background()
 	created, err := service.CreateScheduledGoal(ctx, "owner-1", CreateScheduledGoalRequest{
 		CreateGoalRequest: CreateGoalRequest{AgentID: "agent-1", Objective: "approved work", SuccessCriteria: []entity.SuccessCriterion{{Description: "done", Required: true}}},
-		ScheduleID:        "schedule-approval", Slot: "202608151245", ScheduledAt: time.Now().UTC(), Retry: orchestrationv1.RetryPolicy{MaxAttempts: 1},
+		ScheduleID:        "schedule-approval", Slot: "202608151245", ScheduledAt: time.Now().UTC(), Retry: orchestrationv2.RetryPolicy{MaxAttempts: 1},
 		RequireApproval: true, PendingApprovalID: "approval-1",
-		Task: PlanTaskRequest{TaskID: "research", Depth: 1, Specialist: orchestrationv1.SpecialistResearch, Objective: "work"},
+		Task: PlanTaskRequest{TaskID: "research", Depth: 1, Specialist: orchestrationv2.SpecialistResearch, Objective: "work"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -243,7 +397,7 @@ func TestPendingApprovalCannotBeBypassedByPublicResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Goal.Status != orchestrationv1.GoalRunning {
+	if plan.Goal.Status != orchestrationv2.GoalRunning {
 		t.Fatalf("approved goal did not resume: %+v", plan.Goal)
 	}
 	state, err := service.GetGoal(ctx, "owner-1", created.State.Goal.GoalID)
@@ -258,6 +412,13 @@ func TestPendingApprovalCannotBeBypassedByPublicResume(t *testing.T) {
 func newService(t *testing.T) *Service {
 	service, _ := newServiceWithDB(t)
 	return service
+}
+
+func runtimeTestProvenance() entity.Provenance {
+	return entity.Provenance{
+		ProducerType: orchestrationv2.ProvenanceRuntimeRun, Producer: "agent-runtime", ProducerVersion: "test",
+		RunManifestID: "manifest", AgentBuildID: "build", ModelConfigVersion: "model", TraceID: "trace", ProducedAt: time.Now().UTC(),
+	}
 }
 
 func newServiceWithDB(t *testing.T) (*Service, *gorm.DB) {

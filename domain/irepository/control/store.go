@@ -2,14 +2,23 @@ package control
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
 )
 
+var (
+	ErrDeviceNotFound       = errors.New("device is not registered")
+	ErrDeviceOffline        = errors.New("device is offline")
+	ErrDeviceOwnerMismatch  = errors.New("device is bound to another user")
+	ErrDeviceHasActiveTasks = errors.New("device has unfinished tasks")
+)
+
 type Store interface {
 	UpsertDevice(context.Context, *entity.RegisteredDevice) error
 	BindDevice(context.Context, string, string) error
+	UnbindDevice(context.Context, string, string) error
 	SetDeviceOnline(context.Context, string, bool, time.Time) error
 	MarkAllDevicesOffline(context.Context, time.Time) error
 	FindDevice(context.Context, string) (*entity.RegisteredDevice, error)

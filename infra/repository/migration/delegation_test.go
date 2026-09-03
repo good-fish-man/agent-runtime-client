@@ -17,10 +17,10 @@ func TestInitTablesCreatesDurableDelegationAuthoritySchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := data.New(db)
-	if err := InitTables(context.Background(), store); err != nil {
+	if err := InitTables(context.Background(), store, BootstrapAdmin{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := InitTables(context.Background(), store); err != nil {
+	if err := InitTables(context.Background(), store, BootstrapAdmin{}); err != nil {
 		t.Fatalf("delegation migration is not idempotent: %v", err)
 	}
 	for name, table := range map[string]any{

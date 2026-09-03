@@ -26,6 +26,7 @@ type Config struct {
 	Control       ControlConfig       `yaml:"control"`
 	ScheduledTask ScheduledTaskConfig `yaml:"scheduled_task"`
 	Orchestration OrchestrationConfig `yaml:"orchestration"`
+	Evolution     EvolutionConfig     `yaml:"evolution"`
 	Plugins       PluginsConfig       `yaml:"plugins"`
 	Operations    OperationsConfig    `yaml:"operations"`
 }
@@ -57,6 +58,31 @@ type OrchestrationConfig struct {
 	Enabled           bool `yaml:"enabled"`
 	ScanIntervalSec   int  `yaml:"scan_interval_sec"`
 	MaxConcurrentRuns int  `yaml:"max_concurrent_runs"`
+}
+
+// EvolutionConfig controls evidence discovery and optional constrained Codex
+// synthesis. It never enables automatic review, promotion, deployment, or
+// executable-code generation.
+type EvolutionConfig struct {
+	Enabled                 bool                 `yaml:"enabled"`
+	ScanIntervalSec         int                  `yaml:"scan_interval_sec"`
+	OwnerBatchSize          int                  `yaml:"owner_batch_size"`
+	ExperienceLimit         int                  `yaml:"experience_limit"`
+	MaxCandidatesPerScan    int                  `yaml:"max_candidates_per_scan"`
+	MinimumNovelExperiences int                  `yaml:"minimum_novel_experiences"`
+	Codex                   EvolutionCodexConfig `yaml:"codex"`
+}
+
+// EvolutionCodexConfig is an opt-in platform model used only to propose
+// declarative candidates from bounded, sanitized evidence.
+type EvolutionCodexConfig struct {
+	Enabled         bool   `yaml:"enabled"`
+	Model           string `yaml:"model"`
+	APIKey          string `yaml:"api_key"`
+	APIBase         string `yaml:"api_base"`
+	ReasoningEffort string `yaml:"reasoning_effort"`
+	TimeoutSec      int    `yaml:"timeout_sec"`
+	MaxOutputTokens int    `yaml:"max_output_tokens"`
 }
 
 // DBConfig configures the shared relational database. Field names mirror
@@ -146,6 +172,16 @@ func Default() *Config {
 		},
 		ScheduledTask: ScheduledTaskConfig{ScanIntervalSec: consts.DefaultScheduledTaskScanIntervalSec},
 		Orchestration: OrchestrationConfig{Enabled: true, ScanIntervalSec: consts.DefaultOrchestrationScanIntervalSec, MaxConcurrentRuns: consts.DefaultOrchestrationConcurrency},
+		Evolution: EvolutionConfig{
+			Enabled: true, ScanIntervalSec: consts.DefaultEvolutionScanIntervalSec,
+			OwnerBatchSize: consts.DefaultEvolutionOwnerBatchSize, ExperienceLimit: consts.DefaultEvolutionExperienceLimit,
+			MaxCandidatesPerScan: consts.DefaultEvolutionCandidatesPerScan, MinimumNovelExperiences: consts.DefaultEvolutionMinimumNovel,
+			Codex: EvolutionCodexConfig{
+				Enabled: false, Model: consts.DefaultEvolutionCodexModel, APIKey: "${OPENAI_API_KEY}",
+				APIBase: consts.DefaultEvolutionCodexAPIBase, ReasoningEffort: "medium",
+				TimeoutSec: consts.DefaultEvolutionCodexTimeoutSec, MaxOutputTokens: consts.DefaultEvolutionCodexMaxOutputTokens,
+			},
+		},
 		Plugins: PluginsConfig{
 			Directory: filepath.Join(pluginRoot, "packages"), RegistryPath: filepath.Join(pluginRoot, "registry.json"),
 			TrustStorePath: filepath.Join(pluginRoot, "trust-store.json"), AuditPath: filepath.Join(pluginRoot, "logs", "invocations.jsonl"),
@@ -272,6 +308,63 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Orchestration.MaxConcurrentRuns = count
 		}
 	}
+	if v := os.Getenv(consts.EnvEvolutionEnabled); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			cfg.Evolution.Enabled = enabled
+		}
+	}
+	if v := os.Getenv(consts.EnvEvolutionScanIntervalSec); v != "" {
+		if sec, err := strconv.Atoi(v); err == nil {
+			cfg.Evolution.ScanIntervalSec = sec
+		}
+	}
+	if v := os.Getenv(consts.EnvEvolutionOwnerBatchSize); v != "" {
+		if count, err := strconv.Atoi(v); err == nil {
+			cfg.Evolution.OwnerBatchSize = count
+		}
+	}
+	if v := os.Getenv(consts.EnvEvolutionExperienceLimit); v != "" {
+		if count, err := strconv.Atoi(v); err == nil {
+			cfg.Evolution.ExperienceLimit = count
+		}
+	}
+	if v := os.Getenv(consts.EnvEvolutionCandidatesPerScan); v != "" {
+		if count, err := strconv.Atoi(v); err == nil {
+			cfg.Evolution.MaxCandidatesPerScan = count
+		}
+	}
+	if v := os.Getenv(consts.EnvEvolutionMinimumNovel); v != "" {
+		if count, err := strconv.Atoi(v); err == nil {
+			cfg.Evolution.MinimumNovelExperiences = count
+		}
+	}
+	if v := os.Getenv(consts.EnvEvolutionCodexEnabled); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			cfg.Evolution.Codex.Enabled = enabled
+		}
+	}
+	if v := os.Getenv(consts.EnvEvolutionCodexModel); v != "" {
+		cfg.Evolution.Codex.Model = v
+	}
+	if v := os.Getenv(consts.EnvEvolutionCodexAPIKey); v != "" {
+		cfg.Evolution.Codex.APIKey = v
+	}
+	if v := os.Getenv(consts.EnvEvolutionCodexAPIBase); v != "" {
+		cfg.Evolution.Codex.APIBase = v
+	}
+	if v := os.Getenv(consts.EnvEvolutionCodexReasoning); v != "" {
+		cfg.Evolution.Codex.ReasoningEffort = v
+	}
+	if v := os.Getenv(consts.EnvEvolutionCodexTimeoutSec); v != "" {
+		if seconds, err := strconv.Atoi(v); err == nil {
+			cfg.Evolution.Codex.TimeoutSec = seconds
+		}
+	}
+	if v := os.Getenv(consts.EnvEvolutionCodexMaxOutputTokens); v != "" {
+		if tokens, err := strconv.Atoi(v); err == nil {
+			cfg.Evolution.Codex.MaxOutputTokens = tokens
+		}
+	}
 
 	// Database overrides (shared with agent-frame).
 	if v := os.Getenv(consts.EnvDBType); v != "" {
@@ -323,6 +416,36 @@ func applyEnvOverrides(cfg *Config) {
 	if cfg.Orchestration.MaxConcurrentRuns <= 0 {
 		cfg.Orchestration.MaxConcurrentRuns = consts.DefaultOrchestrationConcurrency
 	}
+	if cfg.Evolution.ScanIntervalSec <= 0 {
+		cfg.Evolution.ScanIntervalSec = consts.DefaultEvolutionScanIntervalSec
+	}
+	if cfg.Evolution.OwnerBatchSize <= 0 || cfg.Evolution.OwnerBatchSize > 200 {
+		cfg.Evolution.OwnerBatchSize = consts.DefaultEvolutionOwnerBatchSize
+	}
+	if cfg.Evolution.ExperienceLimit <= 0 || cfg.Evolution.ExperienceLimit > 2000 {
+		cfg.Evolution.ExperienceLimit = consts.DefaultEvolutionExperienceLimit
+	}
+	if cfg.Evolution.MaxCandidatesPerScan <= 0 || cfg.Evolution.MaxCandidatesPerScan > 100 {
+		cfg.Evolution.MaxCandidatesPerScan = consts.DefaultEvolutionCandidatesPerScan
+	}
+	if cfg.Evolution.MinimumNovelExperiences <= 0 {
+		cfg.Evolution.MinimumNovelExperiences = consts.DefaultEvolutionMinimumNovel
+	}
+	if strings.TrimSpace(cfg.Evolution.Codex.Model) == "" {
+		cfg.Evolution.Codex.Model = consts.DefaultEvolutionCodexModel
+	}
+	if strings.TrimSpace(cfg.Evolution.Codex.APIBase) == "" {
+		cfg.Evolution.Codex.APIBase = consts.DefaultEvolutionCodexAPIBase
+	}
+	if strings.TrimSpace(cfg.Evolution.Codex.ReasoningEffort) == "" {
+		cfg.Evolution.Codex.ReasoningEffort = "medium"
+	}
+	if cfg.Evolution.Codex.TimeoutSec <= 0 {
+		cfg.Evolution.Codex.TimeoutSec = consts.DefaultEvolutionCodexTimeoutSec
+	}
+	if cfg.Evolution.Codex.MaxOutputTokens < 512 || cfg.Evolution.Codex.MaxOutputTokens > 32768 {
+		cfg.Evolution.Codex.MaxOutputTokens = consts.DefaultEvolutionCodexMaxOutputTokens
+	}
 	defaults := Default().Plugins
 	if strings.TrimSpace(cfg.Plugins.Directory) == "" {
 		cfg.Plugins.Directory = defaults.Directory
@@ -345,4 +468,15 @@ func applyEnvOverrides(cfg *Config) {
 	if cfg.Operations.MaxBackups <= 0 {
 		cfg.Operations.MaxBackups = 10
 	}
+}
+
+// BootstrapAdministrator reads installation bootstrap material on demand so a
+// long-lived Config value can never expose the plaintext password through
+// serialization or debug formatting.
+func BootstrapAdministrator() (username, password string) {
+	username = strings.TrimSpace(os.Getenv(consts.EnvBootstrapAdminUsername))
+	if username == "" {
+		username = "athena"
+	}
+	return username, os.Getenv(consts.EnvBootstrapAdminPassword)
 }

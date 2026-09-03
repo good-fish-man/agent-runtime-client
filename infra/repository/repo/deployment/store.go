@@ -2,9 +2,11 @@ package deployment
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,8 +19,9 @@ import (
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/deployment"
 	learningpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/learning"
 	"github.com/good-fish-man/agent-runtime-client/pkg/ulid"
+	runtimeartifact "github.com/good-fish-man/athena-protocol/draft/runtimeartifact"
 	deploymentv1 "github.com/good-fish-man/athena-protocol/protocol/deployment/v1"
-	learningv1 "github.com/good-fish-man/athena-protocol/protocol/learning/v1"
+	learningv2 "github.com/good-fish-man/athena-protocol/protocol/learning/v2"
 	log "github.com/good-fish-man/logx"
 )
 
@@ -35,17 +38,17 @@ func NewStore(value *data.Data) *Store { return &Store{data: value} }
 
 var _ repository.Store = (*Store)(nil)
 
-func (s *Store) ResolveApprovedArtifacts(ctx context.Context, ownerID string, skills, strategies map[string]string) (entity.ArtifactApprovals, error) {
+func (s *Store) ResolveApprovedArtifacts(ctx context.Context, ownerID, organizationID string, skills, strategies map[string]string) (entity.ArtifactApprovals, error) {
 	result := entity.ArtifactApprovals{References: make([]entity.ArtifactApprovalReference, 0, len(skills)+len(strategies))}
 	for id, version := range skills {
-		reference, err := s.resolveSkillApproval(ctx, ownerID, id, version)
+		reference, err := s.resolveSkillApproval(ctx, ownerID, organizationID, id, version)
 		if err != nil {
 			return result, err
 		}
 		result.References = append(result.References, *reference)
 	}
 	for id, version := range strategies {
-		reference, err := s.resolveStrategyApproval(ctx, ownerID, id, version)
+		reference, err := s.resolveStrategyApproval(ctx, ownerID, organizationID, id, version)
 		if err != nil {
 			return result, err
 		}
@@ -54,9 +57,98 @@ func (s *Store) ResolveApprovedArtifacts(ctx context.Context, ownerID string, sk
 	return result, nil
 }
 
-func (s *Store) resolveSkillApproval(ctx context.Context, ownerID, id, version string) (*entity.ArtifactApprovalReference, error) {
+// LoadApprovedRuntimeArtifacts resolves the exact immutable definitions pinned
+// by a build. Every reference is rechecked against its evaluation and human
+// review at run time; a mutable latest version is never consulted.
+func (s *Store) LoadApprovedRuntimeArtifacts(ctx context.Context, ownerID, organizationID string, build entity.AgentBuild) ([]runtimeartifact.SkillArtifact, []runtimeartifact.StrategyArtifact, error) {
+	approvalIndex := make(map[string]entity.ArtifactApprovalReference, len(build.ArtifactApprovals))
+	for _, approval := range build.ArtifactApprovals {
+		approvalIndex[approval.Kind+":"+approval.ArtifactID] = approval
+	}
+	skillIDs := sortedArtifactIDs(build.SkillVersions)
+	strategyIDs := sortedArtifactIDs(build.StrategyVersions)
+	skills := make([]runtimeartifact.SkillArtifact, 0, len(skillIDs))
+	strategies := make([]runtimeartifact.StrategyArtifact, 0, len(strategyIDs))
+	for _, id := range skillIDs {
+		version := build.SkillVersions[id]
+		approved, err := s.resolveSkillApproval(ctx, ownerID, organizationID, id, version)
+		if err != nil {
+			return nil, nil, err
+		}
+		pinned, ok := approvalIndex[runtimeartifact.KindSkill+":"+id]
+		if !ok || !sameArtifactApproval(pinned, *approved) {
+			return nil, nil, fmt.Errorf("build %s does not pin the current approval for skill %s@%s", build.BuildID, id, version)
+		}
+		var immutable learningpo.SkillVersion
+		result := s.data.DB(ctx).Where("version_id = ? AND skill_id = ? AND version = ?", pinned.VersionID, id, version).Limit(1).Find(&immutable)
+		if result.Error != nil {
+			return nil, nil, log.WrapError(result.Error, "DeploymentStore.LoadApprovedRuntimeArtifacts.skill")
+		}
+		if result.RowsAffected == 0 || rawArtifactChecksum(immutable.Definition) != pinned.Checksum {
+			return nil, nil, fmt.Errorf("immutable skill %s@%s is missing or corrupted", id, version)
+		}
+		var definition learningv2.SkillDefinition
+		if err := json.Unmarshal([]byte(immutable.Definition), &definition); err != nil {
+			return nil, nil, log.WrapError(err, "DeploymentStore.LoadApprovedRuntimeArtifacts.skillDefinition")
+		}
+		skills = append(skills, runtimeartifact.SkillArtifact{Reference: runtimeReference(pinned), Definition: definition})
+	}
+	for _, id := range strategyIDs {
+		version := build.StrategyVersions[id]
+		approved, err := s.resolveStrategyApproval(ctx, ownerID, organizationID, id, version)
+		if err != nil {
+			return nil, nil, err
+		}
+		pinned, ok := approvalIndex[runtimeartifact.KindStrategy+":"+id]
+		if !ok || !sameArtifactApproval(pinned, *approved) {
+			return nil, nil, fmt.Errorf("build %s does not pin the current approval for strategy %s@%s", build.BuildID, id, version)
+		}
+		var immutable learningpo.StrategyVersion
+		result := s.data.DB(ctx).Where("version_id = ? AND strategy_id = ? AND version = ?", pinned.VersionID, id, version).Limit(1).Find(&immutable)
+		if result.Error != nil {
+			return nil, nil, log.WrapError(result.Error, "DeploymentStore.LoadApprovedRuntimeArtifacts.strategy")
+		}
+		if result.RowsAffected == 0 || rawArtifactChecksum(immutable.Definition) != pinned.Checksum {
+			return nil, nil, fmt.Errorf("immutable strategy %s@%s is missing or corrupted", id, version)
+		}
+		var definition learningv2.StrategyDefinition
+		if err := json.Unmarshal([]byte(immutable.Definition), &definition); err != nil {
+			return nil, nil, log.WrapError(err, "DeploymentStore.LoadApprovedRuntimeArtifacts.strategyDefinition")
+		}
+		strategies = append(strategies, runtimeartifact.StrategyArtifact{Reference: runtimeReference(pinned), Definition: definition})
+	}
+	return skills, strategies, nil
+}
+
+func sortedArtifactIDs(values map[string]string) []string {
+	ids := make([]string, 0, len(values))
+	for id := range values {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func sameArtifactApproval(left, right entity.ArtifactApprovalReference) bool {
+	return left.Verified && right.Verified && left.Kind == right.Kind && left.ArtifactID == right.ArtifactID && left.Version == right.Version &&
+		left.VersionID == right.VersionID && left.CandidateID == right.CandidateID && left.EvaluationRunID == right.EvaluationRunID &&
+		left.ReviewedBy == right.ReviewedBy && left.ReviewedAt.Equal(right.ReviewedAt) && left.Checksum == right.Checksum
+}
+
+func runtimeReference(value entity.ArtifactApprovalReference) runtimeartifact.Reference {
+	return runtimeartifact.Reference{Kind: value.Kind, ArtifactID: value.ArtifactID, Version: value.Version, VersionID: value.VersionID, CandidateID: value.CandidateID, Checksum: value.Checksum}
+}
+
+func rawArtifactChecksum(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func (s *Store) resolveSkillApproval(ctx context.Context, ownerID, organizationID, id, version string) (*entity.ArtifactApprovalReference, error) {
 	var artifact learningpo.Skill
-	result := s.data.DB(ctx).Where("skill_id = ? AND status = ? AND deleted_at = 0 AND (owner_id = ? OR visibility = ?)", id, learningv1.LifecycleApproved, ownerID, learningv1.VisibilityPublic).Limit(1).Find(&artifact)
+	result := approvedArtifactScope(s.data.DB(ctx), ownerID, organizationID).
+		Where("skill_id = ? AND status = ? AND deleted_at = 0", id, learningv2.LifecycleApproved).
+		Limit(1).Find(&artifact)
 	if result.Error != nil {
 		return nil, log.WrapError(result.Error, "DeploymentStore.resolveSkillApproval.artifact")
 	}
@@ -77,9 +169,11 @@ func (s *Store) resolveSkillApproval(ctx context.Context, ownerID, id, version s
 	return s.resolveCandidateApproval(ctx, "SKILL", id, version, immutable.VersionID, immutable.CandidateID, immutable.OwnerID, immutable.Checksum)
 }
 
-func (s *Store) resolveStrategyApproval(ctx context.Context, ownerID, id, version string) (*entity.ArtifactApprovalReference, error) {
+func (s *Store) resolveStrategyApproval(ctx context.Context, ownerID, organizationID, id, version string) (*entity.ArtifactApprovalReference, error) {
 	var artifact learningpo.Strategy
-	result := s.data.DB(ctx).Where("strategy_id = ? AND status = ? AND deleted_at = 0 AND (owner_id = ? OR visibility = ?)", id, learningv1.LifecycleApproved, ownerID, learningv1.VisibilityPublic).Limit(1).Find(&artifact)
+	result := approvedArtifactScope(s.data.DB(ctx), ownerID, organizationID).
+		Where("strategy_id = ? AND status = ? AND deleted_at = 0", id, learningv2.LifecycleApproved).
+		Limit(1).Find(&artifact)
 	if result.Error != nil {
 		return nil, log.WrapError(result.Error, "DeploymentStore.resolveStrategyApproval.artifact")
 	}
@@ -100,9 +194,20 @@ func (s *Store) resolveStrategyApproval(ctx context.Context, ownerID, id, versio
 	return s.resolveCandidateApproval(ctx, "STRATEGY", id, version, immutable.VersionID, immutable.CandidateID, immutable.OwnerID, immutable.Checksum)
 }
 
+func approvedArtifactScope(db *gorm.DB, ownerID, organizationID string) *gorm.DB {
+	organizationID = strings.TrimSpace(organizationID)
+	if organizationID == "" {
+		return db.Where("(owner_id = ? OR visibility = ?)", ownerID, learningv2.VisibilityPublic)
+	}
+	return db.Where(
+		"(owner_id = ? OR visibility = ? OR (visibility = ? AND organization_id = ?))",
+		ownerID, learningv2.VisibilityPublic, learningv2.VisibilityTeam, organizationID,
+	)
+}
+
 func (s *Store) resolveCandidateApproval(ctx context.Context, kind, id, version, versionID, candidateID, expectedOwnerID, checksum string) (*entity.ArtifactApprovalReference, error) {
 	var candidate learningpo.Candidate
-	result := s.data.DB(ctx).Where("candidate_id = ? AND status = ? AND deleted_at = 0", candidateID, learningv1.LifecycleApproved).Limit(1).Find(&candidate)
+	result := s.data.DB(ctx).Where("candidate_id = ? AND status = ? AND deleted_at = 0", candidateID, learningv2.LifecycleApproved).Limit(1).Find(&candidate)
 	if result.Error != nil {
 		return nil, log.WrapError(result.Error, "DeploymentStore.resolveCandidateApproval")
 	}
@@ -112,7 +217,7 @@ func (s *Store) resolveCandidateApproval(ctx context.Context, kind, id, version,
 	if candidate.OwnerID != expectedOwnerID || candidate.Kind != kind {
 		return nil, fmt.Errorf("%s %s@%s has mismatched candidate ownership or kind", strings.ToLower(kind), id, version)
 	}
-	var evaluation learningv1.EvaluationSummary
+	var evaluation learningv2.EvaluationSummary
 	if err := json.Unmarshal([]byte(candidate.Evaluation), &evaluation); err != nil {
 		return nil, log.WrapError(err, "DeploymentStore.resolveCandidateApproval.evaluation")
 	}
@@ -304,6 +409,19 @@ func (s *Store) FindExposure(ctx context.Context, promotionID, ownerID, agentID 
 		return nil, nil
 	}
 	return decodeExposure(row), nil
+}
+
+func (s *Store) FindLatestExposurePreference(ctx context.Context, ownerID, agentID string) (bool, bool, error) {
+	var row po.Exposure
+	result := s.data.DB(ctx).Where("owner_id = ? AND agent_id = ?", ownerID, agentID).
+		Order("updated_at DESC, created_at DESC").Limit(1).Find(&row)
+	if result.Error != nil {
+		return false, false, log.WrapError(result.Error, "DeploymentStore.FindLatestExposurePreference")
+	}
+	if result.RowsAffected == 0 {
+		return false, false, nil
+	}
+	return row.OptedOut, true, nil
 }
 
 func (s *Store) CreateExposure(ctx context.Context, exposure entity.Exposure) error {

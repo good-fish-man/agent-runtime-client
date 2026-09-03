@@ -183,7 +183,7 @@ func (s *SysModelService) enrichUsage(ctx context.Context, items []*dto.FindSysM
 	}
 	metrics, err := s.srv.FindRecentUsageMetrics(ctx, time.Now().Add(-24*time.Hour).UnixMilli())
 	if err != nil {
-		log.WarnwCtx(ctx, "load recent model usage failed", "error", err)
+		log.Warnw(ctx, "load recent model usage failed", "error", err)
 		return
 	}
 	applyModelUsageMetrics(items, metrics)

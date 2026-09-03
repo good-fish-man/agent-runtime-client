@@ -13,6 +13,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/knowledge"
 	repository "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/knowledge"
+	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
 	knowledgev1 "github.com/good-fish-man/athena-protocol/protocol/knowledge/v1"
 )
 
@@ -86,6 +87,65 @@ func TestResearchPagesAreEvidenceOnly(t *testing.T) {
 	claims, err := service.ListClaims(context.Background(), "owner-1", 10)
 	if err != nil || len(claims) != 0 {
 		t.Fatalf("research page was promoted directly to a claim: %+v, %v", claims, err)
+	}
+}
+
+func TestResearchRefetchCreatesFreshImmutableEvidence(t *testing.T) {
+	service := newKnowledgeService(t)
+	snapshot := map[string]any{
+		"pages": []any{map[string]any{"title": "Current notice", "url": "https://example.com/notice", "snippet": "The published rule is unchanged"}},
+	}
+	if err := service.CaptureResearchEvidence(context.Background(), "owner-1", "task-1", "trace-1", snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CaptureResearchEvidence(context.Background(), "owner-1", "task-2", "trace-2", snapshot); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := service.ListEvidence(context.Background(), "owner-1", 10)
+	if err != nil || len(evidence) != 2 {
+		t.Fatalf("fresh observations were not preserved independently: evidence=%+v error=%v", evidence, err)
+	}
+	if evidence[0].EvidenceID == evidence[1].EvidenceID || evidence[0].Provenance.SourceTaskID == evidence[1].Provenance.SourceTaskID {
+		t.Fatalf("research observations were incorrectly deduplicated: %+v", evidence)
+	}
+}
+
+func TestOrganizationRetrievalUsesAuthenticatedScopeOnly(t *testing.T) {
+	service := newKnowledgeService(t)
+	now := time.Now().UTC()
+	evidence := officialEvidence("org-evidence", "publisher", "https://example.org/policy", "Organization policy", now)
+	evidence.Scope = knowledgev1.ScopeOrganization
+	evidence.OrganizationID = "org-a"
+	persistEvidence(t, service, evidence)
+	claim := entity.Claim{
+		Schema: entity.Schema, ClaimID: "org-claim", OwnerID: "publisher", OrganizationID: "org-a",
+		Subject: "organization-policy", Predicate: "status", Value: "active",
+		Scope: knowledgev1.ScopeOrganization, Sensitivity: knowledgev1.SensitivityInternal,
+		EvidenceRefs: []string{evidence.EvidenceID}, Confidence: .9, Status: knowledgev1.ClaimActive,
+		Provenance: testProvenance(now, "organization-policy\nstatus\nactive"), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := claim.ValidateAt(map[string]entity.Evidence{evidence.EvidenceID: evidence}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.store.CreateKnowledge(context.Background(), claim, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	orgContext := authctx.WithOrganizationID(context.Background(), "org-a")
+	result, err := service.Retrieve(orgContext, "viewer", entity.RetrievalQuery{
+		Text: "organization policy", Scopes: []string{knowledgev1.ScopeOrganization},
+		OrganizationIDs: []string{"org-attacker"}, MaxSensitivity: knowledgev1.SensitivityInternal,
+	})
+	if err != nil || len(result.Hits) != 1 || result.Hits[0].Claim.ClaimID != claim.ClaimID {
+		t.Fatalf("same-organization knowledge was not retrieved: result=%+v error=%v", result, err)
+	}
+	otherContext := authctx.WithOrganizationID(context.Background(), "org-b")
+	isolated, err := service.Retrieve(otherContext, "viewer", entity.RetrievalQuery{
+		Text: "organization policy", Scopes: []string{knowledgev1.ScopeOrganization},
+		OrganizationIDs: []string{"org-a"}, MaxSensitivity: knowledgev1.SensitivityInternal,
+	})
+	if err != nil || len(isolated.Hits) != 0 {
+		t.Fatalf("request-controlled organization scope leaked knowledge: result=%+v error=%v", isolated, err)
 	}
 }
 
@@ -235,6 +295,13 @@ func TestContradictionResolutionIsAudited(t *testing.T) {
 	resolved, err := service.ResolveContradiction(ctx, "owner-1", "reviewer-1", contradictions[0].ContradictionID, ResolveContradictionRequest{Decision: knowledgev1.ResolutionKeepClaim, WinningClaimID: left.ClaimID, Note: "Verified against the current official rule"})
 	if err != nil || !resolved.Resolved || resolved.Resolution == nil || resolved.Resolution.ResolvedBy != "reviewer-1" {
 		t.Fatalf("resolved=%+v error=%v", resolved, err)
+	}
+	result, err := service.Retrieve(ctx, "owner-1", entity.RetrievalQuery{Text: "rule value A", Scopes: []string{knowledgev1.ScopeUser}, MaxSensitivity: knowledgev1.SensitivityInternal})
+	if err != nil || len(result.Hits) != 1 {
+		t.Fatalf("resolved knowledge was not retrievable: result=%+v error=%v", result, err)
+	}
+	if result.Hits[0].Determination != knowledgev1.DeterminationFact || result.Hits[0].HasConflict || len(result.Hits[0].Claim.ContradictedBy) != 0 {
+		t.Fatalf("winning claim retained a resolved contradiction: %+v", result.Hits[0])
 	}
 }
 

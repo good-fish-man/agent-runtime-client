@@ -13,7 +13,7 @@ import (
 	repository "github.com/good-fish-man/agent-runtime-client/domain/irepository/orchestration"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/orchestration"
-	orchestrationv1 "github.com/good-fish-man/athena-protocol/protocol/orchestration/v1"
+	orchestrationv2 "github.com/good-fish-man/athena-protocol/protocol/orchestration/v2"
 	log "github.com/good-fish-man/logx"
 )
 
@@ -127,7 +127,7 @@ func (s *Store) ListGoals(ctx context.Context, ownerID string, filter entity.Goa
 
 func (s *Store) ListRunnableGoals(ctx context.Context, limit int) ([]entity.PersistentGoal, error) {
 	var rows []po.Goal
-	statuses := []string{"PLANNED", "RUNNING", "WAITING_USER"}
+	statuses := []string{orchestrationv2.GoalPlanned, orchestrationv2.GoalRunning, orchestrationv2.GoalWaitingUser, orchestrationv2.GoalWaitingDevice}
 	if err := s.data.DB(ctx).Where("status IN ?", statuses).Order("updated_at ASC").Limit(normalizeLimit(limit, 500)).Find(&rows).Error; err != nil {
 		return nil, log.WrapError(err, "OrchestrationStore.ListRunnableGoals")
 	}
@@ -206,7 +206,7 @@ func (s *Store) SaveState(ctx context.Context, goal entity.PersistentGoal, tasks
 				return err
 			}
 		}
-		if goal.Trigger.Type == orchestrationv1.TriggerSchedule {
+		if goal.Trigger.Type == orchestrationv2.TriggerSchedule {
 			if err := updateScheduleTriggerState(tx, goal, tasks, result); err != nil {
 				return err
 			}
@@ -317,37 +317,39 @@ func updateScheduleTriggerState(tx *gorm.DB, goal entity.PersistentGoal, tasks [
 		}
 		trigger.Attempt = task.Attempt
 		switch task.Status {
-		case orchestrationv1.TaskPending, orchestrationv1.TaskReady:
-			trigger.Status = orchestrationv1.ScheduleTriggerQueued
-		case orchestrationv1.TaskRunning:
-			trigger.Status = orchestrationv1.ScheduleTriggerRunning
+		case orchestrationv2.TaskPending, orchestrationv2.TaskReady:
+			trigger.Status = orchestrationv2.ScheduleTriggerQueued
+		case orchestrationv2.TaskRunning:
+			trigger.Status = orchestrationv2.ScheduleTriggerRunning
 			if trigger.StartedAt.IsZero() {
 				trigger.StartedAt = now
 			}
-		case orchestrationv1.TaskWaitingDevice:
-			trigger.Status = orchestrationv1.ScheduleTriggerWaitingDevice
-		case orchestrationv1.TaskWaitingUser:
-			trigger.Status = orchestrationv1.ScheduleTriggerWaitingUser
-		case orchestrationv1.TaskCompleted:
-			trigger.Status, trigger.FinishedAt = orchestrationv1.ScheduleTriggerCompleted, now
-		case orchestrationv1.TaskFailed:
-			trigger.Status, trigger.FinishedAt = orchestrationv1.ScheduleTriggerFailed, now
+		case orchestrationv2.TaskWaitingDevice:
+			trigger.Status = orchestrationv2.ScheduleTriggerWaitingDevice
+		case orchestrationv2.TaskWaitingUser:
+			trigger.Status = orchestrationv2.ScheduleTriggerWaitingUser
+		case orchestrationv2.TaskCompleted:
+			trigger.Status, trigger.FinishedAt = orchestrationv2.ScheduleTriggerCompleted, now
+		case orchestrationv2.TaskFailed:
+			trigger.Status, trigger.FinishedAt = orchestrationv2.ScheduleTriggerFailed, now
 		}
 		break
 	}
 	switch goal.Status {
-	case orchestrationv1.GoalCompleted:
-		trigger.Status, trigger.FinishedAt = orchestrationv1.ScheduleTriggerCompleted, now
-	case orchestrationv1.GoalWaitingUser, orchestrationv1.GoalPaused:
-		trigger.Status, trigger.FinishedAt = orchestrationv1.ScheduleTriggerWaitingUser, time.Time{}
-	case orchestrationv1.GoalCancelled:
-		trigger.Status, trigger.FinishedAt = orchestrationv1.ScheduleTriggerCancelled, now
-	case orchestrationv1.GoalFailed:
-		trigger.Status, trigger.FinishedAt = orchestrationv1.ScheduleTriggerFailed, now
+	case orchestrationv2.GoalCompleted:
+		trigger.Status, trigger.FinishedAt = orchestrationv2.ScheduleTriggerCompleted, now
+	case orchestrationv2.GoalWaitingUser, orchestrationv2.GoalPaused:
+		trigger.Status, trigger.FinishedAt = orchestrationv2.ScheduleTriggerWaitingUser, time.Time{}
+	case orchestrationv2.GoalWaitingDevice:
+		trigger.Status, trigger.FinishedAt = orchestrationv2.ScheduleTriggerWaitingDevice, time.Time{}
+	case orchestrationv2.GoalCancelled:
+		trigger.Status, trigger.FinishedAt = orchestrationv2.ScheduleTriggerCancelled, now
+	case orchestrationv2.GoalFailed:
+		trigger.Status, trigger.FinishedAt = orchestrationv2.ScheduleTriggerFailed, now
 	}
 	if result != nil {
 		trigger.RunID, trigger.Summary = result.RunID, result.Summary
-		if result.Status == orchestrationv1.TaskFailed {
+		if result.Status == orchestrationv2.TaskFailed {
 			trigger.Error = result.Summary
 		}
 	}

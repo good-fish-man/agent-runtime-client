@@ -15,6 +15,7 @@ import (
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/knowledge"
 	repository "github.com/good-fish-man/agent-runtime-client/domain/irepository/knowledge"
+	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
 	"github.com/good-fish-man/agent-runtime-client/pkg/ulid"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 	knowledgev1 "github.com/good-fish-man/athena-protocol/protocol/knowledge/v1"
@@ -274,7 +275,11 @@ func (s *Service) CreateUserEvidence(ctx context.Context, ownerID string, reques
 }
 
 func (s *Service) Retrieve(ctx context.Context, ownerID string, query entity.RetrievalQuery) (*RetrievalResponse, error) {
-	return s.retrieveWithOrganizations(ctx, ownerID, nil, query)
+	organizationIDs := []string(nil)
+	if organizationID := strings.TrimSpace(authctx.OrganizationID(ctx)); organizationID != "" {
+		organizationIDs = []string{organizationID}
+	}
+	return s.retrieveWithOrganizations(ctx, ownerID, organizationIDs, query)
 }
 
 func (s *Service) retrieveWithOrganizations(ctx context.Context, ownerID string, organizationIDs []string, query entity.RetrievalQuery) (*RetrievalResponse, error) {
@@ -425,7 +430,9 @@ func (s *Service) CaptureResearchEvidence(ctx context.Context, ownerID, taskID, 
 		sourceType := researchSourceType(uri)
 		trustProfile, authority, maxAge := trustPolicy(sourceType)
 		staleAt := now.Add(maxAge)
-		sum := sha256.Sum256([]byte(ownerID + "\n" + uri + "\n" + excerpt))
+		// An evidence record is an immutable observation. A later research run
+		// must create a fresh record even when the fetched content is unchanged.
+		sum := sha256.Sum256([]byte(ownerID + "\n" + taskID + "\n" + uri + "\n" + excerpt))
 		item := entity.Evidence{
 			Schema: entity.Schema, EvidenceID: "evidence-" + hex.EncodeToString(sum[:])[:32], OwnerID: ownerID,
 			Scope: knowledgev1.ScopeUser, Sensitivity: knowledgev1.SensitivityInternal, SourceType: sourceType,

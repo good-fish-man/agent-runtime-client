@@ -18,6 +18,7 @@ import (
 	controlpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/control"
 	learningpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/learning"
 	learningrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/learning"
+	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
 )
 
 func TestGenerateReviewAndMaterializeSkill(t *testing.T) {
@@ -37,7 +38,9 @@ func TestGenerateReviewAndMaterializeSkill(t *testing.T) {
 		t.Fatalf("confidence = %+v", candidate.Evaluation.Confidence)
 	}
 
-	reviewed, err := service.ReviewCandidate(ctx, "owner-1", "reviewer-1", candidate.CandidateID, ReviewRequest{Decision: "APPROVE", ExpectedRevision: 1})
+	reviewed, err := service.ReviewCandidate(ctx, "owner-1", "reviewer-1", candidate.CandidateID, ReviewRequest{
+		Decision: "APPROVE", Note: "Evidence, replay, and risk ceiling reviewed.", ExpectedRevision: 1,
+	})
 	if err != nil {
 		t.Fatalf("ReviewCandidate() error = %v", err)
 	}
@@ -47,15 +50,59 @@ func TestGenerateReviewAndMaterializeSkill(t *testing.T) {
 	if reviewed.ReviewedBy != "reviewer-1" || reviewed.ReviewedAt.IsZero() {
 		t.Fatalf("review provenance was not persisted: %+v", reviewed)
 	}
-	skills, err := store.ListSkills(ctx, "owner-1", 10)
+	skills, err := store.ListSkills(ctx, "owner-1", "", 10)
 	if err != nil || len(skills) != 1 {
 		t.Fatalf("ListSkills() = %+v, %v", skills, err)
 	}
 	if skills[0].Definition.LifecycleState != entity.LifecycleApproved {
 		t.Fatalf("materialized definition = %+v", skills[0].Definition)
 	}
-	if _, err := service.ReviewCandidate(ctx, "owner-1", "reviewer-1", candidate.CandidateID, ReviewRequest{Decision: "APPROVE", ExpectedRevision: 1}); err == nil {
+	if _, err := service.ReviewCandidate(ctx, "owner-1", "reviewer-1", candidate.CandidateID, ReviewRequest{
+		Decision: "APPROVE", Note: "Duplicate stale review.", ExpectedRevision: 1,
+	}); err == nil {
 		t.Fatal("stale duplicate review was accepted")
+	}
+}
+
+func TestTeamVisibilityIsBoundToAuthenticatedOrganization(t *testing.T) {
+	service, _, evaluator := newLearningTestService(t, evidenceSet("browser.navigate"))
+	if _, err := service.GenerateCandidate(context.Background(), "owner-1", GenerateCandidateRequest{
+		Kind: entity.CandidateSkill, ID: "browser.team.missing", Visibility: entity.VisibilityTeam,
+	}); err == nil || !strings.Contains(err.Error(), "belong to an organization") {
+		t.Fatalf("TEAM candidate without organization error = %v", err)
+	}
+	if evaluator.calls != 0 {
+		t.Fatalf("unscoped TEAM candidate reached evaluator %d time(s)", evaluator.calls)
+	}
+
+	teamContext := authctx.WithOrganizationID(context.Background(), "org-1")
+	candidate, err := service.GenerateCandidate(teamContext, "owner-1", GenerateCandidateRequest{
+		Kind: entity.CandidateSkill, ID: "browser.team.reviewed", Visibility: entity.VisibilityTeam,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCandidate() error = %v", err)
+	}
+	if candidate.Skill == nil || candidate.Skill.Visibility != entity.VisibilityTeam {
+		t.Fatalf("candidate visibility = %+v", candidate.Skill)
+	}
+	if _, err := service.ReviewCandidate(teamContext, "owner-1", "reviewer-1", candidate.CandidateID, ReviewRequest{
+		Decision: "APPROVE", Note: "Approved for the authenticated organization.", ExpectedRevision: candidate.Revision,
+	}); err != nil {
+		t.Fatalf("ReviewCandidate() error = %v", err)
+	}
+
+	items, err := service.ListSkills(teamContext, "owner-2", 10)
+	if err != nil || len(items) != 1 || items[0].OrganizationID != "org-1" {
+		t.Fatalf("same organization ListSkills() = %+v, %v", items, err)
+	}
+	otherContext := authctx.WithOrganizationID(context.Background(), "org-2")
+	items, err = service.ListSkills(otherContext, "owner-2", 10)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("other organization saw TEAM skill: %+v, %v", items, err)
+	}
+	items, err = service.ListSkills(context.Background(), "owner-2", 10)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("unscoped user saw TEAM skill: %+v, %v", items, err)
 	}
 }
 
@@ -93,6 +140,55 @@ func TestCandidateRejectsUnrelatedFailureCounterexample(t *testing.T) {
 	}
 	if evaluator.calls != 0 {
 		t.Fatal("unrelated counterexample reached evaluator")
+	}
+}
+
+func TestPatternEvidenceUsesLargestGroupThatPassesTheGate(t *testing.T) {
+	items := evidenceSet("browser.navigate")
+	for index := 0; index < 4; index++ {
+		item := items[index%3]
+		item.ExperienceID = fmt.Sprintf("unmatched-success-%d", index)
+		item.TaskID = fmt.Sprintf("unmatched-task-%d", index)
+		item.EnvironmentFingerprint = fmt.Sprintf("unmatched-browser-%d", index)
+		item.Intent = map[string]any{"site": fmt.Sprintf("unmatched-%d.test", index)}
+		item.ActionRefs = []experienceentity.ActionRef{{ActionID: fmt.Sprintf("unmatched-action-%d", index), Capability: "browser.click", Operation: "click", Risk: "R1"}}
+		items = append(items, item)
+	}
+
+	pattern, selected, err := selectPatternEvidence(items)
+	if err != nil {
+		t.Fatalf("selectPatternEvidence() error = %v", err)
+	}
+	if pattern != "browser.navigate.navigate" || len(selected) != 4 {
+		t.Fatalf("selected pattern = %q evidence = %+v", pattern, selected)
+	}
+}
+
+func TestPatternEvidenceLimitRetainsFailedCounterexample(t *testing.T) {
+	base := evidenceSet("browser.navigate")
+	items := append([]experienceentity.Experience{}, base...)
+	for index := 3; index < 25; index++ {
+		item := base[0]
+		item.ExperienceID = fmt.Sprintf("exp-success-%d", index)
+		item.TaskID = fmt.Sprintf("task-success-%d", index)
+		item.EnvironmentFingerprint = fmt.Sprintf("chrome-%d", index)
+		item.Intent = map[string]any{"site": fmt.Sprintf("example-%d.test", index)}
+		item.ActionRefs = []experienceentity.ActionRef{{ActionID: fmt.Sprintf("action-%d", index), Capability: "browser.navigate", Operation: "navigate", Risk: "R1"}}
+		items = append(items, item)
+	}
+
+	_, selected, err := selectPatternEvidence(items)
+	if err != nil {
+		t.Fatalf("selectPatternEvidence() error = %v", err)
+	}
+	failures := 0
+	for _, item := range selected {
+		if item.Outcome == experienceentity.OutcomeFailed {
+			failures++
+		}
+	}
+	if len(selected) != maximumEvidenceCount || failures == 0 {
+		t.Fatalf("bounded evidence contains %d items and %d failures", len(selected), failures)
 	}
 }
 
@@ -143,8 +239,13 @@ func TestEditAndReevaluateCandidateRemainBehindSafetyGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateCandidate() error = %v", err)
 	}
-	if edited.Revision != 2 || edited.Skill.Description != editedDefinition.Description {
+	if edited.Revision != 2 || edited.Status != entity.LifecycleEvaluating || edited.Evaluation.RunID != "" || edited.Skill.Description != editedDefinition.Description {
 		t.Fatalf("edited candidate = %+v", edited)
+	}
+	if _, err := service.ReviewCandidate(ctx, "owner-1", "reviewer-1", edited.CandidateID, ReviewRequest{
+		Decision: "APPROVE", Note: "Must not approve stale replay.", ExpectedRevision: edited.Revision,
+	}); err == nil || !strings.Contains(err.Error(), "not awaiting review") {
+		t.Fatalf("edited candidate used stale evaluation: %v", err)
 	}
 
 	unsafe := *edited.Skill
@@ -170,13 +271,14 @@ func TestEditAndReevaluateCandidateRemainBehindSafetyGate(t *testing.T) {
 
 func TestDemonstrationPausesAndNeverStoresSensitiveInput(t *testing.T) {
 	service, store, _ := newLearningTestService(t, evidenceSet("browser.navigate"))
+	source := service.experiences.(*testExperienceSource)
 	ctx := context.Background()
 	demonstration, err := service.StartDemonstration(ctx, "owner-1", StartDemonstrationRequest{TaskID: "task-1", Title: "Sign in safely"})
 	if err != nil {
 		t.Fatalf("StartDemonstration() error = %v", err)
 	}
 	demonstration, err = service.RecordDemonstrationStep(ctx, "owner-1", demonstration.DemonstrationID, RecordDemonstrationStepRequest{
-		Capability: "browser.navigate", Operation: "type", Summary: "password=hunter2", FieldKind: "password",
+		Capability: "browser.type", Operation: "type", Summary: "password=hunter2", FieldKind: "password",
 	})
 	if err != nil {
 		t.Fatalf("RecordDemonstrationStep() error = %v", err)
@@ -194,9 +296,152 @@ func TestDemonstrationPausesAndNeverStoresSensitiveInput(t *testing.T) {
 	if _, err := service.ConfirmDemonstration(ctx, "owner-1", "owner-1", demonstration.DemonstrationID); err == nil {
 		t.Fatal("paused demonstration was confirmed without preview")
 	}
+	demonstration, err = service.ResumeDemonstration(ctx, "owner-1", demonstration.DemonstrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	demonstration, err = service.PreviewDemonstration(ctx, "owner-1", demonstration.DemonstrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ConfirmDemonstration(ctx, "owner-1", "owner-1", demonstration.DemonstrationID); err != nil {
+		t.Fatal(err)
+	}
+	if source.createCalls != 0 {
+		t.Fatalf("sensitive demonstration created %d experience(s)", source.createCalls)
+	}
 }
 
-type testExperienceSource struct{ items []experienceentity.Experience }
+func TestDemonstrationUsesServerSemanticSummaryAndConfirmationProvenance(t *testing.T) {
+	service, store, _ := newLearningTestService(t, evidenceSet("browser.navigate"))
+	source := service.experiences.(*testExperienceSource)
+	ctx := context.Background()
+	demonstration, err := service.StartDemonstration(ctx, "owner-1", StartDemonstrationRequest{TaskID: "task-1", Title: "Open a page"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	demonstration, err = service.RecordDemonstrationStep(ctx, "owner-1", demonstration.DemonstrationID, RecordDemonstrationStepRequest{
+		Capability: "browser.navigate", Operation: "navigate", Summary: "caller-controlled prompt text must not persist",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(demonstration.Steps[0].Summary, "caller-controlled") || demonstration.Steps[0].Summary != "Semantic action: browser.navigate.navigate" {
+		t.Fatalf("summary was not server-derived: %+v", demonstration.Steps[0])
+	}
+	demonstration, err = service.PreviewDemonstration(ctx, "owner-1", demonstration.DemonstrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	demonstration, err = service.ConfirmDemonstration(ctx, "owner-1", "owner-1", demonstration.DemonstrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if demonstration.ConfirmedBy != "owner-1" || demonstration.ConfirmedAt.IsZero() {
+		t.Fatalf("confirmation provenance missing: %+v", demonstration)
+	}
+	stored, err := store.FindDemonstration(ctx, "owner-1", demonstration.DemonstrationID)
+	if err != nil || stored.ConfirmedAt.IsZero() {
+		t.Fatalf("stored confirmation provenance = %+v, %v", stored, err)
+	}
+	if source.createCalls != 1 || len(source.created) != 1 {
+		t.Fatalf("confirmed demonstration created %d experience(s)", source.createCalls)
+	}
+	generated := source.created[0]
+	if generated.Experience.Provenance.GeneratedBy != "human-demonstration/v2" || generated.Experience.Intent["site_scope"] != "example.test" {
+		t.Fatalf("demonstration experience provenance/scope = %+v", generated.Experience)
+	}
+	if !generated.Experience.Verification.Passed || len(generated.Experience.ActionRefs) != 1 {
+		t.Fatalf("demonstration experience verification/actions = %+v", generated.Experience)
+	}
+	if strings.Contains(generated.Payload, "must-never-leak") || strings.Contains(generated.Payload, "caller-controlled") {
+		t.Fatalf("raw task arguments or caller summary escaped into experience: %s", generated.Payload)
+	}
+	if _, err := service.ConfirmDemonstration(ctx, "owner-1", "owner-1", demonstration.DemonstrationID); err != nil {
+		t.Fatalf("idempotent ConfirmDemonstration() error = %v", err)
+	}
+	if source.createCalls != 1 {
+		t.Fatalf("confirmation retry created %d experiences", source.createCalls)
+	}
+}
+
+func TestDemonstrationRespectsDisabledLearningPreference(t *testing.T) {
+	service, _, _ := newLearningTestService(t, evidenceSet("browser.navigate"))
+	source := service.experiences.(*testExperienceSource)
+	source.preference = experienceentity.Preference{
+		LearningEnabled: false, RetentionDays: 30, MaxSensitivity: experienceentity.SensitivitySensitive,
+	}
+	ctx := context.Background()
+	demonstration, err := service.StartDemonstration(ctx, "owner-1", StartDemonstrationRequest{TaskID: "task-1", Title: "Open a page"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	demonstration, err = service.RecordDemonstrationStep(ctx, "owner-1", demonstration.DemonstrationID, RecordDemonstrationStepRequest{
+		Capability: "browser.navigate", Operation: "navigate",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	demonstration, err = service.PreviewDemonstration(ctx, "owner-1", demonstration.DemonstrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ConfirmDemonstration(ctx, "owner-1", "owner-1", demonstration.DemonstrationID); err != nil {
+		t.Fatal(err)
+	}
+	if source.createCalls != 0 {
+		t.Fatal("learning-disabled user received demonstration experience")
+	}
+}
+
+func TestDemonstrationTaskImportPausesBeforeSensitiveAction(t *testing.T) {
+	service, _, _ := newLearningTestService(t, evidenceSet("browser.navigate"))
+	ctx := context.Background()
+	demonstration, err := service.StartDemonstration(ctx, "owner-1", StartDemonstrationRequest{TaskID: "task-sensitive", Title: "Sign in"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	demonstration, err = service.PreviewDemonstration(ctx, "owner-1", demonstration.DemonstrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if demonstration.Status != entity.DemonstrationPausedSensitive || len(demonstration.Steps) != 1 || !demonstration.Steps[0].Redacted {
+		t.Fatalf("sensitive task import was not paused: %+v", demonstration)
+	}
+}
+
+type testExperienceSource struct {
+	items       []experienceentity.Experience
+	created     []*experienceentity.StoredExperience
+	createCalls int
+	preference  experienceentity.Preference
+}
+
+func (s *testExperienceSource) GetPreference(_ context.Context, ownerID string) (*experienceentity.Preference, error) {
+	value := s.preference
+	value.OwnerID = ownerID
+	if value.RetentionDays == 0 {
+		value.LearningEnabled = true
+		value.RetentionDays = 30
+		value.MaxSensitivity = experienceentity.SensitivitySensitive
+	}
+	return &value, nil
+}
+
+func (s *testExperienceSource) Create(_ context.Context, stored *experienceentity.StoredExperience) (bool, error) {
+	if stored == nil {
+		return false, fmt.Errorf("stored experience is required")
+	}
+	for _, item := range s.items {
+		if item.TaskID == stored.Experience.TaskID {
+			return false, nil
+		}
+	}
+	s.createCalls++
+	s.created = append(s.created, stored)
+	s.items = append(s.items, stored.Experience)
+	return true, nil
+}
 
 func (s *testExperienceSource) Find(_ context.Context, ownerID, id string) (*experienceentity.Experience, error) {
 	for index := range s.items {
@@ -227,8 +472,11 @@ func (e *testEvaluator) CreateSuite(_ context.Context, ownerID string, request e
 	return &experienceentity.EvaluationSuite{SuiteID: "suite-1", OwnerID: ownerID, FixtureIDs: request.FixtureIDs}, nil
 }
 
-func (e *testEvaluator) RunSuite(_ context.Context, ownerID string, request experiencesvc.RunSuiteRequest) (*experienceentity.EvaluationRun, []experienceentity.EvaluationResult, error) {
+func (e *testEvaluator) RunCandidateSuite(_ context.Context, ownerID string, request experiencesvc.RunSuiteRequest, candidate experiencesvc.CandidateReplaySpec) (*experienceentity.EvaluationRun, []experienceentity.EvaluationResult, error) {
 	e.calls++
+	if candidate.ArtifactID == "" || len(candidate.ArtifactChecksum) != 64 || candidate.ActionPattern == "" || !candidate.VerificationEvidenceRequired {
+		return nil, nil, fmt.Errorf("invalid candidate replay spec: %+v", candidate)
+	}
 	results := make([]experienceentity.EvaluationResult, 4)
 	for index := range results {
 		results[index] = experienceentity.EvaluationResult{ResultID: fmt.Sprintf("result-%d", index), Passed: true}
@@ -254,20 +502,42 @@ func newLearningTestService(t *testing.T, experiences []experienceentity.Experie
 		t.Fatalf("migrate sqlite: %v", err)
 	}
 	now := time.Now().UTC().UnixMilli()
-	for _, capability := range []string{"browser.navigate", "terminal.execute"} {
+	for _, capability := range []string{"browser.navigate", "browser.type", "terminal.execute"} {
 		risk := "R1"
+		operations := `[` + fmt.Sprintf("%q", strings.TrimPrefix(capability, "browser.")) + `]`
 		if capability == "terminal.execute" {
 			risk = "R3"
+			operations = `["execute"]`
 		}
 		if err := db.Create(&controlpo.CapabilityDefinition{
-			CapabilityID: capability, OwnerID: "system", Version: "1", Operations: "[]", Modalities: "[]",
+			CapabilityID: capability, OwnerID: "system", Version: "1", Operations: operations, Modalities: "[]",
 			InputSchema: "{}", OutputSchema: "{}", Risk: risk, Enabled: true, Revision: 1, CreatedAt: now, UpdatedAt: now,
 		}).Error; err != nil {
 			t.Fatalf("seed capability: %v", err)
 		}
 	}
-	if err := db.Create(&controlpo.Task{TaskID: "task-1", UserID: "owner-1", Status: "RUNNING", Revision: 1, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
-		t.Fatalf("seed task: %v", err)
+	for _, taskID := range []string{"task-1", "task-sensitive"} {
+		if err := db.Create(&controlpo.Task{TaskID: taskID, UserID: "owner-1", Status: "RUNNING", Revision: 1, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+			t.Fatalf("seed task: %v", err)
+		}
+	}
+	if err := db.Create(&controlpo.Action{
+		ActionID: "action-page", TaskID: "task-1", StepID: "step-page", DeviceID: "device-1",
+		CapabilityInstanceID: "device-1:browser-navigate", UserID: "owner-1", Protocol: "athena.agent.v4",
+		Sequence: 1, Revision: 1, IdempotencyKey: "task-1:step-page:action-page",
+		IssuedAt: now, Deadline: now + 60000, Capability: "browser.navigate", Operation: "navigate",
+		Arguments: `{"url":"https://www.example.test/path","password":"must-never-leak"}`, Risk: "R1", Decision: "ALLOW",
+	}).Error; err != nil {
+		t.Fatalf("seed page action: %v", err)
+	}
+	if err := db.Create(&controlpo.Action{
+		ActionID: "action-sensitive", TaskID: "task-sensitive", StepID: "step-sensitive", DeviceID: "device-1",
+		CapabilityInstanceID: "device-1:browser-navigate", UserID: "owner-1", Protocol: "athena.agent.v4",
+		Sequence: 1, Revision: 1, IdempotencyKey: "task-sensitive:step-sensitive:action-sensitive",
+		IssuedAt: now, Deadline: now + 60000, Capability: "browser.navigate", Operation: "navigate",
+		Arguments: `{"password":"must-never-be-recorded"}`, Risk: "R1", Decision: "ALLOW",
+	}).Error; err != nil {
+		t.Fatalf("seed sensitive action: %v", err)
 	}
 	store := learningrepo.NewStore(data.New(db))
 	evaluator := &testEvaluator{}

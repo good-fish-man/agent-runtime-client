@@ -107,6 +107,10 @@ type SearchCandidate struct {
 
 type Stats struct {
 	Total              int64            `json:"total"`
+	TerminalTasks      int64            `json:"terminal_tasks"`
+	CoveredTasks       int64            `json:"covered_tasks"`
+	PendingTasks       int64            `json:"pending_tasks"`
+	CoverageRate       float64          `json:"coverage_rate"`
 	Ready              int64            `json:"ready"`
 	Skipped            int64            `json:"skipped"`
 	Deleted            int64            `json:"deleted"`

@@ -13,7 +13,7 @@ Runtime Client 是 Athena 1.0 的认证控制面，负责用户隔离、模型�
 | `GET` | `/operations/readiness` | 已登录 | 汇总 Runtime、数据库、备份、设备和领域服务状态。 |
 | `GET` | `/operations/golden-journeys` | 已登录 | 返回固定的十条 GA 核心用户旅程。 |
 | `POST` | `/operations/golden-journeys/run` | 管理员 | 执行无副作用基础设施预检；永远不会返回 `PASS`。 |
-| `POST` | `/operations/golden-journeys/evidence` | 管理员 | 保存一套由独立执行器真实运行的完整 E2E 证据。 |
+| `POST` | `/internal/operations/golden-journeys/evidence` | 可信 E2E Runner | 保存一套由独立执行器真实运行的完整 E2E 证据。必须携带 `X-Athena-Internal-Token` 和明确的 `owner_id`；浏览器管理员会话不能写入发布证据。 |
 | `GET` | `/operations/health` | 已登录 | 查看 Health、SLO、设备、队列和备份摘要。 |
 | `POST` | `/operations/backups` | 管理员 | 创建加密备份。 |
 | `POST` | `/operations/backups/:id/verify` | 管理员 | 校验 Manifest 与 Payload 完整性。 |
@@ -29,7 +29,7 @@ cd /path/to/athena-protocol
 go run ./cmd/validate-ga-evidence -file /path/to/golden-suite.json
 ```
 
-证据接口会拒绝未知 JSON 字段、尾随 JSON、超过 4 MiB 的请求、不完整套件和混合 `run_id`。
+内部证据接口会拒绝无效服务令牌、缺失或非法 Owner、未知 JSON 字段、尾随 JSON、超过 4 MiB 的请求、不完整套件和混合 `run_id`。
 
 ## 可追溯性
 
@@ -37,7 +37,7 @@ go run ./cmd/validate-ga-evidence -file /path/to/golden-suite.json
 
 ## 管理员流程
 
-1. 对外开放前修改默认 `athena` 密码。
+1. 首次登录后、对外开放前轮换安装生成的管理员引导密码。
 2. 模型和网站凭据只保存在服务端 Vault。
 3. Provider 必须签名，并配置显式授权与资源上限。
 4. 升级前创建并验证加密备份。

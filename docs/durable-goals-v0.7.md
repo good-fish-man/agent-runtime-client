@@ -6,7 +6,7 @@ Athena v0.7 turns explicitly long-running work into a finite, durable task graph
 
 1. Runtime recognizes only explicit background, cross-day, cross-device, or resume-later intent.
 2. `PersistentGoalCreate` submits a declarative graph with at most 64 nodes, depth 4, and 8 concurrent specialists.
-3. Runtime Client persists the goal, tasks, specialist results, schedule triggers, and checksummed checkpoints atomically.
+3. Runtime Client uses `POST /goals/planned` to persist a goal, its graph, and the first checkpoint atomically, so a two-step request cannot leave an orphan draft.
 4. Supervisor routes server specialists directly and routes browser/desktop specialists only to an online device that advertises every required capability.
 5. Runtime executes through the existing Control Hub. An external effect is confirmed only by a successful device Observation; its idempotency key is written to the next checkpoint.
 6. Restart recovery converts orphan `RUNNING` tasks to `READY` while retaining confirmed effect keys and scoped world state.
@@ -26,8 +26,8 @@ Pre-execution approval is fail closed. Its ID is written into the first Checkpoi
 - Graphs are finite and every task receives a positive allocation inside the goal budget.
 - The Supervisor cannot create nested persistent goals, hidden sub-agents, executable code, or unbounded loops.
 - `WAITING_USER`, approval, device-offline, deadline, and budget exhaustion are durable states, never fake success.
-- Specialists receive only declared world-slice keys. Credentials, cookies, raw screenshots, and unrestricted device state are not copied into goals.
-- Every result contains RunManifest, AgentBuild, model configuration fingerprint, execution, device, trace, usage, evidence, Observation references, and confirmed-effect provenance.
+- Specialists receive only declared world-slice keys. Nested credentials, cookies, tokens, raw screenshots, and unrestricted device state are recursively removed or bounded before checkpointing.
+- Every result has attributable producer and trace provenance. Runtime results must also bind a RunManifest, AgentBuild, and model configuration fingerprint. A device specialist can complete only after a successful Observation, and any confirmed external effect retains its Observation reference.
 
 ## Operations
 
@@ -38,7 +38,7 @@ orchestration:
   max_concurrent_runs: 2
 ```
 
-Environment overrides are `ARC_ORCHESTRATION_ENABLED`, `ARC_ORCHESTRATION_SCAN_INTERVAL_SEC`, and `ARC_ORCHESTRATION_MAX_CONCURRENT_RUNS`. User routes are under `/goals`; Runtime creates planned goals through the token-protected `/internal/goals` route.
+Environment overrides are `ARC_ORCHESTRATION_ENABLED`, `ARC_ORCHESTRATION_SCAN_INTERVAL_SEC`, and `ARC_ORCHESTRATION_MAX_CONCURRENT_RUNS`. User routes are under `/goals`; `POST /goals/planned` is the owner-scoped atomic creation route, while Runtime uses token-protected `/internal/goals`. Task start, result persistence, and manual checkpoint mutation also require an exact internal service token.
 
 Useful read APIs are:
 
@@ -51,7 +51,7 @@ The Inbox shows trigger origin, execution attempts, device routing, specialist p
 
 ## Acceptance evidence
 
-The automated suite covers finite travel-planning graphs, filtered cross-device World Slices, hard budget transition to `WAITING_USER`, restart recovery without resetting a live attempt, stable Action idempotency, schedule-slot deduplication, retry state, owner-scoped approval consumption, missing-evidence refusal, and rejection of corrupt or broken checkpoint chains.
+The automated suite covers a five-day travel goal with a focused clarification, offline-to-online cross-device routing, recursive World Slice redaction, token/time/query/page/action budgets, restart recovery without replaying confirmed effects, stable Action idempotency, schedule-slot deduplication, scanner lifecycle, owner-scoped approval consumption, rejection of device false-success without an Observation, failure results that cannot verify success criteria, and corrupt or broken checkpoint chains.
 
 ## Rollback
 

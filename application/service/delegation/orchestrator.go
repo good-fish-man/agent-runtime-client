@@ -10,6 +10,7 @@ import (
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/delegation"
 	repository "github.com/good-fish-man/agent-runtime-client/domain/irepository/delegation"
+	"github.com/good-fish-man/agent-runtime-client/pkg/dbctx"
 	"github.com/good-fish-man/agent-runtime-client/pkg/ulid"
 	log "github.com/good-fish-man/logx"
 )
@@ -142,7 +143,9 @@ func (o *Orchestrator) loop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			report, err := o.RunOnce(ctx)
+			// Successful polling SQL is intentionally quiet; the contextual DB
+			// logger still reports slow queries and errors for this scan.
+			report, err := o.RunOnce(dbctx.SuppressQueryInfo(ctx))
 			if err != nil && !errors.Is(err, context.Canceled) {
 				log.Errorw(ctx, "delegation recovery scan failed", "error_chain", log.FormatError(err))
 				continue

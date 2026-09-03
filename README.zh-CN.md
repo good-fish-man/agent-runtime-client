@@ -4,6 +4,8 @@
 
 GA 运维：[Athena 1.0 控制面指南](docs/ga-operations-v1.0.zh-CN.md) | [English](docs/ga-operations-v1.0.md)
 
+代码指南：[简体中文](docs/code-guide/zh-CN/README.md) | [English](docs/code-guide/en/README.md)
+
 Agent Runtime Client 是 Athena 的控制面和公共 HTTP API。它负责用户、Agent、模型凭据、模型绑定、记忆、Skills、知识库、工作区和服务配置，再通过 gRPC 将执行请求发送给 [`agent-runtime`](https://github.com/good-fish-man/agent-runtime)。
 
 虽然名称中包含 Client，但它实际是服务端程序，不是 SDK。浏览器只应访问本服务，不应直接携带模型 API Key 调用 Runtime。
@@ -29,6 +31,7 @@ Agent Runtime Client 是 Athena 的控制面和公共 HTTP API。它负责用户
 - 带源码位置的错误链，并只在 HTTP 边界集中输出一次。
 - 面向桌面设备的 WebSocket Action/Observation 控制面与能力协商（[协议文档](docs/action-observation-protocol.md)）。
 - 经过脱敏的任务经验、用户级保留/删除控制、失败分类与确定性离线评测（[架构文档](docs/experience-evaluation.zh-CN.md)）。
+- 受治理的 Evolution Orchestrator 与精确 Runtime Artifact Resolver：重复运行结果只能产生声明式 Skill 候选，只有人工批准的不可变版本才能进入运行（[说明](docs/evolution-runtime-artifacts.zh-CN.md)）。
 - 私有签名 Capability Provider Registry，支持不可变版本、公共发布评审门禁、撤销、Runtime 重载和调用审计。
 
 ## 系统架构
@@ -97,15 +100,9 @@ make run
 | Runtime 就绪检查 | `http://127.0.0.1:8090/health/ready` |
 | 示例配置的公共 API 前缀 | `/api/agent-runtime-client/v1` |
 
-启用数据库后，服务会在启动时执行迁移。如果管理员不存在，会初始化开发管理员：
+启用数据库后，服务会在启动时执行迁移。服务没有内置管理员密码。独立开发环境只有在进程环境中同时设置 `ATHENA_BOOTSTRAP_ADMIN_USERNAME` 和 `ATHENA_BOOTSTRAP_ADMIN_PASSWORD`，并且该用户名尚不存在时，才会创建管理员；迁移不会重置、激活或提权已有账号。
 
-```text
-账号：athena
-密码：athena
-```
-
-如果服务不只在可信本机环境中使用，请立即修改默认密码。
-该账号仅在不存在时初始化；重启服务不会重复创建账号，也不会把已修改的密码重置为默认值。
+Athena Launcher 会生成安装级随机密码，以仅 Owner 可读权限保存在 `~/.athena/secrets/bootstrap-admin.password`，并且只通过子进程环境传给 Runtime Client。托管安装的用户名为 `athena`。首次登录后请修改密码。
 
 需要自动安装并管理 PostgreSQL 时，请使用 [`athena-launcher`](https://github.com/good-fish-man/athena-launcher)。
 

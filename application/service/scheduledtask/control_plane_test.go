@@ -15,7 +15,7 @@ import (
 	orchestrationpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/orchestration"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/scheduledtask"
 	orchestrationrepo "github.com/good-fish-man/agent-runtime-client/infra/repository/repo/orchestration"
-	protocol "github.com/good-fish-man/athena-protocol/protocol/orchestration/v1"
+	protocol "github.com/good-fish-man/athena-protocol/protocol/orchestration/v2"
 )
 
 func TestScheduledExecutionCreatesStandardDurableGoal(t *testing.T) {
@@ -53,6 +53,40 @@ func TestScheduledExecutionCreatesStandardDurableGoal(t *testing.T) {
 	if len(triggers) != 1 {
 		t.Fatalf("same schedule slot created duplicate goals: %+v", triggers)
 	}
+}
+
+func TestScannerLifecycleStopsBeforeRestart(t *testing.T) {
+	dsn := fmt.Sprintf("file:scheduled-lifecycle-%d?mode=memory&cache=shared", time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&orchestrationpo.Goal{}, &orchestrationpo.GoalTask{}, &orchestrationpo.SpecialistRun{}, &orchestrationpo.GoalCheckpoint{}, &orchestrationpo.ScheduleTrigger{}, &po.ScheduledTask{}); err != nil {
+		t.Fatal(err)
+	}
+	d := data.New(db)
+	goals := orchestrationsvc.NewService(orchestrationrepo.NewStore(d))
+	service := NewService(d, nil, time.Hour).WithControlPlane(nil, goals)
+
+	service.Start(context.Background())
+	service.Start(context.Background())
+	service.lifecycleMu.Lock()
+	running := service.cancel != nil && service.done != nil
+	service.lifecycleMu.Unlock()
+	if !running {
+		t.Fatal("scheduled scanner did not enter the running state")
+	}
+
+	service.Stop()
+	service.lifecycleMu.Lock()
+	stopped := service.cancel == nil && service.done == nil
+	service.lifecycleMu.Unlock()
+	if !stopped {
+		t.Fatal("scheduled scanner remained active after Stop")
+	}
+
+	service.Start(context.Background())
+	service.Stop()
 }
 
 func TestScheduledPreExecutionApprovalIsDurableAndCannotBeBypassed(t *testing.T) {

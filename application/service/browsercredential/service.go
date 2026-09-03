@@ -72,7 +72,7 @@ func (s *Service) Create(ctx context.Context, userID string, req SaveRequest) (*
 		return nil, err
 	}
 	if err := s.data.DB(ctx).Create(item).Error; err != nil {
-		_ = deleteFromVault(context.Background(), item.VaultRef)
+		_ = deleteFromVault(context.WithoutCancel(ctx), item.VaultRef)
 		return nil, fmt.Errorf("create website credential: %w", err)
 	}
 	return response(item), nil

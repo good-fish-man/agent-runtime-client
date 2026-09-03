@@ -1,0 +1,149 @@
+这段代码位于 [boot/init.go (line 165)](/Users/dom/agent-ui/agent-runtime-client/boot/init.go:165)，属于服务启动阶段的 Composition Root（依赖组装入口）。
+它不直接处理用户请求，主要完成：
+1. 根据数据库是否可用创建各领域服务。
+2. 修复进程重启后遗留的异常状态。
+3. 建立服务之间的依赖关系。
+4. 将服务注入 Runtime 和 HTTP Handler。
+5. 为后续启动后台任务做准备。
+整体依赖关系
+数据库 store
+├── ControlStore ──> ControlHub ──> 设备任务/Action/Observation
+│                         └───────> ExperienceService
+├── ExperienceStore ──> LearningService ──> EvolutionOrchestrator
+├── DeploymentStore ──> DeploymentService
+├── KnowledgeStore ───> KnowledgeService
+├── OrchestrationStore -> OrchestrationService
+└── DelegationStore
+    ├── DelegationOrchestrator
+    ├── ExecutionService
+    ├── GovernedActionService
+    ├── RecoveryService
+    ├── ReplayRunner
+    └── GovernedLearningService ──> DelegationEvolution
+1. 先声明可选服务
+var controlHub *controlsvc.Hub
+var experienceService *experiencesvc.Service
+// ...
+这些变量默认都是 nil。因为其中大部分功能依赖数据库：
+- 有数据库：启用持久化控制、经验学习、知识库、编排、委托等完整功能。
+- 没有数据库：只创建内存版 ControlHub，其余功能保持禁用。
+这是一种显式的功能降级设计。
+2. 恢复控制面状态
+controlStore := controlrepo.NewStore(store)
+
+controlStore.MarkAllDevicesOffline(...)
+controlStore.PauseInterruptedTasks(...)
+controlStore 是控制领域的数据访问层，负责设备、任务、Action、Observation 和 Outbox 等数据。
+MarkAllDevicesOffline：
+- 服务重启后，原来的 WebSocket 连接已经不存在。
+- 数据库里却可能还显示设备在线。
+- 因此先把所有设备标记为离线，等待客户端重新连接。
+PauseInterruptedTasks：
+- 重启时处于执行中的任务无法确认是否真的完成。
+- 将它们暂停，而不是错误地继续显示为运行中。
+- 后续可以通过恢复流程重新处理。
+3. 创建 ControlHub
+controlHub = controlsvc.NewHub(controlStore)
+ControlHub 是设备控制中心，负责：
+- 管理设备连接。
+- 创建和跟踪设备任务。
+- 向设备发送 Action。
+- 接收 Observation。
+- 维护 Session 和请求关联。
+- 驱动 Outbox 消息分发。
+它是控制面和 athena-launcher 等设备端之间的核心桥梁。
+4. 经验与普通学习
+experienceService = experiencesvc.NewService(...)
+learningService = learningsvc.NewService(...)
+evolutionOrchestrator = learningsvc.NewEvolutionOrchestrator(...)
+三个服务形成流水线：
+任务完成
+  -> 提取 Experience
+  -> 分析可复用经验
+  -> 产生候选策略/技能
+  -> 审核、评估和后续部署
+EvolutionOrchestrator 根据配置定期扫描经验：
+- ScanInterval：扫描周期。
+- OwnerBatchSize：每批处理多少用户。
+- ExperienceLimit：每次读取多少经验。
+- MaxCandidatesPerScan：每轮最多生成多少候选。
+- MinimumNovelExperiences：至少有多少新经验才触发演化。
+这里的“演化”不是直接修改线上行为，而是生成受治理的候选内容。
+5. 部署、知识与目标编排
+服务	职责
+deploymentService	管理制品、版本、发布、晋升、回滚和运行清单
+knowledgeService	管理知识、证据、冲突、快照和检索
+orchestrationService	管理持久目标、任务图、预算、检查点和调度
+
+
+这些服务分别处理“怎么部署”“知道什么”“长期任务怎么推进”。
+6. Delegation 委托体系
+delegationOrchestrator = delegationsvc.NewOrchestrator(...)
+delegationExecution = delegationsvc.NewExecutionService(...)
+actionGovernance = delegationsvc.NewGovernedActionService(...)
+delegationRecovery = delegationsvc.NewRecoveryService(...)
+各组件职责如下：
+组件	目标
+DelegationOrchestrator	管理任务委托、执行尝试、预算、取消和状态
+ExecutionService	将委托任务连接到 domainSvc 模型运行时
+GovernedActionService	对有副作用的 Action 执行策略判断和审计
+RecoveryService	处理诊断、恢复和数据生命周期
+ReplayRunner	使用历史执行记录进行重放和验证
+GovernedLearningService	学习委托策略，但必须经过授权、回放和评估
+GovernedLearningEvolution	定期扫描并推进委托学习候选
+
+
+这里有一项重要的安全设置：
+delegationReplay = delegationsvc.NewReplayRunner(delegationStore, nil)
+第二个参数为 nil，表示没有注入可执行真实操作的 Replay Executor。因此：
+- 精确回放和已记录 Observation 回放仍然可以使用。
+- 真实环境重新执行默认禁止。
+- 避免 Replay 意外重复产生外部副作用。
+7. 连接学习、部署和执行
+deploymentService.WithDelegationArtifactResolver(delegationLearning)
+delegationExecution.SetGovernedLearning(delegationLearning)
+这两行建立了关键依赖：
+受治理的委托学习
+├── 为 ExecutionService 提供已批准策略
+└── 为 DeploymentService 提供已批准制品
+学习结果不能直接成为线上策略，必须通过治理和部署流程。
+8. 任务完成后提取经验
+controlHub.OnTaskTerminal(func(_ context.Context, taskID string) {
+    experienceService.Enqueue(taskID)
+})
+当设备任务进入成功、失败或取消等终态时：
+1. ControlHub 发出终态事件。
+2. ExperienceService 将任务 ID 放入队列。
+3. 后台服务从任务和 Observation 中提取经验。
+4. 经验随后可以进入学习和演化流程。
+9. 没有数据库时
+} else {
+    controlHub = controlsvc.NewHub()
+}
+此时只提供内存版设备控制能力：
+- 可以维持当前进程内的设备连接和操作。
+- 重启后状态丢失。
+- 没有持久化 Outbox。
+- 学习、知识、部署、委托等服务不会启用。
+10. 注入 RuntimeService
+appService.SetControlHub(controlHub)
+appService.SetDeploymentService(deploymentService)
+appService.SetKnowledgeService(knowledgeService)
+appService.SetDelegationService(delegationExecution)
+appService.SetActionGovernance(actionGovernance)
+这里采用 setter 注入，将前面构造的服务交给应用层。之后 Runtime 在处理请求时才能使用设备控制、部署、知识和委托能力。
+nil 也具有明确语义：对应能力未配置或不可用。
+11. 创建 HTTP Handler
+h := handler.NewHandler(appService)
+将应用服务包装为 HTTP/API 入口。Handler 主要负责协议解析和响应，真正业务逻辑仍在 appService 和各领域服务中。
+12. Public Handler 与数据库探针
+restart := make(chan struct{}, 1)
+pub, scheduledTaskService := buildPublicHandlers(...)
+- restart：容量为 1 的重启信号通道，供配置修改等操作触发受控重启。
+- paths.AppConfigFile：确保配置 API 操作的是本次实际加载的配置文件。
+- buildPublicHandlers：创建控制、学习、知识、部署等公开 API Handler。
+databaseProbe = func(ctx context.Context) error {
+    return store.DB(ctx).Exec("SELECT 1").Error
+}
+这是数据库健康检查，通过 SELECT 1 判断连接是否正常，后续通常用于 readiness/operations 接口。
+需要注意：这段主要是“构造和连接对象”。真正启动 ControlHub、Experience、Evolution 等后台循环，是在稍后的 [boot/init.go (line 258)](/Users/dom/agent-ui/agent-runtime-client/boot/init.go:258) 中调用各组件的 Start(ctx) 完成的。

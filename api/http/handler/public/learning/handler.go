@@ -14,9 +14,38 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/types/response"
 )
 
-type Handler struct{ service *service.Service }
+type Handler struct {
+	service   *service.Service
+	evolution *service.EvolutionOrchestrator
+}
 
 func NewHandler(value *service.Service) *Handler { return &Handler{service: value} }
+
+func (h *Handler) WithEvolution(value *service.EvolutionOrchestrator) *Handler {
+	h.evolution = value
+	return h
+}
+
+func (h *Handler) EvolutionStatus(c *gin.Context) {
+	if h.evolution == nil {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage("evolution orchestrator is not configured"))
+		return
+	}
+	response.Ok(c, h.evolution.Snapshot())
+}
+
+func (h *Handler) ScanEvolution(c *gin.Context) {
+	if h.evolution == nil {
+		_ = c.Error(apierror.ErrBadRequest.WithMessage("evolution orchestrator is not configured"))
+		return
+	}
+	result, err := h.evolution.ScanOwner(c.Request.Context(), userID(c))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	response.Ok(c, result)
+}
 
 func (h *Handler) GenerateCandidate(c *gin.Context) {
 	var request service.GenerateCandidateRequest

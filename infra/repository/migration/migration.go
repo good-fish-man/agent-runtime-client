@@ -3,6 +3,7 @@ package migration
 
 import (
 	"context"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -34,8 +35,6 @@ import (
 )
 
 const (
-	defaultAdminUsername = "athena"
-	defaultAdminPassword = "athena"
 	defaultAdminNickname = "Athena Administrator"
 	defaultAdminRoleID   = "admin"
 	systemActor          = "system"
@@ -43,8 +42,15 @@ const (
 	adminAccessLevel     = 1
 )
 
+// BootstrapAdmin is supplied by the installation boundary. Password is never
+// read from a repository default or persisted in a service configuration file.
+type BootstrapAdmin struct {
+	Username string
+	Password string
+}
+
 // InitTables creates or updates every table used by agent-runtime-client.
-func InitTables(ctx context.Context, d *data.Data) error {
+func InitTables(ctx context.Context, d *data.Data, bootstrap BootstrapAdmin) error {
 	db := d.DB(ctx)
 	if err := migrateControlV4TableNames(db); err != nil {
 		return err
@@ -184,7 +190,7 @@ func InitTables(ctx context.Context, d *data.Data) error {
 			return err
 		}
 	}
-	if err := seedAdministrator(ctx, d); err != nil {
+	if err := seedAdministrator(ctx, d, bootstrap); err != nil {
 		return err
 	}
 	if err := seedModelCatalog(ctx, d); err != nil {
@@ -207,33 +213,26 @@ func migrateControlV4TableNames(db *gorm.DB) error {
 	return nil
 }
 
-func seedAdministrator(ctx context.Context, d *data.Data) error {
+func seedAdministrator(ctx context.Context, d *data.Data, bootstrap BootstrapAdmin) error {
+	username := strings.TrimSpace(bootstrap.Username)
+	if username == "" || bootstrap.Password == "" {
+		return nil
+	}
 	db := d.DB(ctx)
 	var existing userpo.SysUser
-	if err := db.Where("member_code = ? AND deleted_at = 0", defaultAdminUsername).Limit(1).Find(&existing).Error; err != nil {
+	if err := db.Where("member_code = ? AND deleted_at = 0", username).Limit(1).Find(&existing).Error; err != nil {
 		return err
 	}
 	if existing.Ulid != "" {
-		updates := map[string]any{}
-		if existing.AdminLevel == 0 {
-			updates["admin_level"] = adminAccessLevel
-		}
-		if existing.State != activeUserState {
-			updates["state"] = activeUserState
-		}
-		if len(updates) == 0 {
-			return nil
-		}
-		updates["updated_by"] = systemActor
-		return db.Model(&userpo.SysUser{}).Where("ulid = ?", existing.Ulid).Updates(updates).Error
+		return nil
 	}
 
-	password, err := bcrypt.GenerateFromPassword([]byte(defaultAdminPassword), bcrypt.DefaultCost)
+	password, err := bcrypt.GenerateFromPassword([]byte(bootstrap.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return err
 	}
 	return db.Create(&userpo.SysUser{
-		MemberCode: defaultAdminUsername,
+		MemberCode: username,
 		NickName:   defaultAdminNickname,
 		Password:   string(password),
 		State:      activeUserState,

@@ -18,7 +18,9 @@ import (
 	orchestrationentity "github.com/good-fish-man/agent-runtime-client/domain/entity/orchestration"
 	runtimeentity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
 	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
-	protocol "github.com/good-fish-man/athena-protocol/protocol/orchestration/v1"
+	"github.com/good-fish-man/agent-runtime-client/pkg/dbctx"
+	"github.com/good-fish-man/agent-runtime-client/types/consts"
+	protocol "github.com/good-fish-man/athena-protocol/protocol/orchestration/v2"
 	log "github.com/good-fish-man/logx"
 )
 
@@ -29,6 +31,8 @@ const (
 )
 
 var resultURLPattern = regexp.MustCompile(`https?://[^\s<>\[\]()"']+`)
+
+var errSpecialistBudgetExhausted = errors.New("specialist execution budget exhausted")
 
 type streamExecutor interface {
 	RunStream(context.Context, *runtimedto.RunReq, runtimesvc.StreamFunc) error
@@ -52,11 +56,17 @@ type Supervisor struct {
 	devices deviceCatalog
 	config  SupervisorConfig
 
-	mu     sync.Mutex
-	active map[string]struct{}
-	sem    chan struct{}
+	mu      sync.Mutex
+	active  map[string]struct{}
+	cancels map[string]activeCancellation
+	sem     chan struct{}
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+}
+
+type activeCancellation struct {
+	goalID string
 	cancel context.CancelFunc
-	wg     sync.WaitGroup
 }
 
 func NewSupervisor(goals *Service, runtime streamExecutor, devices deviceCatalog, config SupervisorConfig) *Supervisor {
@@ -66,7 +76,11 @@ func NewSupervisor(goals *Service, runtime streamExecutor, devices deviceCatalog
 	if config.MaxConcurrentRuns <= 0 {
 		config.MaxConcurrentRuns = defaultSupervisorConcurrency
 	}
-	return &Supervisor{goals: goals, runtime: runtime, devices: devices, config: config, active: make(map[string]struct{}), sem: make(chan struct{}, config.MaxConcurrentRuns)}
+	supervisor := &Supervisor{goals: goals, runtime: runtime, devices: devices, config: config, active: make(map[string]struct{}), cancels: make(map[string]activeCancellation), sem: make(chan struct{}, config.MaxConcurrentRuns)}
+	if goals != nil {
+		goals.SetGoalCanceller(supervisor.CancelGoal)
+	}
+	return supervisor
 }
 
 func (s *Supervisor) Start(parent context.Context) error {
@@ -112,7 +126,8 @@ func (s *Supervisor) Stop() {
 
 func (s *Supervisor) loop(ctx context.Context) {
 	defer s.wg.Done()
-	_ = s.RunOnce(ctx)
+	dbCtx := dbctx.SuppressQueryInfo(ctx)
+	_ = s.RunOnce(dbCtx)
 	ticker := time.NewTicker(s.config.ScanInterval)
 	defer ticker.Stop()
 	for {
@@ -120,8 +135,8 @@ func (s *Supervisor) loop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := s.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				log.ErrorwCtx(ctx, "orchestration supervisor scan failed", "error_chain", log.FormatError(err))
+			if err := s.RunOnce(dbCtx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Errorw(ctx, "orchestration supervisor scan failed", "error_chain", log.FormatError(err))
 			}
 		}
 	}
@@ -136,7 +151,7 @@ func (s *Supervisor) RunOnce(ctx context.Context) error {
 	}
 	for _, goal := range goals {
 		if err := s.dispatchGoal(ctx, goal); err != nil && !errors.Is(err, context.Canceled) {
-			log.WarnwCtx(ctx, "orchestration goal dispatch deferred", "goal_id", goal.GoalID, "error_chain", log.FormatError(err))
+			log.Warnw(ctx, "orchestration goal dispatch deferred", "goal_id", goal.GoalID, "error_chain", log.FormatError(err))
 		}
 	}
 	return nil
@@ -209,6 +224,7 @@ func (s *Supervisor) reserve(taskID string) bool {
 
 func (s *Supervisor) release(taskID string) {
 	s.mu.Lock()
+	delete(s.cancels, taskID)
 	if _, exists := s.active[taskID]; exists {
 		delete(s.active, taskID)
 		<-s.sem
@@ -216,12 +232,58 @@ func (s *Supervisor) release(taskID string) {
 	s.mu.Unlock()
 }
 
+// CancelGoal interrupts every in-flight specialist after the Service has
+// durably persisted the PAUSED state. Late results are rejected because their
+// task execution is no longer RUNNING.
+func (s *Supervisor) CancelGoal(goalID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	cancels := make([]context.CancelFunc, 0)
+	for _, active := range s.cancels {
+		if active.goalID == goalID && active.cancel != nil {
+			cancels = append(cancels, active.cancel)
+		}
+	}
+	s.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
 func (s *Supervisor) execute(parent context.Context, goal orchestrationentity.PersistentGoal, task orchestrationentity.SpecialistTask, revision int64) {
+	parent, stop := context.WithCancel(parent)
+	s.mu.Lock()
+	s.cancels[task.TaskID] = activeCancellation{goalID: goal.GoalID, cancel: stop}
+	s.mu.Unlock()
+	defer stop()
+
+	// Pause can race with the goroutine launch before its cancellation handle is
+	// registered. Re-reading the durable execution identity closes that window:
+	// either Pause cancels this registered context, or this check observes that
+	// the task is no longer RUNNING and avoids invoking Runtime altogether.
+	active, err := s.executionIsActive(parent, goal.OwnerID, goal.GoalID, task)
+	if err != nil {
+		s.recordFailure(parent, goal, task, revision, err)
+		return
+	}
+	if !active {
+		return
+	}
+
 	traceID := fmt.Sprintf("goal-%s-%s-%d", goal.GoalID, task.TaskID, task.Attempt)
 	ctx := authctx.WithUserID(log.WithReqID(parent, traceID), goal.OwnerID)
-	if task.Budget.MaxDurationMS > 0 {
+	budget := remainingExecutionBudget(goal, task)
+	if !goal.Deadline.IsZero() {
+		remaining := time.Until(goal.Deadline).Milliseconds()
+		if remaining > 0 && remaining < budget.MaxDurationMS {
+			budget.MaxDurationMS = remaining
+		}
+	}
+	if budget.MaxDurationMS > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(task.Budget.MaxDurationMS)*time.Millisecond)
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(budget.MaxDurationMS)*time.Millisecond)
 		defer cancel()
 	}
 	world, err := s.goals.WorldSlice(ctx, goal.OwnerID, goal.GoalID, task.TaskID)
@@ -231,24 +293,24 @@ func (s *Supervisor) execute(parent context.Context, goal orchestrationentity.Pe
 	}
 	values := map[string]any{
 		"user_id": goal.OwnerID, "agent_id": goal.AgentID, "session_id": goal.ConversationID,
-		"goal_id": goal.GoalID, "task_id": task.TaskID, "specialist": task.Specialist,
+		"goal_id": goal.GoalID, "task_id": task.TaskID, "task_key": task.TaskKey, "specialist": task.Specialist,
 		"persistent_goal_execution": true, "world_slice": world,
 		"execution_id": task.ExecutionID, "idempotency_scope": task.IdempotencyScope,
 		"confirmed_effect_keys": confirmedEffects(s.goals, ctx, goal.OwnerID, goal.GoalID),
-		"goal_budget":           goal.Budget, "task_budget": task.Budget,
+		"goal_budget":           goal.Budget, "task_budget": budget,
 	}
 	request := &runtimedto.RunReq{
 		Prompt:       specialistPrompt(goal, task, world),
 		Context:      values,
 		Capabilities: capabilityConfigs(task.RequiredCapabilities),
 		Options: &runtimeentity.RunOptions{
-			Stream: true, TimeoutMs: boundedInt32(task.Budget.MaxDurationMS), MaxIterations: 12,
-			MaxToolCalls: boundedInt32(int64(task.Budget.MaxActions)), MaxTotalTokens: boundedInt32(task.Budget.MaxTokens),
+			Stream: true, TimeoutMs: boundedInt32(budget.MaxDurationMS), MaxIterations: 12,
+			MaxToolCalls: boundedInt32(int64(budget.MaxSearchQueries + budget.MaxPages + budget.MaxActions)), MaxTotalTokens: boundedInt32(budget.MaxTokens),
 		},
 		RequestID: task.ExecutionID,
 		DeviceID:  task.DeviceID,
 	}
-	capture := newSupervisorCapture()
+	capture := newSupervisorCapture(budget)
 	started := time.Now()
 	err = s.runtime.RunStream(ctx, request, capture.emit)
 	if parent.Err() != nil {
@@ -256,12 +318,21 @@ func (s *Supervisor) execute(parent context.Context, goal orchestrationentity.Pe
 	}
 	result, requestData := capture.result(goal, task, values, traceID, time.Since(started), err)
 	if recordErr := s.recordWithRetry(context.WithoutCancel(ctx), goal.OwnerID, goal.GoalID, task.TaskID, revision, result, requestData); recordErr != nil {
-		log.ErrorwCtx(ctx, "orchestration specialist result persistence failed", "goal_id", goal.GoalID, "task_id", task.TaskID, "error_chain", log.FormatError(recordErr))
+		log.Errorw(ctx, "orchestration specialist result persistence failed", "goal_id", goal.GoalID, "task_id", task.TaskID, "error_chain", log.FormatError(recordErr))
 	}
 }
 
+func (s *Supervisor) executionIsActive(ctx context.Context, ownerID, goalID string, expected orchestrationentity.SpecialistTask) (bool, error) {
+	state, err := s.goals.GetGoal(ctx, ownerID, goalID)
+	if err != nil {
+		return false, log.WrapError(err, "OrchestrationSupervisor.executionIsActive.load")
+	}
+	current, ok := findTask(state.Tasks, expected.TaskID)
+	return ok && current.Status == protocol.TaskRunning && current.ExecutionID == expected.ExecutionID, nil
+}
+
 func (s *Supervisor) recordFailure(ctx context.Context, goal orchestrationentity.PersistentGoal, task orchestrationentity.SpecialistTask, revision int64, runErr error) {
-	result := orchestrationentity.SpecialistResult{ExecutionID: task.ExecutionID, Status: protocol.TaskFailed, Summary: runErr.Error(), Output: map[string]any{"error": runErr.Error()}, Provenance: orchestrationentity.Provenance{RunManifestID: "not-started", AgentBuildID: "not-started", ModelConfigVersion: "not-started", DeviceID: task.DeviceID, TraceID: fmt.Sprintf("goal-%s-%s-%d", goal.GoalID, task.TaskID, task.Attempt), ProducedAt: time.Now().UTC()}}
+	result := orchestrationentity.SpecialistResult{ExecutionID: task.ExecutionID, Status: protocol.TaskFailed, Summary: runErr.Error(), Output: map[string]any{"error": runErr.Error()}, Provenance: controlPlaneProvenance(task.DeviceID, fmt.Sprintf("goal-%s-%s-%d", goal.GoalID, task.TaskID, task.Attempt))}
 	_ = s.recordWithRetry(context.WithoutCancel(ctx), goal.OwnerID, goal.GoalID, task.TaskID, revision, result, RecordResultRequest{})
 }
 
@@ -302,22 +373,24 @@ func (s *Supervisor) deviceCandidates(ctx context.Context, ownerID string) ([]or
 }
 
 type supervisorCapture struct {
-	content          strings.Builder
-	done             *runtimeentity.DoneEvent
-	actions          map[string]string
-	confirmedEffects []string
-	pendingApprovals []string
-	evidence         []string
-	observations     []string
-	world            map[string]map[string]any
-	searchQueries    int
-	pages            int
-	actionCount      int
-	lastObservation  *controlentity.Observation
+	content                strings.Builder
+	done                   *runtimeentity.DoneEvent
+	actions                map[string]string
+	confirmedEffects       []string
+	pendingApprovals       []string
+	evidence               []string
+	observations           []string
+	world                  map[string]map[string]any
+	searchQueries          int
+	pages                  int
+	actionCount            int
+	successfulObservations int
+	lastObservation        *controlentity.Observation
+	budget                 orchestrationentity.TaskBudget
 }
 
-func newSupervisorCapture() *supervisorCapture {
-	return &supervisorCapture{actions: make(map[string]string), world: make(map[string]map[string]any)}
+func newSupervisorCapture(budget orchestrationentity.TaskBudget) *supervisorCapture {
+	return &supervisorCapture{actions: make(map[string]string), world: make(map[string]map[string]any), budget: budget}
 }
 
 func (c *supervisorCapture) emit(event *runtimeentity.StreamEvent) error {
@@ -334,10 +407,20 @@ func (c *supervisorCapture) emit(event *runtimeentity.StreamEvent) error {
 			name := strings.ToLower(event.ToolCall.Tool)
 			if strings.Contains(name, "search") {
 				c.searchQueries++
+				if c.searchQueries > c.budget.MaxSearchQueries {
+					return fmt.Errorf("%w: search query limit %d", errSpecialistBudgetExhausted, c.budget.MaxSearchQueries)
+				}
 			}
 			if strings.Contains(name, "fetch") || strings.Contains(name, "read") {
 				c.pages++
+				if c.pages > c.budget.MaxPages {
+					return fmt.Errorf("%w: page limit %d", errSpecialistBudgetExhausted, c.budget.MaxPages)
+				}
 			}
+		}
+	case runtimeentity.StreamTypeToolResult:
+		if event.ToolResult != nil && event.ToolResult.Success {
+			c.evidence = append(c.evidence, evidenceRefsFromValue(event.ToolResult.Output)...)
 		}
 	case runtimeentity.StreamTypeInterrupted:
 		if event.Interrupted != nil {
@@ -348,6 +431,9 @@ func (c *supervisorCapture) emit(event *runtimeentity.StreamEvent) error {
 	case runtimeentity.StreamTypeAction:
 		if event.Action != nil {
 			c.actionCount++
+			if c.actionCount > c.budget.MaxActions {
+				return fmt.Errorf("%w: action limit %d", errSpecialistBudgetExhausted, c.budget.MaxActions)
+			}
 			c.actions[event.Action.ActionID] = event.Action.IdempotencyKey
 		}
 	case runtimeentity.StreamTypeObservation:
@@ -357,11 +443,14 @@ func (c *supervisorCapture) emit(event *runtimeentity.StreamEvent) error {
 				c.observations = append(c.observations, event.Observation.ObservationID)
 			}
 			if event.Observation.Status == controlentity.ObservationSucceeded {
+				if event.Observation.ObservationID != "" {
+					c.successfulObservations++
+				}
 				if key := c.actions[event.Observation.ActionID]; key != "" {
 					c.confirmedEffects = append(c.confirmedEffects, key)
 				}
 				if event.Observation.DeviceID != "" && len(event.Observation.State) > 0 {
-					c.world[event.Observation.DeviceID] = cloneAnyMap(event.Observation.State)
+					c.world[event.Observation.DeviceID] = safeWorldState(event.Observation.State)
 				}
 			}
 			for _, evidence := range event.Observation.Evidence {
@@ -402,7 +491,9 @@ func (c *supervisorCapture) result(goal orchestrationentity.PersistentGoal, task
 	}
 	if runErr != nil {
 		status = protocol.TaskFailed
-		if isDeviceUnavailable(runErr, c.lastObservation) {
+		if errors.Is(runErr, errSpecialistBudgetExhausted) || errors.Is(runErr, context.DeadlineExceeded) {
+			status = protocol.TaskWaitingUser
+		} else if isDeviceUnavailable(runErr, c.lastObservation) {
 			status = protocol.TaskWaitingDevice
 		}
 		if content == "" {
@@ -412,24 +503,29 @@ func (c *supervisorCapture) result(goal orchestrationentity.PersistentGoal, task
 	if content == "" {
 		content = nonEmptyResultSummary(status)
 	}
-	c.evidence = append(c.evidence, resultURLPattern.FindAllString(content, -1)...)
 	criteria := verifiedCriteriaFromContent(content, goal.SuccessCriteria)
+	if task.RequiresDevice && status == protocol.TaskCompleted && c.successfulObservations == 0 {
+		status = protocol.TaskFailed
+		content = "device specialist result rejected because no successful device observation was received"
+		criteria = nil
+		c.confirmedEffects = nil
+		c.world = nil
+	}
+	provenance := orchestrationentity.Provenance{
+		ProducerType: protocol.ProvenanceRuntimeRun, Producer: "agent-runtime", ProducerVersion: consts.Version,
+		RunManifestID: stringValue(values["run_manifest_id"]), AgentBuildID: stringValue(values["agent_build_id"]),
+		ModelConfigVersion: stringValue(values["model_config_version"]), DeviceID: task.DeviceID, TraceID: traceID, ProducedAt: time.Now().UTC(),
+	}
+	if provenance.RunManifestID == "" || provenance.AgentBuildID == "" || provenance.ModelConfigVersion == "" {
+		status = protocol.TaskFailed
+		content = "runtime result rejected because deployment provenance was not published"
+		c.evidence, c.observations, c.confirmedEffects, c.world = nil, nil, nil, nil
+		provenance = controlPlaneProvenance(task.DeviceID, traceID)
+	}
 	result := orchestrationentity.SpecialistResult{
 		ExecutionID: task.ExecutionID, Status: status, Summary: content, EvidenceRefs: uniqueStrings(c.evidence), ObservationRefs: uniqueStrings(c.observations), ConfirmedEffectKeys: uniqueStrings(c.confirmedEffects), Usage: usage,
-		Output: map[string]any{"content": content, "finish_reason": finishReason},
-		Provenance: orchestrationentity.Provenance{
-			RunManifestID: stringValue(values["run_manifest_id"]), AgentBuildID: stringValue(values["agent_build_id"]),
-			ModelConfigVersion: stringValue(values["model_config_version"]), DeviceID: task.DeviceID, TraceID: traceID, ProducedAt: time.Now().UTC(),
-		},
-	}
-	if result.Provenance.RunManifestID == "" {
-		result.Provenance.RunManifestID = "unavailable"
-	}
-	if result.Provenance.AgentBuildID == "" {
-		result.Provenance.AgentBuildID = "unavailable"
-	}
-	if result.Provenance.ModelConfigVersion == "" {
-		result.Provenance.ModelConfigVersion = "unavailable"
+		Output:     map[string]any{"content": content, "finish_reason": finishReason},
+		Provenance: provenance,
 	}
 	return result, RecordResultRequest{VerifiedCriteriaIDs: criteria, ConfirmedEffectKeys: uniqueStrings(c.confirmedEffects), PendingApprovalIDs: uniqueStrings(c.pendingApprovals), WorldSlicesByDevice: c.world}
 }
@@ -438,14 +534,16 @@ func specialistPrompt(goal orchestrationentity.PersistentGoal, task orchestratio
 	criteria, _ := json.Marshal(goal.SuccessCriteria)
 	constraints, _ := json.Marshal(goal.Constraints)
 	worldJSON, _ := json.Marshal(world)
+	inputs, _ := json.Marshal(goal.Inputs)
 	return fmt.Sprintf(`You are the bounded %s specialist for a durable Athena goal.
 Goal: %s
 Task: %s
 Constraints: %s
 Success criteria: %s
 Declared world slice: %s
+User clarifications: %s
 
-Use only registered capabilities and the supplied world slice. Do not create another persistent goal, hidden sub-agent, executable code, or unbounded loop. Never repeat an idempotency key listed in confirmed_effect_keys. Browser and desktop effects count only after a real device observation. Return a concise, verifiable result. If a criterion is proven, include a final JSON object with key "verified_criteria_ids" and its exact criterion IDs.`, task.Specialist, goal.Objective, task.Objective, constraints, criteria, worldJSON)
+Use only registered capabilities and the supplied world slice. Do not create another persistent goal, hidden sub-agent, executable code, or unbounded loop. Never repeat an idempotency key listed in confirmed_effect_keys. Browser and desktop effects count only after a real device observation. If essential information is missing, ask one focused question and stop with finish_reason waiting_user. Return a concise, verifiable result. If a criterion is proven, include a final JSON object with key "verified_criteria_ids" and its exact criterion IDs.`, task.Specialist, goal.Objective, task.Objective, constraints, criteria, worldJSON, inputs)
 }
 
 func capabilityConfigs(ids []string) []runtimeentity.CapabilityConfig {
@@ -496,7 +594,7 @@ func requiresExplicitResume(tasks []orchestrationentity.SpecialistTask) bool {
 
 func findTask(tasks []orchestrationentity.SpecialistTask, id string) (orchestrationentity.SpecialistTask, bool) {
 	for _, task := range tasks {
-		if task.TaskID == id {
+		if task.TaskID == id || task.TaskKey == id {
 			return task, true
 		}
 	}
@@ -521,6 +619,43 @@ func boundedInt32(value int64) int32 {
 	return int32(value)
 }
 
+func remainingExecutionBudget(goal orchestrationentity.PersistentGoal, task orchestrationentity.SpecialistTask) orchestrationentity.TaskBudget {
+	remainingInt64 := func(taskLimit, taskUsed, goalLimit, goalUsed int64) int64 {
+		left := taskLimit - taskUsed
+		if goalLeft := goalLimit - goalUsed; goalLeft < left {
+			left = goalLeft
+		}
+		if left < 1 {
+			return 1
+		}
+		return left
+	}
+	remainingInt := func(taskLimit, taskUsed, goalLimit, goalUsed int) int {
+		left := taskLimit - taskUsed
+		if goalLeft := goalLimit - goalUsed; goalLeft < left {
+			left = goalLeft
+		}
+		if left < 1 {
+			return 1
+		}
+		return left
+	}
+	return orchestrationentity.TaskBudget{
+		MaxTokens:        remainingInt64(task.Budget.MaxTokens, task.Usage.Tokens, goal.Budget.MaxTokens, goal.Usage.Tokens),
+		MaxDurationMS:    remainingInt64(task.Budget.MaxDurationMS, task.Usage.DurationMS, goal.Budget.MaxDurationMS, goal.Usage.DurationMS),
+		MaxSearchQueries: remainingInt(task.Budget.MaxSearchQueries, task.Usage.SearchQueries, goal.Budget.MaxSearchQueries, goal.Usage.SearchQueries),
+		MaxPages:         remainingInt(task.Budget.MaxPages, task.Usage.Pages, goal.Budget.MaxPages, goal.Usage.Pages),
+		MaxActions:       remainingInt(task.Budget.MaxActions, task.Usage.Actions, goal.Budget.MaxActions, goal.Usage.Actions),
+	}
+}
+
+func controlPlaneProvenance(deviceID, traceID string) orchestrationentity.Provenance {
+	return orchestrationentity.Provenance{
+		ProducerType: protocol.ProvenanceControlPlane, Producer: "orchestration-supervisor", ProducerVersion: consts.Version,
+		DeviceID: deviceID, TraceID: traceID, ProducedAt: time.Now().UTC(),
+	}
+}
+
 func uniqueStrings(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
@@ -539,12 +674,127 @@ func uniqueStrings(values []string) []string {
 	return result
 }
 
-func cloneAnyMap(values map[string]any) map[string]any {
-	result := make(map[string]any, len(values))
-	for key, value := range values {
-		result[key] = value
+func evidenceRefsFromValue(value any) []string {
+	refs := make([]string, 0)
+	var walk func(any)
+	walk = func(current any) {
+		switch typed := current.(type) {
+		case string:
+			refs = append(refs, resultURLPattern.FindAllString(typed, -1)...)
+		case []string:
+			for _, item := range typed {
+				walk(item)
+			}
+		case []any:
+			for _, item := range typed {
+				walk(item)
+			}
+		case map[string]any:
+			for _, item := range typed {
+				walk(item)
+			}
+		}
 	}
+	walk(value)
+	return uniqueStrings(refs)
+}
+
+const (
+	maxWorldSliceDepth   = 6
+	maxWorldSliceEntries = 64
+	maxWorldStringRunes  = 4096
+)
+
+func safeWorldState(values map[string]any) map[string]any {
+	value, ok := safeWorldValue(values, 0)
+	if !ok {
+		return map[string]any{}
+	}
+	result, _ := value.(map[string]any)
 	return result
+}
+
+func safeWorldValue(value any, depth int) (any, bool) {
+	if depth > maxWorldSliceDepth {
+		return nil, false
+	}
+	switch typed := value.(type) {
+	case nil, bool, float32, float64, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, json.Number:
+		return typed, true
+	case string:
+		runes := []rune(typed)
+		if len(runes) > maxWorldStringRunes {
+			typed = string(runes[:maxWorldStringRunes])
+		}
+		return typed, true
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			if !sensitiveWorldKey(key) {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		if len(keys) > maxWorldSliceEntries {
+			keys = keys[:maxWorldSliceEntries]
+		}
+		result := make(map[string]any, len(keys))
+		for _, key := range keys {
+			if child, ok := safeWorldValue(typed[key], depth+1); ok {
+				result[key] = child
+			}
+		}
+		return result, true
+	case map[string]string:
+		converted := make(map[string]any, len(typed))
+		for key, item := range typed {
+			converted[key] = item
+		}
+		return safeWorldValue(converted, depth)
+	case []any:
+		limit := len(typed)
+		if limit > maxWorldSliceEntries {
+			limit = maxWorldSliceEntries
+		}
+		result := make([]any, 0, limit)
+		for _, item := range typed[:limit] {
+			if child, ok := safeWorldValue(item, depth+1); ok {
+				result = append(result, child)
+			}
+		}
+		return result, true
+	case []string:
+		limit := len(typed)
+		if limit > maxWorldSliceEntries {
+			limit = maxWorldSliceEntries
+		}
+		result := make([]any, 0, limit)
+		for _, item := range typed[:limit] {
+			child, _ := safeWorldValue(item, depth+1)
+			result = append(result, child)
+		}
+		return result, true
+	default:
+		body, err := json.Marshal(typed)
+		if err != nil || len(body) > maxWorldStringRunes*maxWorldSliceEntries {
+			return nil, false
+		}
+		var decoded any
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			return nil, false
+		}
+		return safeWorldValue(decoded, depth+1)
+	}
+}
+
+func sensitiveWorldKey(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	for _, marker := range []string{"password", "passwd", "secret", "token", "cookie", "credential", "authorization", "api_key", "apikey"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func stringValue(value any) string {

@@ -2,6 +2,9 @@ package learning
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/url"
@@ -14,9 +17,10 @@ import (
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/learning"
 	experiencerepo "github.com/good-fish-man/agent-runtime-client/domain/irepository/experience"
 	repository "github.com/good-fish-man/agent-runtime-client/domain/irepository/learning"
+	"github.com/good-fish-man/agent-runtime-client/pkg/authctx"
 	"github.com/good-fish-man/agent-runtime-client/pkg/ulid"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
-	learningv1 "github.com/good-fish-man/athena-protocol/protocol/learning/v1"
+	learningv2 "github.com/good-fish-man/athena-protocol/protocol/learning/v2"
 	log "github.com/good-fish-man/logx"
 )
 
@@ -27,7 +31,9 @@ const (
 	maximumEvidenceCount = 20
 )
 
-type ExperienceSource interface {
+type ExperienceStore interface {
+	GetPreference(context.Context, string) (*experienceentity.Preference, error)
+	Create(context.Context, *experienceentity.StoredExperience) (bool, error)
 	Find(context.Context, string, string) (*experienceentity.Experience, error)
 	List(context.Context, string, experienceentity.ListFilter) ([]experienceentity.Experience, int64, error)
 }
@@ -35,20 +41,21 @@ type ExperienceSource interface {
 type OfflineEvaluator interface {
 	CreateFixture(context.Context, string, experiencesvc.CreateFixtureRequest) (*experienceentity.EvaluationFixture, error)
 	CreateSuite(context.Context, string, experiencesvc.CreateSuiteRequest) (*experienceentity.EvaluationSuite, error)
-	RunSuite(context.Context, string, experiencesvc.RunSuiteRequest) (*experienceentity.EvaluationRun, []experienceentity.EvaluationResult, error)
+	RunCandidateSuite(context.Context, string, experiencesvc.RunSuiteRequest, experiencesvc.CandidateReplaySpec) (*experienceentity.EvaluationRun, []experienceentity.EvaluationResult, error)
 }
 
 type Service struct {
 	store       repository.Store
-	experiences ExperienceSource
+	experiences ExperienceStore
 	evaluator   OfflineEvaluator
+	synthesizer CandidateSynthesizer
 }
 
 func NewService(store repository.Store, experiences experiencerepo.Store, evaluator *experiencesvc.Service) *Service {
 	return &Service{store: store, experiences: experiences, evaluator: evaluator}
 }
 
-func NewServiceWithDependencies(store repository.Store, experiences ExperienceSource, evaluator OfflineEvaluator) *Service {
+func NewServiceWithDependencies(store repository.Store, experiences ExperienceStore, evaluator OfflineEvaluator) *Service {
 	return &Service{store: store, experiences: experiences, evaluator: evaluator}
 }
 
@@ -82,6 +89,16 @@ type ReevaluateCandidateRequest struct {
 }
 
 func (s *Service) GenerateCandidate(ctx context.Context, ownerID string, request GenerateCandidateRequest) (*entity.Candidate, error) {
+	return s.generateCandidate(ctx, ownerID, request, generationOptions{})
+}
+
+type generationOptions struct {
+	CandidateID    string
+	Origin         string
+	EvidenceDigest string
+}
+
+func (s *Service) generateCandidate(ctx context.Context, ownerID string, request GenerateCandidateRequest, options generationOptions) (*entity.Candidate, error) {
 	if s == nil || s.store == nil || s.experiences == nil || s.evaluator == nil {
 		return nil, fmt.Errorf("learning service is not configured")
 	}
@@ -100,7 +117,10 @@ func (s *Service) GenerateCandidate(ctx context.Context, ownerID string, request
 		return nil, resultErr
 	}
 
-	candidateID := ulid.New()
+	candidateID := strings.TrimSpace(options.CandidateID)
+	if candidateID == "" {
+		candidateID = ulid.New()
+	}
 	minimumScore := request.MinimumScore
 	if minimumScore <= 0 {
 		minimumScore = defaultMinimumScore
@@ -110,6 +130,11 @@ func (s *Service) GenerateCandidate(ctx context.Context, ownerID string, request
 		return nil, resultErr
 	}
 	visibility := normalizeVisibility(request.Visibility)
+	_, err = organizationScope(ctx, visibility)
+	if err != nil {
+		resultErr = err
+		return nil, resultErr
+	}
 	version := strings.TrimSpace(request.Version)
 	if version == "" {
 		version = "0.1.0"
@@ -133,6 +158,11 @@ func (s *Service) GenerateCandidate(ctx context.Context, ownerID string, request
 	switch kind {
 	case entity.CandidateSkill:
 		skill = buildSkill(id, version, description, ownerID, visibility, "preflight", minimumScore, selected, policy)
+		if strings.TrimSpace(options.Origin) != "" {
+			skill.Metadata["origin"] = strings.TrimSpace(options.Origin)
+			skill.Metadata["evidence_pattern"] = pattern
+			skill.Metadata["evidence_digest"] = strings.TrimSpace(options.EvidenceDigest)
+		}
 		if err := skill.Validate(policy); err != nil {
 			resultErr = apierror.ErrBadRequest.WithMessage(err.Error())
 			return nil, resultErr
@@ -156,7 +186,42 @@ func (s *Service) GenerateCandidate(ctx context.Context, ownerID string, request
 		resultErr = apierror.ErrBadRequest.WithMessage("candidate kind must be SKILL or STRATEGY")
 		return nil, resultErr
 	}
-	fixtureIDs, suiteID, run, runResults, err := s.evaluateEvidence(ctx, ownerID, candidateID, selected, request.ID)
+	if s.synthesizer != nil {
+		synthesis, synthErr := s.synthesizer.Synthesize(ctx, candidateSynthesisInput(
+			ownerID, candidateID, kind, pattern, selected, policy, skill, strategy,
+		))
+		if synthErr != nil {
+			resultErr = log.WrapError(synthErr, "LearningService.GenerateCandidate.synthesize")
+			return nil, resultErr
+		}
+		if synthErr := applyCandidateSynthesis(skill, strategy, selected, synthesis); synthErr != nil {
+			resultErr = apierror.ErrBadRequest.WithMessage("Codex candidate failed synthesis guardrails: " + synthErr.Error())
+			return nil, resultErr
+		}
+		switch kind {
+		case entity.CandidateSkill:
+			if synthErr := skill.Validate(policy); synthErr != nil {
+				resultErr = apierror.ErrBadRequest.WithMessage("Codex skill failed static validation: " + synthErr.Error())
+				return nil, resultErr
+			}
+			pattern = skillActionPattern(*skill)
+		case entity.CandidateStrategy:
+			if synthErr := strategy.Validate(policy); synthErr != nil {
+				resultErr = apierror.ErrBadRequest.WithMessage("Codex strategy failed static validation: " + synthErr.Error())
+				return nil, resultErr
+			}
+		}
+		log.Infow(ctx, "Codex evolution candidate synthesized",
+			"candidate_id", candidateID, "kind", kind, "model", synthesis.Model,
+			"response_id", synthesis.ResponseID, "input_digest", synthesis.InputDigest,
+		)
+	}
+	replay, err := buildCandidateReplaySpec(candidateID, kind, pattern, skill, strategy)
+	if err != nil {
+		resultErr = log.WrapError(err, "LearningService.GenerateCandidate.replaySpec")
+		return nil, resultErr
+	}
+	fixtureIDs, suiteID, run, runResults, err := s.evaluateEvidence(ctx, ownerID, candidateID, selected, request.ID, replay)
 	if err != nil {
 		resultErr = log.WrapError(err, "LearningService.GenerateCandidate.evaluate")
 		return nil, resultErr
@@ -224,8 +289,8 @@ func (s *Service) UpdateCandidate(ctx context.Context, ownerID, candidateID stri
 	if candidate == nil {
 		return nil, apierror.ErrNotFound.WithMessage("learning candidate not found")
 	}
-	if candidate.Status != entity.LifecycleReviewRequired {
-		return nil, apierror.ErrBadRequest.WithMessage("only candidates awaiting review can be edited")
+	if candidate.Status != entity.LifecycleReviewRequired && candidate.Status != entity.LifecycleEvaluating {
+		return nil, apierror.ErrBadRequest.WithMessage("only candidates awaiting evaluation or review can be edited")
 	}
 	if request.ExpectedRevision < 1 {
 		request.ExpectedRevision = candidate.Revision
@@ -238,7 +303,11 @@ func (s *Service) UpdateCandidate(ctx context.Context, ownerID, candidateID stri
 		candidate.Skill = request.Skill
 		candidate.Strategy = nil
 		candidate.Skill.OwnerID = ownerID
-		candidate.Skill.LifecycleState = entity.LifecycleReviewRequired
+		_, scopeErr := organizationScope(ctx, candidate.Skill.Visibility)
+		if scopeErr != nil {
+			return nil, scopeErr
+		}
+		candidate.Skill.LifecycleState = entity.LifecycleEvaluating
 	case entity.CandidateStrategy:
 		if request.Strategy == nil || request.Skill != nil {
 			return nil, apierror.ErrBadRequest.WithMessage("strategy candidate edit requires only strategy")
@@ -246,10 +315,21 @@ func (s *Service) UpdateCandidate(ctx context.Context, ownerID, candidateID stri
 		candidate.Strategy = request.Strategy
 		candidate.Skill = nil
 		candidate.Strategy.OwnerID = ownerID
-		candidate.Strategy.LifecycleState = entity.LifecycleReviewRequired
+		_, scopeErr := organizationScope(ctx, candidate.Strategy.Visibility)
+		if scopeErr != nil {
+			return nil, scopeErr
+		}
+		candidate.Strategy.LifecycleState = entity.LifecycleEvaluating
 	default:
 		return nil, apierror.ErrBadRequest.WithMessage("unsupported candidate kind")
 	}
+	// A human edit changes the artifact. Clear the old replay result before
+	// validation so a changed threshold cannot reuse or block on stale metrics.
+	candidate.Status = entity.LifecycleEvaluating
+	candidate.Evaluation = entity.EvaluationSummary{}
+	candidate.ReviewNote = ""
+	candidate.ReviewedBy = ""
+	candidate.ReviewedAt = time.Time{}
 	policy, err := s.candidatePolicy(ctx, ownerID, *candidate)
 	if err != nil {
 		return nil, err
@@ -257,7 +337,6 @@ func (s *Service) UpdateCandidate(ctx context.Context, ownerID, candidateID stri
 	if err := candidate.Validate(policy); err != nil {
 		return nil, apierror.ErrBadRequest.WithMessage("edited candidate failed static validation: " + err.Error())
 	}
-	candidate.ReviewNote = ""
 	candidate.Revision = request.ExpectedRevision + 1
 	candidate.TraceID = traceID(ctx)
 	candidate.UpdatedAt = time.Now().UTC()
@@ -275,8 +354,8 @@ func (s *Service) ReevaluateCandidate(ctx context.Context, ownerID, candidateID 
 	if candidate == nil {
 		return nil, apierror.ErrNotFound.WithMessage("learning candidate not found")
 	}
-	if candidate.Status != entity.LifecycleReviewRequired {
-		return nil, apierror.ErrBadRequest.WithMessage("only candidates awaiting review can be re-evaluated")
+	if candidate.Status != entity.LifecycleReviewRequired && candidate.Status != entity.LifecycleEvaluating {
+		return nil, apierror.ErrBadRequest.WithMessage("only candidates awaiting evaluation or review can be re-evaluated")
 	}
 	if request.ExpectedRevision < 1 {
 		request.ExpectedRevision = candidate.Revision
@@ -307,7 +386,11 @@ func (s *Service) ReevaluateCandidate(ctx context.Context, ownerID, candidateID 
 	} else if candidate.Strategy != nil {
 		name = candidate.Strategy.ID
 	}
-	_, suiteID, run, results, err := s.evaluateEvidence(ctx, ownerID, candidateID, evidence, name)
+	replay, err := buildCandidateReplaySpec(candidateID, candidate.Kind, candidate.Evidence.Pattern, candidate.Skill, candidate.Strategy)
+	if err != nil {
+		return nil, log.WrapError(err, "LearningService.ReevaluateCandidate.replaySpec")
+	}
+	_, suiteID, run, results, err := s.evaluateEvidence(ctx, ownerID, candidateID, evidence, name, replay)
 	if err != nil {
 		return nil, log.WrapError(err, "LearningService.ReevaluateCandidate.evaluate")
 	}
@@ -320,10 +403,19 @@ func (s *Service) ReevaluateCandidate(ctx context.Context, ownerID, candidateID 
 	}
 	candidate.Evaluation = summarizeEvaluation(run, results, baseline, minimumScore)
 	candidate.Status = entity.LifecycleReviewRequired
+	if candidate.Skill != nil {
+		candidate.Skill.LifecycleState = entity.LifecycleReviewRequired
+	}
+	if candidate.Strategy != nil {
+		candidate.Strategy.LifecycleState = entity.LifecycleReviewRequired
+	}
 	candidate.ReviewNote = ""
 	candidate.Revision = request.ExpectedRevision + 1
 	candidate.TraceID = traceID(ctx)
 	candidate.UpdatedAt = time.Now().UTC()
+	if err := candidate.Validate(policy); err != nil {
+		return nil, apierror.ErrBadRequest.WithMessage("re-evaluated candidate failed the evaluation gate: " + err.Error())
+	}
 	evaluation := entity.CandidateEvaluation{
 		EvaluationID: ulid.New(), CandidateID: candidateID, OwnerID: ownerID,
 		RunID: run.RunID, Summary: candidate.Evaluation, TraceID: candidate.TraceID,
@@ -343,6 +435,21 @@ func (s *Service) ReviewCandidate(ctx context.Context, ownerID, reviewerID, cand
 	if candidate == nil {
 		return nil, apierror.ErrNotFound.WithMessage("learning candidate not found")
 	}
+	decision := strings.ToUpper(strings.TrimSpace(request.Decision))
+	note := strings.TrimSpace(request.Note)
+	if decision != "APPROVE" && decision != "REJECT" {
+		return nil, apierror.ErrBadRequest.WithMessage("review decision must be APPROVE or REJECT")
+	}
+	if strings.TrimSpace(reviewerID) == "" || note == "" {
+		return nil, apierror.ErrBadRequest.WithMessage("reviewer identity and a review note are required")
+	}
+	if candidate.Status != entity.LifecycleReviewRequired {
+		return nil, apierror.ErrBadRequest.WithMessage("candidate is not awaiting review")
+	}
+	organizationID, err := organizationScopeForCandidate(ctx, *candidate)
+	if err != nil {
+		return nil, err
+	}
 	policy, err := s.candidatePolicy(ctx, ownerID, *candidate)
 	if err != nil {
 		return nil, err
@@ -350,19 +457,41 @@ func (s *Service) ReviewCandidate(ctx context.Context, ownerID, reviewerID, cand
 	if err := candidate.Validate(policy); err != nil {
 		return nil, apierror.ErrBadRequest.WithMessage("candidate no longer passes static validation: " + err.Error())
 	}
-	decision := strings.ToUpper(strings.TrimSpace(request.Decision))
 	if request.ExpectedRevision < 1 {
 		request.ExpectedRevision = candidate.Revision
 	}
-	return s.store.ReviewCandidate(ctx, ownerID, candidateID, decision, request.Note, reviewerID, request.ExpectedRevision)
+	reviewed := *candidate
+	reviewed.Status = entity.LifecycleRejected
+	if decision == "APPROVE" {
+		reviewed.Status = entity.LifecycleApproved
+	}
+	if reviewed.Skill != nil {
+		definition := *reviewed.Skill
+		definition.LifecycleState = reviewed.Status
+		reviewed.Skill = &definition
+	}
+	if reviewed.Strategy != nil {
+		definition := *reviewed.Strategy
+		definition.LifecycleState = reviewed.Status
+		reviewed.Strategy = &definition
+	}
+	reviewed.ReviewNote = note
+	reviewed.ReviewedBy = reviewerID
+	reviewed.ReviewedAt = time.Now().UTC()
+	reviewed.Revision = request.ExpectedRevision + 1
+	reviewed.UpdatedAt = reviewed.ReviewedAt
+	if err := reviewed.Validate(policy); err != nil {
+		return nil, apierror.ErrBadRequest.WithMessage("review decision failed the candidate gate: " + err.Error())
+	}
+	return s.store.ReviewCandidate(ctx, ownerID, candidateID, decision, note, reviewerID, organizationID, request.ExpectedRevision)
 }
 
 func (s *Service) ListSkills(ctx context.Context, ownerID string, limit int) ([]entity.Skill, error) {
-	return s.store.ListSkills(ctx, ownerID, limit)
+	return s.store.ListSkills(ctx, ownerID, authctx.OrganizationID(ctx), limit)
 }
 
 func (s *Service) ListStrategies(ctx context.Context, ownerID string, limit int) ([]entity.Strategy, error) {
-	return s.store.ListStrategies(ctx, ownerID, limit)
+	return s.store.ListStrategies(ctx, ownerID, authctx.OrganizationID(ctx), limit)
 }
 
 func (s *Service) selectEvidence(ctx context.Context, ownerID string, requested []string) ([]experienceentity.Experience, error) {
@@ -393,52 +522,89 @@ func (s *Service) selectEvidence(ctx context.Context, ownerID string, requested 
 
 func selectPatternEvidence(items []experienceentity.Experience) (string, []experienceentity.Experience, error) {
 	type group struct {
-		pattern string
-		items   []experienceentity.Experience
+		pattern   string
+		successes []experienceentity.Experience
+		failures  []experienceentity.Experience
 	}
-	groups := make(map[string][]experienceentity.Experience)
-	failures := make(map[string][]experienceentity.Experience)
+	groups := make(map[string]*group)
 	for _, item := range items {
-		if item.Outcome == experienceentity.OutcomeSucceeded && len(item.ActionRefs) > 0 {
-			pattern := actionPattern(item.ActionRefs)
-			groups[pattern] = append(groups[pattern], item)
-		} else if item.Outcome == experienceentity.OutcomeFailed && len(item.ActionRefs) > 0 {
-			pattern := actionPattern(item.ActionRefs)
-			failures[pattern] = append(failures[pattern], item)
+		if len(item.ActionRefs) == 0 {
+			continue
+		}
+		pattern := actionPattern(item.ActionRefs)
+		current := groups[pattern]
+		if current == nil {
+			current = &group{pattern: pattern}
+			groups[pattern] = current
+		}
+		switch item.Outcome {
+		case experienceentity.OutcomeSucceeded:
+			current.successes = append(current.successes, item)
+		case experienceentity.OutcomeFailed:
+			current.failures = append(current.failures, item)
 		}
 	}
-	ordered := make([]group, 0, len(groups))
-	for pattern, values := range groups {
-		ordered = append(ordered, group{pattern: pattern, items: values})
+	ordered := make([]*group, 0, len(groups))
+	for _, values := range groups {
+		ordered = append(ordered, values)
 	}
 	sort.Slice(ordered, func(i, j int) bool {
-		if len(ordered[i].items) == len(ordered[j].items) {
+		if len(ordered[i].successes) == len(ordered[j].successes) {
 			return ordered[i].pattern < ordered[j].pattern
 		}
-		return len(ordered[i].items) > len(ordered[j].items)
+		return len(ordered[i].successes) > len(ordered[j].successes)
 	})
-	if len(ordered) == 0 || len(ordered[0].items) < minimumSuccessCount {
+	if len(ordered) == 0 || len(ordered[0].successes) < minimumSuccessCount {
 		return "", nil, fmt.Errorf("candidate needs at least two successful experiences with the same semantic action pattern")
 	}
-	matchingFailures := failures[ordered[0].pattern]
-	if len(matchingFailures) == 0 {
+
+	hasMatchingFailure := false
+	hasMinimumEvidence := false
+	var evidenceErr error
+	for _, candidate := range ordered {
+		if len(candidate.successes) < minimumSuccessCount {
+			break
+		}
+		if len(candidate.failures) == 0 {
+			continue
+		}
+		hasMatchingFailure = true
+		if len(candidate.successes)+len(candidate.failures) < minimumEvidenceCount {
+			continue
+		}
+		hasMinimumEvidence = true
+		selected := boundedPatternEvidence(candidate.successes, candidate.failures)
+		if err := validateIndependentEvidence(selected); err != nil {
+			if evidenceErr == nil {
+				evidenceErr = err
+			}
+			continue
+		}
+		return candidate.pattern, selected, nil
+	}
+	if !hasMatchingFailure {
 		return "", nil, fmt.Errorf("candidate needs at least one failed counterexample with the same semantic action pattern")
 	}
-	selected := append([]experienceentity.Experience{}, ordered[0].items...)
-	selected = append(selected, matchingFailures...)
-	if len(selected) < minimumEvidenceCount {
+	if !hasMinimumEvidence {
 		return "", nil, fmt.Errorf("candidate needs at least four independent experiences")
 	}
-	if len(selected) > maximumEvidenceCount {
-		selected = selected[:maximumEvidenceCount]
-	}
-	if err := validateIndependentEvidence(selected); err != nil {
-		return "", nil, err
-	}
-	return ordered[0].pattern, selected, nil
+	return "", nil, evidenceErr
 }
 
-func (s *Service) evaluateEvidence(ctx context.Context, ownerID, candidateID string, evidence []experienceentity.Experience, name string) ([]string, string, *experienceentity.EvaluationRun, []experienceentity.EvaluationResult, error) {
+func boundedPatternEvidence(successes, failures []experienceentity.Experience) []experienceentity.Experience {
+	successLimit := len(successes)
+	if successLimit >= maximumEvidenceCount {
+		successLimit = maximumEvidenceCount - 1
+	}
+	selected := append([]experienceentity.Experience{}, successes[:successLimit]...)
+	failureLimit := maximumEvidenceCount - len(selected)
+	if failureLimit > len(failures) {
+		failureLimit = len(failures)
+	}
+	return append(selected, failures[:failureLimit]...)
+}
+
+func (s *Service) evaluateEvidence(ctx context.Context, ownerID, candidateID string, evidence []experienceentity.Experience, name string, replay experiencesvc.CandidateReplaySpec) ([]string, string, *experienceentity.EvaluationRun, []experienceentity.EvaluationResult, error) {
 	fixtureIDs := make([]string, 0, len(evidence))
 	for _, item := range evidence {
 		environmentVersion := strings.TrimSpace(item.EnvironmentFingerprint)
@@ -459,13 +625,56 @@ func (s *Service) evaluateEvidence(ctx context.Context, ownerID, candidateID str
 	if err != nil {
 		return nil, "", nil, nil, err
 	}
-	run, results, err := s.evaluator.RunSuite(ctx, ownerID, experiencesvc.RunSuiteRequest{
+	run, results, err := s.evaluator.RunCandidateSuite(ctx, ownerID, experiencesvc.RunSuiteRequest{
 		SuiteID: suite.SuiteID, Seed: 1, CandidateID: candidateID, BaselineID: "historical-experience",
-	})
+	}, replay)
 	if err != nil {
 		return nil, "", nil, nil, err
 	}
 	return fixtureIDs, suite.SuiteID, run, results, nil
+}
+
+func buildCandidateReplaySpec(candidateID, kind, pattern string, skill *entity.SkillDefinition, strategy *entity.StrategyDefinition) (experiencesvc.CandidateReplaySpec, error) {
+	var artifact any
+	recovery := make([]string, 0)
+	verificationRequired := false
+	switch kind {
+	case entity.CandidateSkill:
+		if skill == nil || strategy != nil {
+			return experiencesvc.CandidateReplaySpec{}, fmt.Errorf("skill candidate replay requires only a skill definition")
+		}
+		artifact = skill
+		for _, path := range skill.RecoveryPaths {
+			recovery = append(recovery, path.On)
+		}
+		for _, rule := range skill.VerificationRules {
+			verificationRequired = verificationRequired || rule.EvidenceRequired
+		}
+	case entity.CandidateStrategy:
+		if strategy == nil || skill != nil {
+			return experiencesvc.CandidateReplaySpec{}, fmt.Errorf("strategy candidate replay requires only a strategy definition")
+		}
+		artifact = strategy
+		if len(strategy.FallbackOrder) > 0 || strategy.RetryBudget.MaxAttempts > 1 {
+			recovery = append(recovery, "*")
+		}
+		verificationRequired = strategy.ObservationPolicy.RequireEvidence
+		for _, rule := range strategy.VerificationPolicy {
+			verificationRequired = verificationRequired && rule.EvidenceRequired
+		}
+	default:
+		return experiencesvc.CandidateReplaySpec{}, fmt.Errorf("unsupported candidate replay kind %q", kind)
+	}
+	encoded, err := json.Marshal(artifact)
+	if err != nil {
+		return experiencesvc.CandidateReplaySpec{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	return experiencesvc.CandidateReplaySpec{
+		ArtifactID: candidateID, ArtifactChecksum: hex.EncodeToString(digest[:]), Kind: kind,
+		ActionPattern: strings.TrimSpace(pattern), RecoveryConditions: uniqueStrings(recovery),
+		VerificationEvidenceRequired: verificationRequired,
+	}, nil
 }
 
 func (s *Service) validationPolicy(ctx context.Context, ownerID string, evidence []experienceentity.Experience) (entity.ValidationPolicy, error) {
@@ -477,7 +686,7 @@ func (s *Service) validationPolicy(ctx context.Context, ownerID string, evidence
 	if err != nil {
 		return entity.ValidationPolicy{}, err
 	}
-	approved, err := s.store.ApprovedSkills(ctx, ownerID)
+	approved, err := s.store.ApprovedSkills(ctx, ownerID, authctx.OrganizationID(ctx))
 	if err != nil {
 		return entity.ValidationPolicy{}, err
 	}
@@ -493,7 +702,7 @@ func (s *Service) candidatePolicy(ctx context.Context, ownerID string, candidate
 	if err != nil {
 		return entity.ValidationPolicy{}, err
 	}
-	approved, err := s.store.ApprovedSkills(ctx, ownerID)
+	approved, err := s.store.ApprovedSkills(ctx, ownerID, authctx.OrganizationID(ctx))
 	if err != nil {
 		return entity.ValidationPolicy{}, err
 	}
@@ -548,8 +757,8 @@ func buildSkill(id, version, description, ownerID, visibility, suiteID string, m
 	siteScopes = uniqueStrings(siteScopes)
 	return &entity.SkillDefinition{
 		ID: id, Version: version, Description: description,
-		InputSchema:  learningv1.JSONSchema{"type": "object", "additionalProperties": true},
-		OutputSchema: learningv1.JSONSchema{"type": "object", "additionalProperties": true},
+		InputSchema:  learningv2.JSONSchema{"type": "object", "additionalProperties": true},
+		OutputSchema: learningv2.JSONSchema{"type": "object", "additionalProperties": true},
 		Preconditions: []entity.Predicate{
 			{Field: "context.environment_fingerprint", Operator: "exists"},
 			{Field: "context.capabilities", Operator: "contains_all", Value: capabilities},
@@ -572,8 +781,8 @@ func buildStrategy(id, version, description, ownerID, visibility, preferred stri
 	return &entity.StrategyDefinition{
 		ID: id, Version: version, Description: description, Condition: condition,
 		PreferredSkill: preferred, FallbackOrder: uniqueStrings(fallbacks),
-		ObservationPolicy:  learningv1.ObservationPolicy{RequiredFields: []string{"task.status"}, RequireEvidence: true},
-		RetryBudget:        learningv1.RetryBudget{MaxAttempts: 1, MaxDurationMS: 30000},
+		ObservationPolicy:  learningv2.ObservationPolicy{RequiredFields: []string{"task.status"}, RequireEvidence: true},
+		RetryBudget:        learningv2.RetryBudget{MaxAttempts: 1, MaxDurationMS: 30000},
 		VerificationPolicy: []entity.VerificationRule{{Field: "task.status", Operator: "equals", Expected: "COMPLETED", EvidenceRequired: true}},
 		RiskCeiling:        entity.RiskMedium, OwnerID: ownerID, Visibility: visibility, LifecycleState: entity.LifecycleReviewRequired,
 	}
@@ -686,7 +895,7 @@ func normalizeSiteScope(value string) string {
 		return ""
 	}
 	if parsed, err := url.Parse(value); err == nil && parsed.Hostname() != "" {
-		return parsed.Hostname()
+		return strings.TrimPrefix(parsed.Hostname(), "www.")
 	}
 	value = strings.TrimPrefix(value, "www.")
 	if strings.ContainsAny(value, " /?#") {
@@ -742,7 +951,7 @@ func composedPolicyRisk(capabilities []string, policy entity.ValidationPolicy) s
 	risk := entity.RiskLow
 	for _, capability := range capabilities {
 		next := policy.Capabilities[capability].Risk
-		if learningv1.RiskRank(next) > learningv1.RiskRank(risk) {
+		if learningv2.RiskRank(next) > learningv2.RiskRank(risk) {
 			risk = next
 		}
 	}
@@ -776,6 +985,27 @@ func normalizeVisibility(value string) string {
 		return entity.VisibilityPrivate
 	}
 	return value
+}
+
+func organizationScope(ctx context.Context, visibility string) (string, error) {
+	if normalizeVisibility(visibility) != entity.VisibilityTeam {
+		return "", nil
+	}
+	organizationID := strings.TrimSpace(authctx.OrganizationID(ctx))
+	if organizationID == "" {
+		return "", apierror.ErrBadRequest.WithMessage("TEAM visibility requires the current user to belong to an organization")
+	}
+	return organizationID, nil
+}
+
+func organizationScopeForCandidate(ctx context.Context, candidate entity.Candidate) (string, error) {
+	visibility := ""
+	if candidate.Skill != nil {
+		visibility = candidate.Skill.Visibility
+	} else if candidate.Strategy != nil {
+		visibility = candidate.Strategy.Visibility
+	}
+	return organizationScope(ctx, visibility)
 }
 
 func normalizeID(value string) string {
@@ -835,6 +1065,5 @@ func firstNonEmpty(values ...string) string {
 }
 
 func traceID(ctx context.Context) string {
-	value, _ := ctx.Value(log.ReqIDKey).(string)
-	return value
+	return log.ReqID(ctx)
 }

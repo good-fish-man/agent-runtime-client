@@ -11,6 +11,7 @@ import (
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
 	irepository "github.com/good-fish-man/agent-runtime-client/domain/irepository/control"
+	"github.com/good-fish-man/agent-runtime-client/pkg/dbctx"
 )
 
 type fakeConnection struct {
@@ -66,6 +67,32 @@ func TestHubDispatchCorrelatesObservation(t *testing.T) {
 	}
 	if observation.ActionID != action.ActionID || observation.TraceID != action.TraceID || observation.Status != entity.ObservationSucceeded {
 		t.Fatalf("unexpected observation: %+v", observation)
+	}
+}
+
+func TestHubDispatchReusesCompletedObservationForIdempotencyKey(t *testing.T) {
+	hub := NewHub()
+	connection := &fakeConnection{hub: hub}
+	if err := hub.Register(context.Background(), entity.DeviceMessage{DeviceID: "device-1", Name: "test", Capabilities: []string{"browser.open"}}, connection); err != nil {
+		t.Fatal(err)
+	}
+	action := testAction("task-1", "action-1", "browser.open")
+	first, err := hub.Dispatch(context.Background(), "device-1", action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := hub.Dispatch(context.Background(), "device-1", action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ObservationID != second.ObservationID || first.ActionID != second.ActionID {
+		t.Fatalf("idempotent dispatch returned different observations: first=%+v second=%+v", first, second)
+	}
+	connection.mu.Lock()
+	sent := len(connection.sent)
+	connection.mu.Unlock()
+	if sent != 1 {
+		t.Fatalf("idempotent action reached the device %d times", sent)
 	}
 }
 
@@ -311,6 +338,47 @@ func TestHubResolveReportsDeviceBoundToAnotherUser(t *testing.T) {
 	}
 }
 
+func TestHubUnbindAllowsAnotherUserToBind(t *testing.T) {
+	hub := NewHub()
+	connection := &cancelConnection{messages: make(chan any, 1)}
+	if err := hub.Register(context.Background(), entity.DeviceMessage{DeviceID: "device-1", Capabilities: []string{"app.open"}}, connection); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.BindDevice(context.Background(), "device-1", "user-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.UnbindDevice(context.Background(), "device-1", "user-2"); !errors.Is(err, ErrDeviceBoundToAnotherUser) {
+		t.Fatalf("other owner unbind error = %v, want ErrDeviceBoundToAnotherUser", err)
+	}
+	if err := hub.UnbindDevice(context.Background(), "device-1", "user-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.BindDevice(context.Background(), "device-1", "user-2"); err != nil {
+		t.Fatalf("new owner could not bind released device: %v", err)
+	}
+	devices, err := hub.Devices(context.Background(), "user-2")
+	if err != nil || len(devices) != 1 || devices[0].UserID != "user-2" {
+		t.Fatalf("rebound device = %+v, %v", devices, err)
+	}
+}
+
+func TestHubUnbindRejectsUnfinishedTask(t *testing.T) {
+	hub := NewHub()
+	connection := &cancelConnection{messages: make(chan any, 1)}
+	if err := hub.Register(context.Background(), entity.DeviceMessage{DeviceID: "device-1", Capabilities: []string{"app.open"}}, connection); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.BindDevice(context.Background(), "device-1", "user-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.BeginTask(context.Background(), "task-1", "user-1", "conversation-1", "device-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.UnbindDevice(context.Background(), "device-1", "user-1"); !errors.Is(err, ErrDeviceHasActiveTasks) {
+		t.Fatalf("unfinished task unbind error = %v, want ErrDeviceHasActiveTasks", err)
+	}
+}
+
 func TestHubResolveReportsUnsupportedCapability(t *testing.T) {
 	hub := NewHub()
 	connection := &cancelConnection{messages: make(chan any, 1)}
@@ -402,6 +470,76 @@ func TestHubPausesRecoveredObservationWithoutClaimingGoalCompletion(t *testing.T
 	}
 	if reason, _ := task.Metadata["pause_reason"].(string); reason == "" {
 		t.Fatal("recovered task has no pause reason")
+	}
+}
+
+type fakeRecoveryStore struct {
+	irepository.Store
+	mu      sync.Mutex
+	device  *entity.RegisteredDevice
+	pending []entity.Action
+}
+
+func (s *fakeRecoveryStore) FindDevice(_ context.Context, _ string) (*entity.RegisteredDevice, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.device == nil {
+		return nil, nil
+	}
+	copy := *s.device
+	return &copy, nil
+}
+
+func (s *fakeRecoveryStore) UpsertDevice(_ context.Context, device *entity.RegisteredDevice) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	copy := *device
+	s.device = &copy
+	return nil
+}
+
+func (s *fakeRecoveryStore) ListPendingActions(_ context.Context, _ string, _ int) ([]entity.Action, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]entity.Action(nil), s.pending...), nil
+}
+
+func TestHubRestartRedispatchesPendingActionOnceWithStableIdentity(t *testing.T) {
+	action := testAction("task-restart", "action-restart", "browser.open")
+	action.DeviceID = "device-1"
+	action.Deadline = time.Now().UTC().Add(time.Minute)
+	store := &fakeRecoveryStore{pending: []entity.Action{action}}
+
+	register := func() <-chan any {
+		hub := NewHub(store)
+		connection := &cancelConnection{messages: make(chan any, 2)}
+		if err := hub.Register(context.Background(), entity.DeviceMessage{
+			DeviceID: "device-1", Name: "test", Capabilities: []string{"browser.open"},
+		}, connection); err != nil {
+			t.Fatal(err)
+		}
+		return connection.messages
+	}
+
+	for restart := 0; restart < 2; restart++ {
+		messages := register()
+		select {
+		case value := <-messages:
+			recovered, ok := value.(entity.Action)
+			if !ok {
+				t.Fatalf("recovery message type = %T", value)
+			}
+			if recovered.ActionID != action.ActionID || recovered.IdempotencyKey != action.IdempotencyKey {
+				t.Fatalf("recovery changed durable action identity: %+v", recovered)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("pending action was not recovered after device reconnect")
+		}
+		select {
+		case duplicate := <-messages:
+			t.Fatalf("one reconnect dispatched the pending action more than once: %+v", duplicate)
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
 }
 
@@ -705,14 +843,49 @@ func TestSanitizeObservationForPersistenceClassifiesIndirectInjection(t *testing
 	}
 }
 
+func TestSanitizeObservationForPersistenceKeepsEffectTrace(t *testing.T) {
+	observation := entity.Observation{
+		Summary: "Browser outcome verified",
+		State: map[string]any{
+			"effect_trace": map[string]any{
+				"schema":  "athena.semantic/v0alpha",
+				"outcome": map[string]any{"outcome_id": "outcome-1"},
+				"verification_summary": map[string]any{
+					"status": "succeeded", "evidence_refs": []any{"browser:snapshot-1"},
+				},
+			},
+		},
+	}
+	safe := sanitizeObservationForPersistence(observation)
+	trace, ok := safe.State["effect_trace"].(map[string]any)
+	if !ok {
+		t.Fatalf("effect trace was removed during persistence sanitization: %#v", safe.State)
+	}
+	summary, ok := trace["verification_summary"].(map[string]any)
+	if !ok || summary["status"] != "succeeded" {
+		t.Fatalf("verification summary was changed during persistence sanitization: %#v", trace)
+	}
+	evidence, ok := summary["evidence_refs"].([]any)
+	if !ok || len(evidence) != 1 || evidence[0] != "browser:snapshot-1" {
+		t.Fatalf("verification evidence correlation was not retained: %#v", summary)
+	}
+}
+
 type fakeOutboxStore struct {
 	irepository.Store
 	mu        sync.Mutex
 	messages  []irepository.OutboxMessage
 	published chan string
+	claimed   chan bool
 }
 
-func (s *fakeOutboxStore) ClaimOutbox(context.Context, int) ([]irepository.OutboxMessage, error) {
+func (s *fakeOutboxStore) ClaimOutbox(ctx context.Context, _ int) ([]irepository.OutboxMessage, error) {
+	if s.claimed != nil {
+		select {
+		case s.claimed <- dbctx.QueryInfoSuppressed(ctx):
+		default:
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := append([]irepository.OutboxMessage(nil), s.messages...)
@@ -742,6 +915,7 @@ func TestHubOutboxPublishesDurableTaskEvent(t *testing.T) {
 	store := &fakeOutboxStore{
 		messages:  []irepository.OutboxMessage{{OutboxID: "outbox-1", EventID: event.EventID, Payload: string(payload)}},
 		published: make(chan string, 1),
+		claimed:   make(chan bool, 1),
 	}
 	hub := NewHub(store)
 	events, unsubscribe := hub.Subscribe(event.TaskID)
@@ -765,6 +939,14 @@ func TestHubOutboxPublishesDurableTaskEvent(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("outbox message was not acknowledged")
+	}
+	select {
+	case suppressed := <-store.claimed:
+		if !suppressed {
+			t.Fatal("outbox polling did not suppress routine query info logs")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("outbox claim context was not observed")
 	}
 }
 

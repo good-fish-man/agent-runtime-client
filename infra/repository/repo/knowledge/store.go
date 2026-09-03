@@ -15,6 +15,7 @@ import (
 	repository "github.com/good-fish-man/agent-runtime-client/domain/irepository/knowledge"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/knowledge"
+	knowledgev1 "github.com/good-fish-man/athena-protocol/protocol/knowledge/v1"
 	log "github.com/good-fish-man/logx"
 )
 
@@ -277,6 +278,9 @@ func (s *Store) ResolveContradiction(ctx context.Context, value entity.Contradic
 				return decodeErr
 			}
 			claim.Status = status
+			if value.Resolution != nil && value.Resolution.Decision == knowledgev1.ResolutionKeepClaim && claimID == value.Resolution.WinningClaimID {
+				claim.ContradictedBy = removeValues(claim.ContradictedBy, value.ClaimIDs)
+			}
 			claim.UpdatedAt = value.UpdatedAt
 			claimContent, encodeErr := encode(*claim)
 			if encodeErr != nil {
@@ -288,6 +292,20 @@ func (s *Store) ResolveContradiction(ctx context.Context, value entity.Contradic
 		}
 		return nil
 	}), "KnowledgeStore.ResolveContradiction")
+}
+
+func removeValues(values, removed []string) []string {
+	blocked := make(map[string]struct{}, len(removed))
+	for _, value := range removed {
+		blocked[value] = struct{}{}
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, exists := blocked[value]; !exists {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func (s *Store) CreateSnapshot(ctx context.Context, value entity.Snapshot) error {

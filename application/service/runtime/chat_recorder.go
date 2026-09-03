@@ -108,7 +108,7 @@ func (r *chatRecorder) Record(ctx context.Context, input chatRecordInput) {
 		input.Status = "success"
 	}
 	if err := r.record(ctx, input); err != nil {
-		log.WarnwCtx(ctx, "record chat history failed", "session_id", input.SessionID, "error", err)
+		log.Warnw(ctx, "record chat history failed", "session_id", input.SessionID, "error", err)
 	}
 }
 
@@ -140,7 +140,7 @@ func (s *RuntimeService) recordStream(ctx context.Context, values map[string]any
 	if s.knowledge != nil && len(capture.research) > 0 {
 		taskID := firstNonEmpty(contextString(values, "task_id"), firstNonEmpty(contextString(values, "request_id"), contextString(values, "run_manifest_id")))
 		if err := s.knowledge.CaptureResearchEvidence(context.WithoutCancel(ctx), authctx.UserID(ctx), taskID, traceID(ctx), capture.research); err != nil {
-			log.WarnwCtx(ctx, "persist research evidence failed", "error", err)
+			log.Warnw(ctx, "persist research evidence failed", "error", err)
 		}
 	}
 	if s.chat == nil {

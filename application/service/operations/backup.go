@@ -161,7 +161,21 @@ func (m *BackupManager) Verify(ctx context.Context, backupID string) (*operation
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.verifyLocked(ctx, backupID)
+	manifest, err := m.verifyLocked(ctx, backupID)
+	if err != nil {
+		return nil, err
+	}
+	key, err := readBackupKey(m.keyFile)
+	if err != nil {
+		return nil, err
+	}
+	if err := sealBackupManifest(manifest, key); err != nil {
+		return nil, err
+	}
+	if err := writeBackupManifest(filepath.Join(m.directory, backupID), manifest); err != nil {
+		return nil, err
+	}
+	return manifest, nil
 }
 
 func (m *BackupManager) Restore(ctx context.Context, request operationsv1.RestoreRequest) (*operationsv1.BackupManifest, error) {
@@ -291,6 +305,13 @@ func (m *BackupManager) listLocked() ([]operationsv1.BackupManifest, error) {
 		}
 		if err := authenticateBackupManifest(manifest, key); err != nil {
 			return nil, fmt.Errorf("authenticate backup %s: %w", entry.Name(), err)
+		}
+		for _, artifact := range manifest.Artifacts {
+			path := filepath.Join(m.directory, entry.Name(), filepath.FromSlash(artifact.RelativePath))
+			digest, size, err := fileSHA256(path)
+			if err != nil || !strings.EqualFold(digest, artifact.SHA256) || size != artifact.SizeBytes {
+				return nil, fmt.Errorf("backup artifact %s integrity verification failed", artifact.Name)
+			}
 		}
 		items = append(items, *manifest)
 	}

@@ -15,13 +15,16 @@ import (
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
 	irepository "github.com/good-fish-man/agent-runtime-client/domain/irepository/control"
+	"github.com/good-fish-man/agent-runtime-client/pkg/dbctx"
 	"github.com/good-fish-man/athena-protocol/sdk/safety"
 	log "github.com/good-fish-man/logx"
 )
 
 var (
-	ErrDeviceOffline               = errors.New("device is offline")
-	ErrDeviceBoundToAnotherUser    = errors.New("device is bound to another user")
+	ErrDeviceOffline               = irepository.ErrDeviceOffline
+	ErrDeviceNotFound              = irepository.ErrDeviceNotFound
+	ErrDeviceBoundToAnotherUser    = irepository.ErrDeviceOwnerMismatch
+	ErrDeviceHasActiveTasks        = irepository.ErrDeviceHasActiveTasks
 	ErrDeviceCapabilityUnsupported = errors.New("device capability is unsupported")
 )
 
@@ -196,9 +199,10 @@ func (h *Hub) Subscribe(taskID string) (<-chan entity.EventEnvelope, func()) {
 func (h *Hub) runOutbox(ctx context.Context, store outboxStore) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	dbCtx := dbctx.SuppressQueryInfo(ctx)
 	for {
-		if err := h.drainOutbox(ctx, store); err != nil && ctx.Err() == nil {
-			log.WarnwCtx(ctx, "control outbox dispatch failed", "error_chain", log.FormatError(err))
+		if err := h.drainOutbox(dbCtx, store); err != nil && ctx.Err() == nil {
+			log.Warnw(ctx, "control outbox dispatch failed", "error_chain", log.FormatError(err))
 		}
 		select {
 		case <-ctx.Done():
@@ -308,7 +312,7 @@ func (h *Hub) recoverDeviceActions(ctx context.Context, device *Device) {
 	}
 	actions, err := store.ListPendingActions(ctx, device.ID, 100)
 	if err != nil {
-		log.WarnwCtx(ctx, "load recoverable device actions failed", "device_id", device.ID, "error_chain", log.FormatError(err))
+		log.Warnw(ctx, "load recoverable device actions failed", "device_id", device.ID, "error_chain", log.FormatError(err))
 		return
 	}
 	for _, action := range actions {
@@ -320,11 +324,11 @@ func (h *Hub) recoverDeviceActions(ctx context.Context, device *Device) {
 		action.LeaseOwner = device.LeaseOwner
 		action.FencingToken = device.FencingToken
 		if err := h.ensureDeviceLease(ctx, device); err != nil {
-			log.WarnwCtx(ctx, "reject recoverable action from stale control plane", "device_id", device.ID, "action_id", action.ActionID, "error_chain", log.FormatError(err))
+			log.Warnw(ctx, "reject recoverable action from stale control plane", "device_id", device.ID, "action_id", action.ActionID, "error_chain", log.FormatError(err))
 			return
 		}
 		if err := device.conn.Send(action); err != nil {
-			log.WarnwCtx(ctx, "redispatch recoverable device action failed", "device_id", device.ID, "task_id", action.TaskID, "action_id", action.ActionID, "error_chain", log.FormatError(err))
+			log.Warnw(ctx, "redispatch recoverable device action failed", "device_id", device.ID, "task_id", action.TaskID, "action_id", action.ActionID, "error_chain", log.FormatError(err))
 			return
 		}
 	}
@@ -441,7 +445,7 @@ func (h *Hub) Touch(ctx context.Context, deviceID string) {
 				if conn != nil {
 					_ = conn.Close()
 				}
-				log.WarnwCtx(ctx, "device lease renewal rejected", "device_id", shortDeviceID(deviceID), "fencing_token", token, "error_chain", log.FormatError(err))
+				log.Warnw(ctx, "device lease renewal rejected", "device_id", shortDeviceID(deviceID), "fencing_token", token, "error_chain", log.FormatError(err))
 			}
 		} else {
 			_ = h.store.SetDeviceOnline(ctx, deviceID, true, now)
@@ -635,6 +639,66 @@ func (h *Hub) bindDevice(ctx context.Context, deviceID, userID string) error {
 
 func (h *Hub) BindDevice(ctx context.Context, deviceID, userID string) error {
 	return h.bindDevice(ctx, deviceID, userID)
+}
+
+// UnbindDevice removes an account binding and invalidates the current logical
+// connection. The launcher reconnects with a fresh lease and no account owner.
+func (h *Hub) UnbindDevice(ctx context.Context, deviceID, userID string) error {
+	deviceID = strings.TrimSpace(deviceID)
+	userID = strings.TrimSpace(userID)
+	if deviceID == "" {
+		return ErrDeviceNotFound
+	}
+	if userID == "" {
+		return fmt.Errorf("authenticated user is required to unbind a device")
+	}
+
+	h.mu.Lock()
+	device := h.devices[deviceID]
+	if device != nil && device.UserID != "" && device.UserID != userID {
+		h.mu.Unlock()
+		return ErrDeviceBoundToAnotherUser
+	}
+	for _, pending := range h.pending {
+		if pending.deviceID == deviceID {
+			h.mu.Unlock()
+			return ErrDeviceHasActiveTasks
+		}
+	}
+	for _, task := range h.sessions {
+		if task.DeviceID == deviceID && task.UserID == userID && !entity.TerminalTaskStatus(task.Status) {
+			h.mu.Unlock()
+			return ErrDeviceHasActiveTasks
+		}
+	}
+	if h.store != nil {
+		if err := h.store.UnbindDevice(ctx, deviceID, userID); err != nil {
+			h.mu.Unlock()
+			return err
+		}
+	} else {
+		if device == nil {
+			h.mu.Unlock()
+			return ErrDeviceNotFound
+		}
+		if device.UserID == "" {
+			h.mu.Unlock()
+			return nil
+		}
+	}
+	var connection Connection
+	if device != nil && h.store != nil {
+		delete(h.devices, deviceID)
+		connection = device.conn
+	} else if device != nil {
+		device.UserID = ""
+	}
+	h.mu.Unlock()
+	if connection != nil {
+		_ = connection.Close()
+	}
+	log.Infow(ctx, "device unbound", "device_id", shortDeviceID(deviceID), "user_id", userID)
+	return nil
 }
 
 func (h *Hub) BeginTask(ctx context.Context, taskID, userID, conversationID, deviceID string) error {
@@ -1540,7 +1604,7 @@ func (h *Hub) persistTerminalObservation(ctx context.Context, action entity.Acti
 	h.mu.Unlock()
 	if h.store != nil {
 		if err := h.store.SaveObservation(ctx, observation); err != nil {
-			log.WarnwCtx(ctx, "persist terminal control observation failed", "task_id", action.TaskID, "action_id", action.ActionID, "error_chain", log.FormatError(err))
+			log.Warnw(ctx, "persist terminal control observation failed", "task_id", action.TaskID, "action_id", action.ActionID, "error_chain", log.FormatError(err))
 			return
 		}
 		h.mu.Lock()
@@ -1552,7 +1616,7 @@ func (h *Hub) persistTerminalObservation(ctx context.Context, action entity.Acti
 		h.mu.Unlock()
 	}
 	if err := h.recordObservation(ctx, action.TaskID, observation); err != nil {
-		log.WarnwCtx(ctx, "project terminal control observation failed", "task_id", action.TaskID, "action_id", action.ActionID, "error_chain", log.FormatError(err))
+		log.Warnw(ctx, "project terminal control observation failed", "task_id", action.TaskID, "action_id", action.ActionID, "error_chain", log.FormatError(err))
 	}
 	taskStatus := entity.StatusFailed
 	if status == entity.ObservationCancelled {

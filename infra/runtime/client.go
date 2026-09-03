@@ -25,12 +25,12 @@ type Client struct {
 // NewClient creates a lazily-connecting gRPC client. grpc.NewClient does not dial
 // eagerly; the connection is established on first RPC and bounded by each call's
 // context timeout.
-func NewClient(grpcAddr string, reqTimeout time.Duration) (*Client, error) {
+func NewClient(ctx context.Context, grpcAddr string, reqTimeout time.Duration) (*Client, error) {
 	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, log.WrapError(err, "RuntimeClient.New")
 	}
-	log.Infof("runtime gRPC client configured for %s (request timeout %s)", grpcAddr, reqTimeout)
+	log.Infof(ctx, "runtime gRPC client configured for %s (request timeout %s)", grpcAddr, reqTimeout)
 	return &Client{
 		conn:       conn,
 		rpc:        runtimev1.NewAgentRuntimeClient(conn),

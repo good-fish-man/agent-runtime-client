@@ -63,9 +63,16 @@ func TestEncryptedBackupVerifyAndRestore(t *testing.T) {
 	if verified.Status != operationsv1.BackupVerified {
 		t.Fatalf("verify status = %s", verified.Status)
 	}
+	listed, err := manager.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Status != operationsv1.BackupVerified || listed[0].ManifestSHA256 != verified.ManifestSHA256 {
+		t.Fatalf("verified backup status was not persisted: %+v", listed)
+	}
 	request := operationsv1.RestoreRequest{
 		Schema: operationsv1.Schema, RestoreID: "restore-1", BackupID: manifest.BackupID,
-		TargetVersion: "0.9.0", ExpectedSHA256: manifest.ManifestSHA256,
+		TargetVersion: "0.9.0", ExpectedSHA256: verified.ManifestSHA256,
 		Confirmation: "RESTORE " + manifest.BackupID, RequestedBy: "admin", RequestedAt: time.Now().UTC(),
 	}
 	if _, err := manager.Restore(context.Background(), request); err != nil {
@@ -97,6 +104,9 @@ func TestBackupTamperingFailsBeforeRestore(t *testing.T) {
 	_ = file.Close()
 	if _, err := manager.Verify(context.Background(), manifest.BackupID); err == nil {
 		t.Fatal("tampered backup passed verification")
+	}
+	if _, err := manager.List(); err == nil {
+		t.Fatal("tampered backup passed inventory integrity verification")
 	}
 	if len(archiver.restored) != 0 {
 		t.Fatal("restore executed before verification completed")

@@ -22,6 +22,6 @@ func NewHandler() *Handler { return &Handler{} }
 // concrete per-channel integration is wired in.
 func (h *Handler) HandleCallback(c *gin.Context) {
 	channel := c.Param("channel")
-	log.Infof("[channel callback] received inbound callback for channel=%s", channel)
+	log.Infof(c.Request.Context(), "[channel callback] received inbound callback for channel=%s", channel)
 	_ = c.Error(apierror.ErrNotImplemented.WithMessagef("channel callback %q not yet implemented", channel))
 }

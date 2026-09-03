@@ -43,9 +43,13 @@ func NewRedactor() *Redactor {
 		identityKey:    regexp.MustCompile(`(?i)(?:passport|driver.?s?[_-]?licen[cs]e|identity[_-]?(?:document|number)|national[_-]?id|mynumber)`),
 		rawArtifactKey: regexp.MustCompile(`(?i)(?:raw[_-]?)?(?:dom|html|screenshot|image[_-]?data|attachment[_-]?data|page[_-]?source|document[_-]?bytes)`),
 		patterns: []redactionPattern{
+			{category: "credential", replacement: redactedCredential, pattern: regexp.MustCompile(`(?is)-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----`)},
+			{category: "credential", replacement: redactedCredential, pattern: regexp.MustCompile(`(?i)\b(?:https?|wss?)://[^/\s:@]+:[^@\s/]+@`)},
 			{category: "credential", replacement: redactedCredential, pattern: regexp.MustCompile(`(?i)(?:bearer\s+)[A-Za-z0-9._~+/=-]{8,}`)},
 			{category: "credential", replacement: redactedCredential, pattern: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`)},
-			{category: "credential", replacement: redactedCredential, pattern: regexp.MustCompile(`\b(?:sk|pk|rk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}\b`)},
+			{category: "credential", replacement: redactedCredential, pattern: regexp.MustCompile(`\b(?:sk|pk|rk|ghp|github_pat|xox[baprs]|hf|npm)[-_][A-Za-z0-9_-]{12,}\b`)},
+			{category: "credential", replacement: redactedCredential, pattern: regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)},
+			{category: "credential", replacement: redactedCredential, pattern: regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{30,}\b`)},
 			{category: "credential", replacement: redactedCredential, pattern: regexp.MustCompile(`(?i)(?:password|passwd|passphrase|secret|access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|cookie|credential)\s*[:=]\s*[^\s,;}&]+`)},
 			{category: "payment", replacement: redactedPayment, pattern: regexp.MustCompile(`\b(?:\d[ -]*?){13,19}\b`)},
 			{category: "identity", replacement: redactedIdentity, pattern: regexp.MustCompile(`\b(?:[A-Z]{1,2}\d{6,9}|\d{6}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[0-9Xx])\b`)},
@@ -152,7 +156,8 @@ func (r *Redactor) artifactSummary(value []byte, path string) (map[string]any, [
 }
 
 func newRedaction(category, path, original string) entity.Redaction {
-	return entity.Redaction{RedactionID: ulid.New(), Category: category, FieldPath: normalizePath(path), Digest: digest(original), CreatedAt: time.Now().UTC()}
+	redactionID := ulid.New()
+	return entity.Redaction{RedactionID: redactionID, Category: category, FieldPath: normalizePath(path), Digest: digest(redactionID + "\x00" + original), CreatedAt: time.Now().UTC()}
 }
 
 func digest(value string) string { return digestBytes([]byte(value)) }

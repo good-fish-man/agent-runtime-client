@@ -33,6 +33,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
 	"github.com/good-fish-man/agent-runtime-client/types/response"
+	log "github.com/good-fish-man/logx"
 )
 
 const maxTrainingDatasetBytes = 100 << 20
@@ -51,7 +52,10 @@ type trainingDatasetRow struct {
 	Completion string                      `json:"completion"`
 }
 
-func newModelTrainingManager(store *data.Data, runtimeSvc *runtimesvc.RuntimeService, configuredRoot string) *modelTrainingManager {
+func newModelTrainingManager(ctx context.Context, store *data.Data, runtimeSvc *runtimesvc.RuntimeService, configuredRoot string) *modelTrainingManager {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	root := strings.TrimSpace(configuredRoot)
 	if root == "" {
 		if cache, err := os.UserCacheDir(); err == nil {
@@ -64,15 +68,15 @@ func newModelTrainingManager(store *data.Data, runtimeSvc *runtimesvc.RuntimeSer
 	}
 	_ = os.MkdirAll(root, 0o700)
 	manager := &modelTrainingManager{data: store, runtimeSvc: runtimeSvc, root: root, cancels: make(map[string]context.CancelFunc)}
-	store.DB(context.Background()).Model(&modelpo.ModelTrainingJob{}).
+	store.DB(ctx).Model(&modelpo.ModelTrainingJob{}).
 		Where("status IN ? AND deleted_at = 0", []string{"queued", "running"}).
 		Updates(map[string]any{"status": "failed", "stage": "interrupted", "error_msg": "服务重启导致训练中断，请重新创建任务", "finished_at": time.Now().UnixMilli()})
 	return manager
 }
 
-func (h *Handler) WithTraining(store *data.Data, runtimeSvc *runtimesvc.RuntimeService, root string) *Handler {
+func (h *Handler) WithTraining(ctx context.Context, store *data.Data, runtimeSvc *runtimesvc.RuntimeService, root string) *Handler {
 	if store != nil && runtimeSvc != nil {
-		h.training = newModelTrainingManager(store, runtimeSvc, root)
+		h.training = newModelTrainingManager(ctx, store, runtimeSvc, root)
 	}
 	return h
 }
@@ -319,11 +323,14 @@ func (m *modelTrainingManager) create(ctx context.Context, svc modelService, use
 		_ = os.RemoveAll(jobDir)
 		return nil, err
 	}
-	runCtx, cancel := context.WithCancel(authctx.WithUserID(context.Background(), userID))
+	backgroundCtx := context.WithoutCancel(ctx)
+	runCtx, cancel := context.WithCancel(authctx.WithUserID(backgroundCtx, userID))
 	m.mu.Lock()
 	m.cancels[jobID] = cancel
 	m.mu.Unlock()
-	go m.run(runCtx, job, config)
+	log.Go(runCtx, func(workerCtx context.Context) {
+		m.run(workerCtx, job, config)
+	})
 	return job, nil
 }
 
@@ -516,18 +523,18 @@ func trainingJobResponse(job *modelpo.ModelTrainingJob, includeLog bool) *modeld
 	return result
 }
 
-func (m *modelTrainingManager) update(jobID string, values map[string]any) {
-	m.data.DB(context.Background()).Model(&modelpo.ModelTrainingJob{}).Where("ulid = ?", jobID).Updates(values)
+func (m *modelTrainingManager) update(ctx context.Context, jobID string, values map[string]any) {
+	m.data.DB(ctx).Model(&modelpo.ModelTrainingJob{}).Where("ulid = ?", jobID).Updates(values)
 }
 
 func (m *modelTrainingManager) run(ctx context.Context, job *modelpo.ModelTrainingJob, config modeldto.ModelTrainingConfig) {
 	defer func() { m.mu.Lock(); delete(m.cancels, job.Ulid); m.mu.Unlock() }()
-	m.update(job.Ulid, map[string]any{"status": "running", "stage": "preparing", "progress": 2, "started_at": time.Now().UnixMilli()})
+	m.update(ctx, job.Ulid, map[string]any{"status": "running", "stage": "preparing", "progress": 2, "started_at": time.Now().UnixMilli()})
 	fail := func(err error) {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return
 		}
-		m.update(job.Ulid, map[string]any{"status": "failed", "stage": "failed", "error_msg": err.Error(), "finished_at": time.Now().UnixMilli()})
+		m.update(ctx, job.Ulid, map[string]any{"status": "failed", "stage": "failed", "error_msg": err.Error(), "finished_at": time.Now().UnixMilli()})
 	}
 	python, err := m.ensureTrainingRuntime(ctx, job)
 	if err != nil {
@@ -546,16 +553,16 @@ func (m *modelTrainingManager) run(ctx context.Context, job *modelpo.ModelTraini
 		fail(err)
 		return
 	}
-	m.update(job.Ulid, map[string]any{"stage": "training", "progress": 45})
+	m.update(ctx, job.Ulid, map[string]any{"stage": "training", "progress": 45})
 	adapterPath := filepath.Join(jobDir, "adapter")
 	fusedPath := filepath.Join(jobDir, "fused-model")
 	logText, err := m.runTrainingCommand(ctx, python, job.Backend, baseModel, filepath.Join(jobDir, "data"), adapterPath, fusedPath, config)
-	m.update(job.Ulid, map[string]any{"log_text": truncateLog(logText)})
+	m.update(ctx, job.Ulid, map[string]any{"log_text": truncateLog(logText)})
 	if err != nil {
 		fail(fmt.Errorf("LoRA 训练失败: %w", err))
 		return
 	}
-	m.update(job.Ulid, map[string]any{"stage": "importing", "progress": 88})
+	m.update(ctx, job.Ulid, map[string]any{"stage": "importing", "progress": 88})
 	if err := importOllamaModel(ctx, job.OutputName, fusedPath, jobDir); err != nil {
 		fail(err)
 		return
@@ -565,7 +572,7 @@ func (m *modelTrainingManager) run(ctx context.Context, job *modelpo.ModelTraini
 		fail(err)
 		return
 	}
-	m.update(job.Ulid, map[string]any{"status": "completed", "stage": "complete", "progress": 100, "output_model_id": created.Ulid, "finished_at": time.Now().UnixMilli()})
+	m.update(ctx, job.Ulid, map[string]any{"status": "completed", "stage": "complete", "progress": 100, "output_model_id": created.Ulid, "finished_at": time.Now().UnixMilli()})
 }
 
 func (m *modelTrainingManager) ensureTrainingRuntime(ctx context.Context, job *modelpo.ModelTrainingJob) (string, error) {
@@ -576,7 +583,7 @@ func (m *modelTrainingManager) ensureTrainingRuntime(ctx context.Context, job *m
 	if trainingModuleReady(python, job.Backend) {
 		return python, nil
 	}
-	m.update(job.Ulid, map[string]any{"stage": "dependencies", "progress": 5})
+	m.update(ctx, job.Ulid, map[string]any{"stage": "dependencies", "progress": 5})
 	venv := filepath.Join(m.root, ".venv")
 	if !fileExists(m.venvPython()) {
 		if output, err := exec.CommandContext(ctx, python, "-m", "venv", venv).CombinedOutput(); err != nil {
@@ -597,7 +604,7 @@ func (m *modelTrainingManager) ensureTrainingRuntime(ctx context.Context, job *m
 }
 
 func (m *modelTrainingManager) distillDataset(ctx context.Context, job *modelpo.ModelTrainingJob, target string, maxSamples int) error {
-	m.update(job.Ulid, map[string]any{"stage": "distilling", "progress": 15})
+	m.update(ctx, job.Ulid, map[string]any{"stage": "distilling", "progress": 15})
 	source, err := os.Open(job.DatasetPath)
 	if err != nil {
 		return err
@@ -640,7 +647,7 @@ func (m *modelTrainingManager) distillDataset(ctx context.Context, job *modelpo.
 			return err
 		}
 		index++
-		m.update(job.Ulid, map[string]any{"progress": 15 + index*25/max(1, min(job.SampleCount, maxSamples))})
+		m.update(ctx, job.Ulid, map[string]any{"progress": 15 + index*25/max(1, min(job.SampleCount, maxSamples))})
 		if index >= maxSamples {
 			break
 		}

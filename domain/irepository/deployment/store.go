@@ -4,10 +4,12 @@ import (
 	"context"
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/deployment"
+	runtimeartifact "github.com/good-fish-man/athena-protocol/draft/runtimeartifact"
 )
 
 type Store interface {
-	ResolveApprovedArtifacts(context.Context, string, map[string]string, map[string]string) (entity.ArtifactApprovals, error)
+	ResolveApprovedArtifacts(context.Context, string, string, map[string]string, map[string]string) (entity.ArtifactApprovals, error)
+	LoadApprovedRuntimeArtifacts(context.Context, string, string, entity.AgentBuild) ([]runtimeartifact.SkillArtifact, []runtimeartifact.StrategyArtifact, error)
 	CreateBuild(context.Context, entity.AgentBuild) error
 	FindBuild(context.Context, string, string) (*entity.AgentBuild, error)
 	FindBuildByChecksum(context.Context, string, string, string) (*entity.AgentBuild, error)
@@ -23,6 +25,7 @@ type Store interface {
 	ActivatePromotion(context.Context, entity.Promotion, *entity.Promotion, int64) error
 
 	FindExposure(context.Context, string, string, string) (*entity.Exposure, error)
+	FindLatestExposurePreference(context.Context, string, string) (bool, bool, error)
 	CreateExposure(context.Context, entity.Exposure) error
 	SetExposurePreference(context.Context, string, string, bool, string) error
 	CreateShadowResult(context.Context, entity.ShadowResult) error

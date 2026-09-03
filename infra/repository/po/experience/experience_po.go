@@ -114,33 +114,40 @@ type EvaluationSuite struct {
 func (*EvaluationSuite) TableName() string { return "os_evaluation_suite" }
 
 type EvaluationRun struct {
-	RunID       string `gorm:"column:run_id;primaryKey;type:varchar(128)"`
-	OwnerID     string `gorm:"column:owner_id;type:varchar(128);not null;index:idx_os_eval_run_owner_created,priority:1"`
-	SuiteID     string `gorm:"column:suite_id;type:varchar(128);not null;index"`
-	Status      string `gorm:"column:status;type:varchar(24);not null;index"`
-	Seed        int64  `gorm:"column:seed;type:bigint;not null"`
-	CandidateID string `gorm:"column:candidate_id;type:varchar(128)"`
-	BaselineID  string `gorm:"column:baseline_id;type:varchar(128)"`
-	Metrics     string `gorm:"column:metrics;type:text;not null"`
-	StartedAt   int64  `gorm:"column:started_at;type:bigint;not null"`
-	FinishedAt  int64  `gorm:"column:finished_at;type:bigint"`
-	Error       string `gorm:"column:error;type:text"`
-	CreatedAt   int64  `gorm:"column:created_at;type:bigint;not null;index:idx_os_eval_run_owner_created,priority:2"`
-	UpdatedAt   int64  `gorm:"column:updated_at;type:bigint;not null"`
+	RunID           string `gorm:"column:run_id;primaryKey;type:varchar(128)"`
+	OwnerID         string `gorm:"column:owner_id;type:varchar(128);not null;index:idx_os_eval_run_owner_created,priority:1"`
+	SuiteID         string `gorm:"column:suite_id;type:varchar(128);not null;index"`
+	Status          string `gorm:"column:status;type:varchar(24);not null;index"`
+	Seed            int64  `gorm:"column:seed;type:bigint;not null"`
+	CandidateID     string `gorm:"column:candidate_id;type:varchar(128)"`
+	BaselineID      string `gorm:"column:baseline_id;type:varchar(128)"`
+	Metrics         string `gorm:"column:metrics;type:text;not null"`
+	BaselineMetrics string `gorm:"column:baseline_metrics;type:text;not null;default:'{}'"`
+	MetricDelta     string `gorm:"column:metric_delta;type:text;not null;default:'{}'"`
+	Regression      bool   `gorm:"column:regression;not null;default:false;index"`
+	RegressionCount int    `gorm:"column:regression_count;not null;default:0"`
+	StartedAt       int64  `gorm:"column:started_at;type:bigint;not null"`
+	FinishedAt      int64  `gorm:"column:finished_at;type:bigint"`
+	Error           string `gorm:"column:error;type:text"`
+	CreatedAt       int64  `gorm:"column:created_at;type:bigint;not null;index:idx_os_eval_run_owner_created,priority:2"`
+	UpdatedAt       int64  `gorm:"column:updated_at;type:bigint;not null"`
 }
 
 func (*EvaluationRun) TableName() string { return "os_evaluation_run" }
 
 type EvaluationResult struct {
-	ResultID    string `gorm:"column:result_id;primaryKey;type:varchar(128)"`
-	OwnerID     string `gorm:"column:owner_id;type:varchar(128);not null;index"`
-	RunID       string `gorm:"column:run_id;type:varchar(128);not null;index:idx_os_eval_result_run_fixture,priority:1"`
-	FixtureID   string `gorm:"column:fixture_id;type:varchar(128);not null;index:idx_os_eval_result_run_fixture,priority:2"`
-	Passed      bool   `gorm:"column:passed;not null;index"`
-	Metrics     string `gorm:"column:metrics;type:text;not null"`
-	Summary     string `gorm:"column:summary;type:text;not null"`
-	EvidenceIDs string `gorm:"column:evidence_ids;type:text;not null"`
-	CreatedAt   int64  `gorm:"column:created_at;type:bigint;not null"`
+	ResultID        string `gorm:"column:result_id;primaryKey;type:varchar(128)"`
+	OwnerID         string `gorm:"column:owner_id;type:varchar(128);not null;index"`
+	RunID           string `gorm:"column:run_id;type:varchar(128);not null;index:idx_os_eval_result_run_fixture,priority:1"`
+	FixtureID       string `gorm:"column:fixture_id;type:varchar(128);not null;index:idx_os_eval_result_run_fixture,priority:2"`
+	Passed          bool   `gorm:"column:passed;not null;index"`
+	Metrics         string `gorm:"column:metrics;type:text;not null"`
+	BaselineMetrics string `gorm:"column:baseline_metrics;type:text;not null;default:'{}'"`
+	MetricDelta     string `gorm:"column:metric_delta;type:text;not null;default:'{}'"`
+	Regression      bool   `gorm:"column:regression;not null;default:false;index"`
+	Summary         string `gorm:"column:summary;type:text;not null"`
+	EvidenceIDs     string `gorm:"column:evidence_ids;type:text;not null"`
+	CreatedAt       int64  `gorm:"column:created_at;type:bigint;not null"`
 }
 
 func (*EvaluationResult) TableName() string { return "os_evaluation_result" }

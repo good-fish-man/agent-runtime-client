@@ -27,9 +27,7 @@ var traceResponseHeaders = []string{
 }
 
 // Trace resolves a trace id from incoming HTTP trace headers (or generated),
-// binds it to the gin context, request context, response header, and the
-// current goroutine's logger, then clears the binding when the request
-// completes.
+// binds it to the gin context, request context, and response headers.
 func Trace() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := incomingTraceID(c)
@@ -41,9 +39,6 @@ func Trace() gin.HandlerFunc {
 			c.Writer.Header().Set(header, id)
 		}
 		c.Request = c.Request.WithContext(log.WithReqID(c.Request.Context(), id))
-
-		log.SetReqId(id)
-		defer log.ClearReqId()
 
 		c.Next()
 	}

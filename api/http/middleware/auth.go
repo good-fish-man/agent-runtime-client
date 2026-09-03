@@ -46,9 +46,13 @@ func Auth(store *data.Data) gin.HandlerFunc {
 			return
 		}
 		c.Set(consts.CtxKeyUserID, session.UserID)
+		organizationID := strings.TrimSpace(user.DepId)
+		c.Set(consts.CtxKeyOrganizationID, organizationID)
 		c.Set(consts.CtxKeyAdminLevel, user.AdminLevel)
 		c.Set(consts.CtxKeyTokenHash, hash)
-		c.Request = c.Request.WithContext(authctx.WithUserID(c.Request.Context(), session.UserID))
+		ctx := authctx.WithUserID(c.Request.Context(), session.UserID)
+		ctx = authctx.WithOrganizationID(ctx, organizationID)
+		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
 }

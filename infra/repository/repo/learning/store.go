@@ -45,14 +45,26 @@ func (s *Store) CapabilityPolicies(ctx context.Context, capabilityIDs []string) 
 		return nil, log.WrapError(err, "LearningStore.CapabilityPolicies")
 	}
 	for _, value := range values {
-		result[value.CapabilityID] = entity.CapabilityPolicy{Risk: normalizeRisk(value.Risk), Enabled: value.Enabled}
+		operations := make([]string, 0)
+		if strings.TrimSpace(value.Operations) != "" {
+			if err := json.Unmarshal([]byte(value.Operations), &operations); err != nil {
+				return nil, log.WrapError(err, "LearningStore.CapabilityPolicies.operations")
+			}
+		}
+		risk := normalizeRisk(value.Risk)
+		minimum := minimumCapabilityRisk(value.CapabilityID, operations)
+		if riskRank(minimum) > riskRank(risk) {
+			risk = minimum
+		}
+		result[value.CapabilityID] = entity.CapabilityPolicy{Risk: risk, Enabled: value.Enabled, Operations: uniqueStrings(operations)}
 	}
 	return result, nil
 }
 
-func (s *Store) ApprovedSkills(ctx context.Context, ownerID string) (map[string]bool, error) {
+func (s *Store) ApprovedSkills(ctx context.Context, ownerID, organizationID string) (map[string]bool, error) {
 	values := make([]po.Skill, 0)
-	if err := s.data.DB(ctx).Where("status = ? AND deleted_at = 0 AND (owner_id = ? OR visibility = ?)", entity.LifecycleApproved, ownerID, entity.VisibilityPublic).Find(&values).Error; err != nil {
+	db := s.data.DB(ctx).Where("status = ? AND deleted_at = 0", entity.LifecycleApproved)
+	if err := applyArtifactScope(db, ownerID, organizationID).Find(&values).Error; err != nil {
 		return nil, log.WrapError(err, "LearningStore.ApprovedSkills")
 	}
 	result := make(map[string]bool, len(values))
@@ -193,9 +205,12 @@ func (s *Store) SaveCandidateEvaluation(ctx context.Context, candidate entity.Ca
 	}), "LearningStore.SaveCandidateEvaluation")
 }
 
-func (s *Store) ReviewCandidate(ctx context.Context, ownerID, candidateID, decision, note, reviewerID string, expectedRevision int64) (*entity.Candidate, error) {
+func (s *Store) ReviewCandidate(ctx context.Context, ownerID, candidateID, decision, note, reviewerID, organizationID string, expectedRevision int64) (*entity.Candidate, error) {
 	if strings.TrimSpace(reviewerID) == "" {
 		return nil, fmt.Errorf("reviewer identity is required")
+	}
+	if strings.TrimSpace(note) == "" {
+		return nil, fmt.Errorf("review note is required")
 	}
 	var reviewed *entity.Candidate
 	err := s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
@@ -219,8 +234,14 @@ func (s *Store) ReviewCandidate(ctx context.Context, ownerID, candidateID, decis
 		}
 		switch decision {
 		case "APPROVE":
-			if !candidate.Evaluation.Passed {
-				return fmt.Errorf("candidate evaluation did not meet the approval gate")
+			minimumSample := entity.MinimumCandidateSamples
+			minimumScore := entity.MinimumStrategyScore
+			if candidate.Skill != nil {
+				minimumSample = candidate.Skill.EvaluationSuite.MinimumSample
+				minimumScore = candidate.Skill.EvaluationSuite.MinimumScore
+			}
+			if err := candidate.Evaluation.Validate(minimumSample, minimumScore, true); err != nil {
+				return fmt.Errorf("candidate evaluation did not meet the approval gate: %w", err)
 			}
 			candidate.Status = entity.LifecycleApproved
 			if candidate.Skill != nil {
@@ -257,7 +278,7 @@ func (s *Store) ReviewCandidate(ctx context.Context, ownerID, candidateID, decis
 			return err
 		}
 		if decision == "APPROVE" {
-			if err := materialize(tx, *candidate, reviewerID); err != nil {
+			if err := materialize(tx, *candidate, reviewerID, organizationID); err != nil {
 				return err
 			}
 		}
@@ -270,9 +291,16 @@ func (s *Store) ReviewCandidate(ctx context.Context, ownerID, candidateID, decis
 	return reviewed, nil
 }
 
-func materialize(tx *gorm.DB, candidate entity.Candidate, reviewerID string) error {
+func materialize(tx *gorm.DB, candidate entity.Candidate, reviewerID, organizationID string) error {
 	now := candidate.UpdatedAt
 	if candidate.Skill != nil {
+		organizationID, err := materializedOrganizationScope(candidate.Skill.Visibility, organizationID)
+		if err != nil {
+			return err
+		}
+		if err := rejectArtifactOwnerCollision(tx, "skill", candidate.Skill.ID, candidate.OwnerID); err != nil {
+			return err
+		}
 		definition := encodeJSON(candidate.Skill)
 		version := po.SkillVersion{
 			VersionID: ulid.New(), SkillID: candidate.Skill.ID, Version: candidate.Skill.Version,
@@ -284,18 +312,27 @@ func materialize(tx *gorm.DB, candidate entity.Candidate, reviewerID string) err
 		}
 		value := po.Skill{
 			SkillID: candidate.Skill.ID, OwnerID: candidate.OwnerID, LatestVersion: candidate.Skill.Version,
-			Status: entity.LifecycleApproved, Visibility: candidate.Skill.Visibility, Revision: 1,
+			OrganizationID: organizationID,
+			Status:         entity.LifecycleApproved, Visibility: candidate.Skill.Visibility, Revision: 1,
 			TraceID: candidate.TraceID, CreatedAt: millis(now), UpdatedAt: millis(now),
 		}
 		return tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "skill_id"}},
 			DoUpdates: clause.Assignments(map[string]any{
 				"latest_version": value.LatestVersion, "status": value.Status, "visibility": value.Visibility,
-				"revision": gorm.Expr("revision + 1"), "trace_id": value.TraceID, "updated_at": value.UpdatedAt,
+				"organization_id": value.OrganizationID,
+				"revision":        gorm.Expr("os_skill.revision + 1"), "trace_id": value.TraceID, "updated_at": value.UpdatedAt,
 			}),
 		}).Create(&value).Error
 	}
 	if candidate.Strategy != nil {
+		organizationID, err := materializedOrganizationScope(candidate.Strategy.Visibility, organizationID)
+		if err != nil {
+			return err
+		}
+		if err := rejectArtifactOwnerCollision(tx, "strategy", candidate.Strategy.ID, candidate.OwnerID); err != nil {
+			return err
+		}
 		definition := encodeJSON(candidate.Strategy)
 		version := po.StrategyVersion{
 			VersionID: ulid.New(), StrategyID: candidate.Strategy.ID, Version: candidate.Strategy.Version,
@@ -307,14 +344,16 @@ func materialize(tx *gorm.DB, candidate entity.Candidate, reviewerID string) err
 		}
 		value := po.Strategy{
 			StrategyID: candidate.Strategy.ID, OwnerID: candidate.OwnerID, LatestVersion: candidate.Strategy.Version,
-			Status: entity.LifecycleApproved, Visibility: candidate.Strategy.Visibility, Revision: 1,
+			OrganizationID: organizationID,
+			Status:         entity.LifecycleApproved, Visibility: candidate.Strategy.Visibility, Revision: 1,
 			TraceID: candidate.TraceID, CreatedAt: millis(now), UpdatedAt: millis(now),
 		}
 		return tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "strategy_id"}},
 			DoUpdates: clause.Assignments(map[string]any{
 				"latest_version": value.LatestVersion, "status": value.Status, "visibility": value.Visibility,
-				"revision": gorm.Expr("revision + 1"), "trace_id": value.TraceID, "updated_at": value.UpdatedAt,
+				"organization_id": value.OrganizationID,
+				"revision":        gorm.Expr("os_strategy.revision + 1"), "trace_id": value.TraceID, "updated_at": value.UpdatedAt,
 			}),
 		}).Create(&value).Error
 	}
@@ -356,9 +395,10 @@ func (s *Store) ListEvaluations(ctx context.Context, ownerID, candidateID string
 	return items, nil
 }
 
-func (s *Store) ListSkills(ctx context.Context, ownerID string, limit int) ([]entity.Skill, error) {
+func (s *Store) ListSkills(ctx context.Context, ownerID, organizationID string, limit int) ([]entity.Skill, error) {
 	values := make([]po.Skill, 0)
-	if err := s.data.DB(ctx).Where("deleted_at = 0 AND (owner_id = ? OR visibility = ?)", ownerID, entity.VisibilityPublic).Order("created_at DESC").Limit(normalizeLimit(limit)).Find(&values).Error; err != nil {
+	db := s.data.DB(ctx).Where("deleted_at = 0")
+	if err := applyArtifactScope(db, ownerID, organizationID).Order("created_at DESC").Limit(normalizeLimit(limit)).Find(&values).Error; err != nil {
 		return nil, log.WrapError(err, "LearningStore.ListSkills")
 	}
 	items := make([]entity.Skill, 0, len(values))
@@ -373,16 +413,18 @@ func (s *Store) ListSkills(ctx context.Context, ownerID string, limit int) ([]en
 		}
 		items = append(items, entity.Skill{
 			SkillID: value.SkillID, OwnerID: value.OwnerID, LatestVersion: value.LatestVersion,
-			Status: value.Status, Visibility: value.Visibility, Definition: definition, Revision: value.Revision,
+			OrganizationID: value.OrganizationID,
+			Status:         value.Status, Visibility: value.Visibility, Definition: definition, Revision: value.Revision,
 			TraceID: value.TraceID, CreatedAt: fromMillis(value.CreatedAt), UpdatedAt: fromMillis(value.UpdatedAt),
 		})
 	}
 	return items, nil
 }
 
-func (s *Store) ListStrategies(ctx context.Context, ownerID string, limit int) ([]entity.Strategy, error) {
+func (s *Store) ListStrategies(ctx context.Context, ownerID, organizationID string, limit int) ([]entity.Strategy, error) {
 	values := make([]po.Strategy, 0)
-	if err := s.data.DB(ctx).Where("deleted_at = 0 AND (owner_id = ? OR visibility = ?)", ownerID, entity.VisibilityPublic).Order("created_at DESC").Limit(normalizeLimit(limit)).Find(&values).Error; err != nil {
+	db := s.data.DB(ctx).Where("deleted_at = 0")
+	if err := applyArtifactScope(db, ownerID, organizationID).Order("created_at DESC").Limit(normalizeLimit(limit)).Find(&values).Error; err != nil {
 		return nil, log.WrapError(err, "LearningStore.ListStrategies")
 	}
 	items := make([]entity.Strategy, 0, len(values))
@@ -397,7 +439,8 @@ func (s *Store) ListStrategies(ctx context.Context, ownerID string, limit int) (
 		}
 		items = append(items, entity.Strategy{
 			StrategyID: value.StrategyID, OwnerID: value.OwnerID, LatestVersion: value.LatestVersion,
-			Status: value.Status, Visibility: value.Visibility, Definition: definition, Revision: value.Revision,
+			OrganizationID: value.OrganizationID,
+			Status:         value.Status, Visibility: value.Visibility, Definition: definition, Revision: value.Revision,
 			TraceID: value.TraceID, CreatedAt: fromMillis(value.CreatedAt), UpdatedAt: fromMillis(value.UpdatedAt),
 		})
 	}
@@ -409,7 +452,8 @@ func (s *Store) CreateDemonstration(ctx context.Context, demonstration entity.De
 		DemonstrationID: demonstration.DemonstrationID, OwnerID: demonstration.OwnerID, TaskID: demonstration.TaskID,
 		Status: demonstration.Status, Title: demonstration.Title, Content: encodeJSON(demonstration.Steps),
 		PauseCount: demonstration.PauseCount, ConfirmedBy: demonstration.ConfirmedBy, Revision: demonstration.Revision,
-		TraceID: demonstration.TraceID, CreatedAt: millis(demonstration.CreatedAt), UpdatedAt: millis(demonstration.UpdatedAt),
+		ConfirmedAt: millis(demonstration.ConfirmedAt),
+		TraceID:     demonstration.TraceID, CreatedAt: millis(demonstration.CreatedAt), UpdatedAt: millis(demonstration.UpdatedAt),
 	}
 	return log.WrapError(s.data.DB(ctx).Create(&value).Error, "LearningStore.CreateDemonstration")
 }
@@ -448,7 +492,8 @@ func (s *Store) SaveDemonstration(ctx context.Context, demonstration entity.Demo
 		Updates(map[string]any{
 			"status": demonstration.Status, "title": demonstration.Title, "content": encodeJSON(demonstration.Steps),
 			"pause_count": demonstration.PauseCount, "confirmed_by": demonstration.ConfirmedBy,
-			"revision": demonstration.Revision, "trace_id": demonstration.TraceID, "updated_at": millis(demonstration.UpdatedAt),
+			"confirmed_at": millis(demonstration.ConfirmedAt),
+			"revision":     demonstration.Revision, "trace_id": demonstration.TraceID, "updated_at": millis(demonstration.UpdatedAt),
 		})
 	if result.Error != nil {
 		return log.WrapError(result.Error, "LearningStore.SaveDemonstration")
@@ -521,7 +566,7 @@ func decodeDemonstration(value po.Demonstration) (*entity.Demonstration, error) 
 	return &entity.Demonstration{
 		Schema: entity.Schema, DemonstrationID: value.DemonstrationID, OwnerID: value.OwnerID,
 		TaskID: value.TaskID, Status: value.Status, Title: value.Title, Steps: steps,
-		PauseCount: value.PauseCount, ConfirmedBy: value.ConfirmedBy, Revision: value.Revision,
+		PauseCount: value.PauseCount, ConfirmedBy: value.ConfirmedBy, ConfirmedAt: fromMillis(value.ConfirmedAt), Revision: value.Revision,
 		TraceID: value.TraceID, CreatedAt: fromMillis(value.CreatedAt), UpdatedAt: fromMillis(value.UpdatedAt),
 	}, nil
 }
@@ -534,6 +579,55 @@ func candidateDefinition(candidate entity.Candidate) (string, error) {
 		return encodeJSON(candidate.Strategy), nil
 	}
 	return "", fmt.Errorf("candidate definition does not match kind %q", candidate.Kind)
+}
+
+func applyArtifactScope(db *gorm.DB, ownerID, organizationID string) *gorm.DB {
+	organizationID = strings.TrimSpace(organizationID)
+	if organizationID == "" {
+		return db.Where("(owner_id = ? OR visibility = ?)", ownerID, entity.VisibilityPublic)
+	}
+	return db.Where(
+		"(owner_id = ? OR visibility = ? OR (visibility = ? AND organization_id = ?))",
+		ownerID, entity.VisibilityPublic, entity.VisibilityTeam, organizationID,
+	)
+}
+
+func materializedOrganizationScope(visibility, organizationID string) (string, error) {
+	organizationID = strings.TrimSpace(organizationID)
+	if visibility == entity.VisibilityTeam {
+		if organizationID == "" {
+			return "", fmt.Errorf("TEAM learning artifact requires an authenticated organization")
+		}
+		return organizationID, nil
+	}
+	return "", nil
+}
+
+func rejectArtifactOwnerCollision(tx *gorm.DB, kind, artifactID, ownerID string) error {
+	var existingOwner string
+	var err error
+	switch kind {
+	case "skill":
+		var value po.Skill
+		err = tx.Select("owner_id").Where("skill_id = ?", artifactID).Take(&value).Error
+		existingOwner = value.OwnerID
+	case "strategy":
+		var value po.Strategy
+		err = tx.Select("owner_id").Where("strategy_id = ?", artifactID).Take(&value).Error
+		existingOwner = value.OwnerID
+	default:
+		return fmt.Errorf("unsupported learning artifact kind %q", kind)
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if existingOwner != ownerID {
+		return fmt.Errorf("%s id %q is already owned by another user", kind, artifactID)
+	}
+	return nil
 }
 
 func normalizeRisk(value string) string {
@@ -549,6 +643,51 @@ func normalizeRisk(value string) string {
 	default:
 		return ""
 	}
+}
+
+func riskRank(value string) int {
+	switch value {
+	case entity.RiskLow:
+		return 0
+	case entity.RiskMedium:
+		return 1
+	case entity.RiskHigh:
+		return 2
+	case entity.RiskCritical:
+		return 3
+	default:
+		return -1
+	}
+}
+
+func minimumCapabilityRisk(capability string, operations []string) string {
+	values := append([]string{capability}, operations...)
+	risk := entity.RiskLow
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		switch {
+		case containsAny(value, "credential", "password", "secret", "token", "cookie", "auth", "terminal", "shell", "python", "javascript", "code.execute"):
+			return entity.RiskCritical
+		case containsAny(value, "purchase", "payment", "checkout", "book", "reserve", "send", "submit", "post", "publish", "upload", "delete", "remove", "install", "uninstall", "write"):
+			if riskRank(entity.RiskHigh) > riskRank(risk) {
+				risk = entity.RiskHigh
+			}
+		case containsAny(value, "click", "type", "press", "download", "close", "activate", "open_application", "app.open"):
+			if riskRank(entity.RiskMedium) > riskRank(risk) {
+				risk = entity.RiskMedium
+			}
+		}
+	}
+	return risk
+}
+
+func containsAny(value string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(value, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func encodeJSON(value any) string {

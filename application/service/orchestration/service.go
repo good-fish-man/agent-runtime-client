@@ -8,21 +8,47 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/orchestration"
 	repository "github.com/good-fish-man/agent-runtime-client/domain/irepository/orchestration"
 	"github.com/good-fish-man/agent-runtime-client/pkg/ulid"
 	"github.com/good-fish-man/agent-runtime-client/types/apierror"
-	orchestrationv1 "github.com/good-fish-man/athena-protocol/protocol/orchestration/v1"
+	orchestrationv2 "github.com/good-fish-man/athena-protocol/protocol/orchestration/v2"
 	log "github.com/good-fish-man/logx"
 )
 
 var defaultBudget = entity.GoalBudget{MaxConcurrentSpecialists: 3, MaxDepth: 3, MaxTokens: 120000, MaxDurationMS: int64((30 * time.Minute) / time.Millisecond), MaxSearchQueries: 20, MaxPages: 40, MaxActions: 30}
 
-type Service struct{ store repository.Store }
+const defaultDeviceRetryDelay = 15 * time.Second
+
+type Service struct {
+	store repository.Store
+
+	cancelMu   sync.RWMutex
+	cancelGoal func(string)
+}
 
 func NewService(store repository.Store) *Service { return &Service{store: store} }
+
+func (s *Service) SetGoalCanceller(cancel func(string)) {
+	if s == nil {
+		return
+	}
+	s.cancelMu.Lock()
+	s.cancelGoal = cancel
+	s.cancelMu.Unlock()
+}
+
+func (s *Service) cancelGoalRuns(goalID string) {
+	s.cancelMu.RLock()
+	cancel := s.cancelGoal
+	s.cancelMu.RUnlock()
+	if cancel != nil {
+		cancel(goalID)
+	}
+}
 
 type CreateGoalRequest struct {
 	AgentID         string                    `json:"agent_id"`
@@ -45,6 +71,8 @@ type PlanTaskRequest struct {
 	DependsOn            []string          `json:"depends_on"`
 	RequiredCapabilities []string          `json:"required_capabilities"`
 	WorldSliceRefs       []string          `json:"world_slice_refs"`
+	RequiresDevice       *bool             `json:"requires_device,omitempty"`
+	PreferredDeviceID    string            `json:"preferred_device_id"`
 	Budget               entity.TaskBudget `json:"budget"`
 }
 
@@ -63,7 +91,7 @@ type CreateScheduledGoalRequest struct {
 	ScheduleID        string                      `json:"schedule_id"`
 	Slot              string                      `json:"slot"`
 	ScheduledAt       time.Time                   `json:"scheduled_at"`
-	Retry             orchestrationv1.RetryPolicy `json:"retry"`
+	Retry             orchestrationv2.RetryPolicy `json:"retry"`
 	Notify            bool                        `json:"notify"`
 	RequireApproval   bool                        `json:"require_approval"`
 	PendingApprovalID string                      `json:"pending_approval_id,omitempty"`
@@ -79,6 +107,7 @@ type ScheduledGoalState struct {
 type StartTaskRequest struct {
 	ExpectedRevision int64                    `json:"expected_revision"`
 	Devices          []entity.DeviceCandidate `json:"devices"`
+	SelectedDeviceID string                   `json:"selected_device_id,omitempty"`
 }
 
 type RecordResultRequest struct {
@@ -94,6 +123,7 @@ type CheckpointRequest struct {
 	ExpectedRevision    int64                     `json:"expected_revision"`
 	Reason              string                    `json:"reason"`
 	ConfirmedEffectKeys []string                  `json:"confirmed_effect_keys"`
+	ObservationRefs     []string                  `json:"observation_refs"`
 	PendingApprovalIDs  []string                  `json:"pending_approval_ids"`
 	WorldSlicesByDevice map[string]map[string]any `json:"world_slices_by_device"`
 }
@@ -127,11 +157,11 @@ func (s *Service) CreateGoal(ctx context.Context, ownerID string, request Create
 			criteria[index].CriterionID = ulid.New()
 		}
 	}
-	goal := entity.PersistentGoal{Schema: entity.Schema, GoalID: ulid.New(), OwnerID: ownerID, AgentID: strings.TrimSpace(request.AgentID), ConversationID: strings.TrimSpace(request.ConversationID), Objective: strings.TrimSpace(request.Objective), Constraints: compact(request.Constraints), SuccessCriteria: criteria, Budget: budget, Deadline: request.Deadline, ApprovalPolicy: request.ApprovalPolicy, Trigger: normalizedGoalTrigger(request.Trigger), Status: orchestrationv1.GoalDraft, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	goal := entity.PersistentGoal{Schema: entity.Schema, GoalID: ulid.New(), OwnerID: ownerID, AgentID: strings.TrimSpace(request.AgentID), ConversationID: strings.TrimSpace(request.ConversationID), Objective: strings.TrimSpace(request.Objective), Constraints: compact(request.Constraints), SuccessCriteria: criteria, Budget: budget, Deadline: request.Deadline, ApprovalPolicy: request.ApprovalPolicy, Trigger: normalizedGoalTrigger(request.Trigger), Status: orchestrationv2.GoalDraft, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	if err := goal.Validate(); err != nil {
 		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
 	}
-	checkpoint, err := newCheckpoint(goal, nil, nil, "goal created", nil, nil, 1)
+	checkpoint, err := newCheckpoint(goal, nil, nil, "goal created", nil, nil, nil, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +181,7 @@ func (s *Service) CreatePlannedGoal(ctx context.Context, ownerID string, request
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("orchestration service is not configured")
 	}
-	goal, tasks, checkpoint, err := preparePlannedGoal(ownerID, request, orchestrationv1.GoalPlanned, "goal and finite task graph created")
+	goal, tasks, checkpoint, err := preparePlannedGoal(ownerID, request, orchestrationv2.GoalPlanned, "goal and finite task graph created")
 	if err != nil {
 		return nil, err
 	}
@@ -181,10 +211,10 @@ func (s *Service) CreateScheduledGoal(ctx context.Context, ownerID string, reque
 	if retry.MaxAttempts < 1 {
 		retry.MaxAttempts = 1
 	}
-	request.Trigger = entity.GoalTrigger{Type: orchestrationv1.TriggerSchedule, TriggerID: triggerID, ScheduleID: request.ScheduleID, ScheduledAt: request.ScheduledAt.UTC(), MaxAttempts: retry.MaxAttempts, RetryBackoffMS: retry.BackoffMS}
-	initialStatus := orchestrationv1.GoalPlanned
+	request.Trigger = entity.GoalTrigger{Type: orchestrationv2.TriggerSchedule, TriggerID: triggerID, ScheduleID: request.ScheduleID, ScheduledAt: request.ScheduledAt.UTC(), MaxAttempts: retry.MaxAttempts, RetryBackoffMS: retry.BackoffMS}
+	initialStatus := orchestrationv2.GoalPlanned
 	if request.RequireApproval {
-		initialStatus = orchestrationv1.GoalWaitingUser
+		initialStatus = orchestrationv2.GoalWaitingUser
 	}
 	goal, tasks, checkpoint, err := preparePlannedGoal(ownerID, CreatePlannedGoalRequest{CreateGoalRequest: request.CreateGoalRequest, Tasks: []PlanTaskRequest{request.Task}}, initialStatus, "scheduled trigger created a standard durable task")
 	if err != nil {
@@ -197,7 +227,7 @@ func (s *Service) CreateScheduledGoal(ctx context.Context, ownerID string, reque
 		if strings.TrimSpace(request.PendingApprovalID) == "" {
 			return nil, apierror.ErrBadRequest.WithMessage("pending_approval_id is required for a pre-execution approval")
 		}
-		tasks[0].Status = orchestrationv1.TaskWaitingUser
+		tasks[0].Status = orchestrationv2.TaskWaitingUser
 		checkpoint.TaskStates = append([]entity.SpecialistTask(nil), tasks...)
 		checkpoint.PendingApprovalIDs = []string{strings.TrimSpace(request.PendingApprovalID)}
 		checkpoint.Checksum, err = checkpointChecksum(checkpoint)
@@ -206,13 +236,13 @@ func (s *Service) CreateScheduledGoal(ctx context.Context, ownerID string, reque
 		}
 	}
 	now := time.Now().UTC()
-	notifyStatus := orchestrationv1.NotificationDisabled
+	notifyStatus := orchestrationv2.NotificationDisabled
 	if request.Notify {
-		notifyStatus = orchestrationv1.NotificationPending
+		notifyStatus = orchestrationv2.NotificationPending
 	}
-	trigger := entity.ScheduleTrigger{Schema: entity.Schema, TriggerID: triggerID, ScheduleID: request.ScheduleID, OwnerID: ownerID, GoalID: goal.GoalID, TaskID: tasks[0].TaskID, IdempotencyKey: key, ScheduledAt: request.ScheduledAt.UTC(), MaxAttempts: retry.MaxAttempts, RetryBackoffMS: retry.BackoffMS, Status: orchestrationv1.ScheduleTriggerQueued, Notify: request.Notify, NotificationStatus: notifyStatus, CreatedAt: now, UpdatedAt: now}
+	trigger := entity.ScheduleTrigger{Schema: entity.Schema, TriggerID: triggerID, ScheduleID: request.ScheduleID, OwnerID: ownerID, GoalID: goal.GoalID, TaskID: tasks[0].TaskID, IdempotencyKey: key, ScheduledAt: request.ScheduledAt.UTC(), MaxAttempts: retry.MaxAttempts, RetryBackoffMS: retry.BackoffMS, Status: orchestrationv2.ScheduleTriggerQueued, Notify: request.Notify, NotificationStatus: notifyStatus, CreatedAt: now, UpdatedAt: now}
 	if request.RequireApproval {
-		trigger.Status = orchestrationv1.ScheduleTriggerWaitingUser
+		trigger.Status = orchestrationv2.ScheduleTriggerWaitingUser
 	}
 	if err := trigger.Validate(); err != nil {
 		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
@@ -276,25 +306,17 @@ func (s *Service) PlanGoal(ctx context.Context, ownerID, goalID string, request 
 		request.ExpectedRevision = goal.Revision
 	}
 	now := time.Now().UTC()
-	tasks := make([]entity.SpecialistTask, 0, len(request.Tasks))
-	for _, item := range request.Tasks {
-		id := strings.TrimSpace(item.TaskID)
-		if id == "" {
-			id = ulid.New()
-		}
-		status := orchestrationv1.TaskPending
-		if len(item.DependsOn) == 0 {
-			status = orchestrationv1.TaskReady
-		}
-		tasks = append(tasks, entity.SpecialistTask{TaskID: id, GoalID: goal.GoalID, ParentTaskID: strings.TrimSpace(item.ParentTaskID), Depth: item.Depth, Specialist: item.Specialist, Objective: strings.TrimSpace(item.Objective), DependsOn: unique(item.DependsOn), RequiredCapabilities: unique(item.RequiredCapabilities), WorldSliceRefs: unique(item.WorldSliceRefs), IdempotencyScope: goal.GoalID + ":" + id, Budget: normalizedTaskBudget(item.Budget, goal.Budget, len(request.Tasks)), Status: status, CreatedAt: now, UpdatedAt: now})
+	tasks, err := buildTasks(goal.GoalID, goal.Budget, request.Tasks, now)
+	if err != nil {
+		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
 	}
 	graph := entity.TaskGraph{Schema: entity.Schema, GoalID: goal.GoalID, PlanRevision: goal.Revision + 1, Nodes: tasks, CreatedAt: now}
 	if err := graph.Validate(goal.Budget); err != nil {
 		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
 	}
 	expected := request.ExpectedRevision
-	goal.Status, goal.Revision, goal.UpdatedAt = orchestrationv1.GoalPlanned, expected+1, now
-	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, "finite task graph planned", nil, nil, nil)
+	goal.Status, goal.Revision, goal.UpdatedAt = orchestrationv2.GoalPlanned, expected+1, now
+	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, "finite task graph planned", nil, nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +344,7 @@ func (s *Service) StartTask(ctx context.Context, ownerID, goalID, taskID string,
 	if request.ExpectedRevision == 0 {
 		request.ExpectedRevision = goal.Revision
 	}
-	if tasks[index].Status != orchestrationv1.TaskReady && tasks[index].Status != orchestrationv1.TaskWaitingDevice {
+	if tasks[index].Status != orchestrationv2.TaskReady && tasks[index].Status != orchestrationv2.TaskWaitingDevice {
 		return nil, nil, apierror.ErrBadRequest.WithMessage("task is not ready")
 	}
 	if !tasks[index].NextAttemptAt.IsZero() && time.Now().UTC().Before(tasks[index].NextAttemptAt) {
@@ -336,8 +358,8 @@ func (s *Service) StartTask(ctx context.Context, ownerID, goalID, taskID string,
 	}
 	if budgetExhausted(*goal) {
 		expected := request.ExpectedRevision
-		goal.Status, goal.Revision, goal.UpdatedAt = orchestrationv1.GoalWaitingUser, expected+1, time.Now().UTC()
-		checkpoint, checkpointErr := s.nextCheckpoint(ctx, *goal, tasks, "goal budget or deadline exhausted before specialist dispatch", previous.ConfirmedEffectKeys, previous.PendingApprovalIDs, previous.WorldSlicesByDevice)
+		goal.Status, goal.Revision, goal.UpdatedAt = orchestrationv2.GoalWaitingUser, expected+1, time.Now().UTC()
+		checkpoint, checkpointErr := s.nextCheckpoint(ctx, *goal, tasks, "goal budget or deadline exhausted before specialist dispatch", previous.ConfirmedEffectKeys, previous.ObservationRefs, previous.PendingApprovalIDs, previous.WorldSlicesByDevice)
 		if checkpointErr != nil {
 			return nil, nil, checkpointErr
 		}
@@ -348,20 +370,40 @@ func (s *Service) StartTask(ctx context.Context, ownerID, goalID, taskID string,
 		}
 		return nil, nil, apierror.ErrBadRequest.WithMessage("goal budget or deadline is exhausted")
 	}
-	decision := orchestrationv1.Route(tasks[index], request.Devices)
+	if tasks[index].Usage.ExhaustedTask(tasks[index].Budget) {
+		expected := request.ExpectedRevision
+		tasks[index].Status, tasks[index].UpdatedAt = orchestrationv2.TaskWaitingUser, time.Now().UTC()
+		goal.Status, goal.Revision, goal.UpdatedAt = orchestrationv2.GoalWaitingUser, expected+1, time.Now().UTC()
+		checkpoint, checkpointErr := s.nextCheckpoint(ctx, *goal, tasks, "specialist budget exhausted before retry", previous.ConfirmedEffectKeys, previous.ObservationRefs, previous.PendingApprovalIDs, previous.WorldSlicesByDevice)
+		if checkpointErr != nil {
+			return nil, nil, checkpointErr
+		}
+		goal.LatestCheckpointID, checkpoint.GoalRevision = checkpoint.CheckpointID, goal.Revision
+		checkpoint.Checksum, _ = checkpointChecksum(checkpoint)
+		if persistErr := s.store.SaveState(ctx, *goal, tasks, nil, checkpoint, expected); persistErr != nil {
+			return nil, nil, log.WrapError(persistErr, "OrchestrationService.StartTask.persistTaskBudgetStop")
+		}
+		return nil, nil, apierror.ErrBadRequest.WithMessage("specialist budget is exhausted")
+	}
+	routeTask := tasks[index]
+	if selected := strings.TrimSpace(request.SelectedDeviceID); selected != "" {
+		routeTask.PreferredDeviceID = selected
+	}
+	decision := orchestrationv2.Route(routeTask, request.Devices)
 	now, expected := time.Now().UTC(), request.ExpectedRevision
 	tasks[index].Status, tasks[index].DeviceID, tasks[index].UpdatedAt = decision.Status, decision.DeviceID, now
-	if decision.Status == orchestrationv1.TaskRunning {
+	if decision.Status == orchestrationv2.TaskRunning {
 		tasks[index].Attempt++
 		tasks[index].ExecutionID = ulid.New()
 		tasks[index].StartedAt, tasks[index].CompletedAt, tasks[index].NextAttemptAt = now, time.Time{}, time.Time{}
-		goal.Status = orchestrationv1.GoalRunning
+		goal.Status = orchestrationv2.GoalRunning
 	} else {
-		goal.Status = orchestrationv1.GoalWaitingUser
+		tasks[index].NextAttemptAt = now.Add(defaultDeviceRetryDelay)
+		goal.Status = orchestrationv2.GoalWaitingDevice
 	}
 	goal.ActiveTaskIDs = runningTaskIDs(tasks)
 	goal.Revision, goal.UpdatedAt = expected+1, now
-	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, decision.Reason, previous.ConfirmedEffectKeys, previous.PendingApprovalIDs, previous.WorldSlicesByDevice)
+	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, decision.Reason, previous.ConfirmedEffectKeys, previous.ObservationRefs, previous.PendingApprovalIDs, previous.WorldSlicesByDevice)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -387,7 +429,7 @@ func (s *Service) RecordResult(ctx context.Context, ownerID, goalID, taskID stri
 	if index < 0 {
 		return nil, apierror.ErrNotFound.WithMessage("goal task not found")
 	}
-	if tasks[index].Status != orchestrationv1.TaskRunning {
+	if tasks[index].Status != orchestrationv2.TaskRunning {
 		return nil, apierror.ErrBadRequest.WithMessage("specialist task is not running")
 	}
 	if request.ExpectedRevision == 0 {
@@ -399,7 +441,7 @@ func (s *Service) RecordResult(ctx context.Context, ownerID, goalID, taskID stri
 		return nil, apierror.ErrBadRequest.WithMessage("specialist result execution_id does not match the running task")
 	}
 	result.ExecutionID = tasks[index].ExecutionID
-	result.ConfirmedEffectKeys = unique(request.ConfirmedEffectKeys)
+	result.ConfirmedEffectKeys = union(result.ConfirmedEffectKeys, request.ConfirmedEffectKeys)
 	result.Provenance.DeviceID = tasks[index].DeviceID
 	if result.RunID == "" {
 		result.RunID = ulid.New()
@@ -407,44 +449,58 @@ func (s *Service) RecordResult(ctx context.Context, ownerID, goalID, taskID stri
 	if result.CreatedAt.IsZero() {
 		result.CreatedAt = time.Now().UTC()
 	}
-	if result.Status != orchestrationv1.TaskCompleted && result.Status != orchestrationv1.TaskFailed && result.Status != orchestrationv1.TaskWaitingUser && result.Status != orchestrationv1.TaskWaitingDevice {
+	if result.Status != orchestrationv2.TaskCompleted && result.Status != orchestrationv2.TaskFailed && result.Status != orchestrationv2.TaskWaitingUser && result.Status != orchestrationv2.TaskWaitingDevice {
 		return nil, apierror.ErrBadRequest.WithMessage("specialist result must be completed, failed, waiting for user, or waiting for device")
+	}
+	if tasks[index].RequiresDevice && result.Status == orchestrationv2.TaskCompleted && len(unique(result.ObservationRefs)) == 0 {
+		return nil, apierror.ErrBadRequest.WithMessage("device specialist cannot complete without a successful observation")
+	}
+	nextTaskUsage := addUsage(tasks[index].Usage, result.Usage)
+	if nextTaskUsage.ExceedsTask(tasks[index].Budget) {
+		result.Status = orchestrationv2.TaskWaitingUser
+		result.Summary = nonEmpty(result.Summary, "specialist stopped after exceeding its bounded allocation")
 	}
 	if err := result.Validate(); err != nil {
 		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
 	}
 	now, expected := time.Now().UTC(), request.ExpectedRevision
-	tasks[index].Status, tasks[index].UpdatedAt, tasks[index].CompletedAt = result.Status, now, now
+	tasks[index].Status, tasks[index].Usage, tasks[index].UpdatedAt, tasks[index].CompletedAt = result.Status, nextTaskUsage, now, now
 	goal.Usage = addUsage(goal.Usage, result.Usage)
-	verifyCriteria(goal.SuccessCriteria, request.VerifiedCriteriaIDs, result.EvidenceRefs)
+	if result.Status == orchestrationv2.TaskCompleted {
+		verifyCriteria(goal.SuccessCriteria, request.VerifiedCriteriaIDs, result.EvidenceRefs)
+	}
 	refreshReadyTasks(tasks)
 	goal.ActiveTaskIDs = runningTaskIDs(tasks)
 	switch {
-	case result.Status == orchestrationv1.TaskFailed && goal.Trigger.Type == orchestrationv1.TriggerSchedule && tasks[index].Attempt < goal.Trigger.MaxAttempts:
-		tasks[index].Status, tasks[index].DeviceID = orchestrationv1.TaskReady, ""
-		tasks[index].NextAttemptAt = now.Add(time.Duration(goal.Trigger.RetryBackoffMS*int64(tasks[index].Attempt)) * time.Millisecond)
-		goal.Status = orchestrationv1.GoalRunning
-	case result.Status == orchestrationv1.TaskFailed:
-		goal.Status = orchestrationv1.GoalWaitingUser
-	case result.Status == orchestrationv1.TaskWaitingUser || result.Status == orchestrationv1.TaskWaitingDevice:
-		goal.Status = orchestrationv1.GoalWaitingUser
-	case budgetExhausted(*goal):
-		goal.Status = orchestrationv1.GoalWaitingUser
 	case allTasksCompleted(tasks) && allRequiredCriteriaVerified(goal.SuccessCriteria):
-		goal.Status = orchestrationv1.GoalCompleted
+		goal.Status = orchestrationv2.GoalCompleted
+	case result.Status == orchestrationv2.TaskFailed && goal.Trigger.Type == orchestrationv2.TriggerSchedule && tasks[index].Attempt < goal.Trigger.MaxAttempts && !tasks[index].Usage.ExhaustedTask(tasks[index].Budget) && !budgetExhausted(*goal):
+		tasks[index].Status, tasks[index].DeviceID = orchestrationv2.TaskReady, ""
+		tasks[index].NextAttemptAt = now.Add(time.Duration(goal.Trigger.RetryBackoffMS*int64(tasks[index].Attempt)) * time.Millisecond)
+		goal.Status = orchestrationv2.GoalRunning
+	case result.Status == orchestrationv2.TaskFailed:
+		goal.Status = orchestrationv2.GoalWaitingUser
+	case result.Status == orchestrationv2.TaskWaitingUser:
+		goal.Status = orchestrationv2.GoalWaitingUser
+	case result.Status == orchestrationv2.TaskWaitingDevice:
+		goal.Status = orchestrationv2.GoalWaitingDevice
+	case budgetExhausted(*goal):
+		goal.Status = orchestrationv2.GoalWaitingUser
 	case allTasksTerminal(tasks):
-		goal.Status = orchestrationv1.GoalWaitingUser
+		goal.Status = orchestrationv2.GoalWaitingUser
 	default:
-		goal.Status = orchestrationv1.GoalRunning
+		goal.Status = orchestrationv2.GoalRunning
 	}
 	goal.Revision, goal.UpdatedAt = expected+1, now
 	effects := union(previous.ConfirmedEffectKeys, result.ConfirmedEffectKeys)
-	world := mergeWorldSlices(previous.WorldSlicesByDevice, request.WorldSlicesByDevice)
+	observations := union(previous.ObservationRefs, result.ObservationRefs)
+	world := mergeWorldSlices(previous.WorldSlicesByDevice, publishedResultWorld(tasks[index], result))
+	world = mergeWorldSlices(world, request.WorldSlicesByDevice)
 	approvals := previous.PendingApprovalIDs
 	if len(request.PendingApprovalIDs) > 0 {
 		approvals = union(approvals, request.PendingApprovalIDs)
 	}
-	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, "specialist result recorded", effects, approvals, world)
+	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, "specialist result recorded", effects, observations, approvals, world)
 	if err != nil {
 		return nil, err
 	}
@@ -468,9 +524,12 @@ func (s *Service) SaveCheckpoint(ctx context.Context, ownerID, goalID string, re
 	if request.ExpectedRevision == 0 {
 		request.ExpectedRevision = goal.Revision
 	}
+	if hasNewValue(previous.ConfirmedEffectKeys, request.ConfirmedEffectKeys) && len(unique(request.ObservationRefs)) == 0 {
+		return nil, apierror.ErrBadRequest.WithMessage("new confirmed effects require observation_refs")
+	}
 	expected := request.ExpectedRevision
 	goal.Revision, goal.UpdatedAt = expected+1, time.Now().UTC()
-	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, strings.TrimSpace(request.Reason), union(previous.ConfirmedEffectKeys, request.ConfirmedEffectKeys), union(previous.PendingApprovalIDs, request.PendingApprovalIDs), mergeWorldSlices(previous.WorldSlicesByDevice, request.WorldSlicesByDevice))
+	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, strings.TrimSpace(request.Reason), union(previous.ConfirmedEffectKeys, request.ConfirmedEffectKeys), union(previous.ObservationRefs, request.ObservationRefs), union(previous.PendingApprovalIDs, request.PendingApprovalIDs), mergeWorldSlices(previous.WorldSlicesByDevice, request.WorldSlicesByDevice))
 	if err != nil {
 		return nil, err
 	}
@@ -495,12 +554,12 @@ func (s *Service) Pause(ctx context.Context, ownerID, goalID, reason string, exp
 		expectedRevision = goal.Revision
 	}
 	for index := range tasks {
-		if tasks[index].Status == orchestrationv1.TaskRunning {
-			tasks[index].Status, tasks[index].DeviceID = orchestrationv1.TaskReady, ""
+		if tasks[index].Status == orchestrationv2.TaskRunning {
+			tasks[index].Status, tasks[index].DeviceID = orchestrationv2.TaskReady, ""
 		}
 	}
-	goal.Status, goal.ActiveTaskIDs, goal.Revision, goal.UpdatedAt = orchestrationv1.GoalPaused, nil, expectedRevision+1, time.Now().UTC()
-	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, nonEmpty(reason, "goal paused"), previous.ConfirmedEffectKeys, previous.PendingApprovalIDs, previous.WorldSlicesByDevice)
+	goal.Status, goal.ActiveTaskIDs, goal.Revision, goal.UpdatedAt = orchestrationv2.GoalPaused, nil, expectedRevision+1, time.Now().UTC()
+	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, nonEmpty(reason, "goal paused"), previous.ConfirmedEffectKeys, previous.ObservationRefs, previous.PendingApprovalIDs, previous.WorldSlicesByDevice)
 	if err != nil {
 		return nil, err
 	}
@@ -509,26 +568,31 @@ func (s *Service) Pause(ctx context.Context, ownerID, goalID, reason string, exp
 	if err := s.store.SaveState(ctx, *goal, tasks, nil, checkpoint, expectedRevision); err != nil {
 		return nil, err
 	}
+	s.cancelGoalRuns(goalID)
 	return s.GetGoal(ctx, ownerID, goalID)
 }
 
 func (s *Service) Resume(ctx context.Context, ownerID, goalID string, expectedRevision int64) (*ResumePlan, error) {
-	return s.resume(ctx, ownerID, goalID, "", expectedRevision)
+	return s.resume(ctx, ownerID, goalID, "", "", expectedRevision)
+}
+
+func (s *Service) ResumeWithInput(ctx context.Context, ownerID, goalID, userInput string, expectedRevision int64) (*ResumePlan, error) {
+	return s.resume(ctx, ownerID, goalID, "", userInput, expectedRevision)
 }
 
 // ResumeApproved is intentionally not exposed by the public Goal handler. The
 // approval service calls it only after verifying the approval belongs to the
 // same user and atomically claiming the pending approval record.
 func (s *Service) ResumeApproved(ctx context.Context, ownerID, goalID, approvalID string, expectedRevision int64) (*ResumePlan, error) {
-	return s.resume(ctx, ownerID, goalID, strings.TrimSpace(approvalID), expectedRevision)
+	return s.resume(ctx, ownerID, goalID, strings.TrimSpace(approvalID), "", expectedRevision)
 }
 
-func (s *Service) resume(ctx context.Context, ownerID, goalID, approvedID string, expectedRevision int64) (*ResumePlan, error) {
+func (s *Service) resume(ctx context.Context, ownerID, goalID, approvedID, userInput string, expectedRevision int64) (*ResumePlan, error) {
 	goal, tasks, previous, err := s.load(ctx, ownerID, goalID)
 	if err != nil {
 		return nil, err
 	}
-	if goal.Status != orchestrationv1.GoalPaused && goal.Status != orchestrationv1.GoalWaitingUser && goal.Status != orchestrationv1.GoalFailed {
+	if goal.Status != orchestrationv2.GoalPaused && goal.Status != orchestrationv2.GoalWaitingUser && goal.Status != orchestrationv2.GoalWaitingDevice && goal.Status != orchestrationv2.GoalFailed {
 		return nil, apierror.ErrBadRequest.WithMessage("goal is not resumable")
 	}
 	if expectedRevision == 0 {
@@ -544,25 +608,31 @@ func (s *Service) resume(ctx context.Context, ownerID, goalID, approvedID string
 		}
 		pendingApprovals = without(pendingApprovals, approvedID)
 	}
+	if input := strings.TrimSpace(userInput); input != "" {
+		goal.Inputs = append(goal.Inputs, entity.GoalInput{InputID: ulid.New(), Content: input, CreatedAt: time.Now().UTC()})
+	}
 	for index := range tasks {
-		if tasks[index].Status == orchestrationv1.TaskWaitingDevice || tasks[index].Status == orchestrationv1.TaskWaitingUser || tasks[index].Status == orchestrationv1.TaskFailed {
-			tasks[index].Status, tasks[index].DeviceID = orchestrationv1.TaskReady, ""
+		if tasks[index].Status == orchestrationv2.TaskWaitingDevice || tasks[index].Status == orchestrationv2.TaskWaitingUser || tasks[index].Status == orchestrationv2.TaskFailed {
+			tasks[index].Status, tasks[index].DeviceID, tasks[index].NextAttemptAt = orchestrationv2.TaskReady, "", time.Time{}
 		}
 	}
 	refreshReadyTasks(tasks)
-	goal.Status, goal.Revision, goal.UpdatedAt = orchestrationv1.GoalRunning, expectedRevision+1, time.Now().UTC()
-	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, "goal resumed from durable checkpoint", previous.ConfirmedEffectKeys, pendingApprovals, previous.WorldSlicesByDevice)
+	goal.Status, goal.Revision, goal.UpdatedAt = orchestrationv2.GoalRunning, expectedRevision+1, time.Now().UTC()
+	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, "goal resumed from durable checkpoint", previous.ConfirmedEffectKeys, previous.ObservationRefs, pendingApprovals, previous.WorldSlicesByDevice)
 	if err != nil {
 		return nil, err
 	}
 	goal.LatestCheckpointID, checkpoint.GoalRevision = checkpoint.CheckpointID, goal.Revision
 	checkpoint.Checksum, _ = checkpointChecksum(checkpoint)
+	if err := goal.Validate(); err != nil {
+		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
+	}
 	if err := s.store.SaveState(ctx, *goal, tasks, nil, checkpoint, expectedRevision); err != nil {
 		return nil, log.WrapError(err, "OrchestrationService.Resume.persist")
 	}
 	pending := make([]entity.SpecialistTask, 0)
 	for _, task := range tasks {
-		if task.Status != orchestrationv1.TaskCompleted && task.Status != orchestrationv1.TaskCancelled {
+		if task.Status != orchestrationv2.TaskCompleted && task.Status != orchestrationv2.TaskCancelled {
 			pending = append(pending, task)
 		}
 	}
@@ -586,12 +656,12 @@ func (s *Service) RejectApproval(ctx context.Context, ownerID, goalID, approvalI
 	}
 	now := time.Now().UTC()
 	for index := range tasks {
-		if tasks[index].Status != orchestrationv1.TaskCompleted {
-			tasks[index].Status, tasks[index].DeviceID, tasks[index].UpdatedAt, tasks[index].CompletedAt = orchestrationv1.TaskCancelled, "", now, now
+		if tasks[index].Status != orchestrationv2.TaskCompleted {
+			tasks[index].Status, tasks[index].DeviceID, tasks[index].UpdatedAt, tasks[index].CompletedAt = orchestrationv2.TaskCancelled, "", now, now
 		}
 	}
-	goal.Status, goal.ActiveTaskIDs, goal.Revision, goal.UpdatedAt = orchestrationv1.GoalCancelled, nil, expectedRevision+1, now
-	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, nonEmpty(reason, "scheduled execution rejected by user"), previous.ConfirmedEffectKeys, without(previous.PendingApprovalIDs, approvalID), previous.WorldSlicesByDevice)
+	goal.Status, goal.ActiveTaskIDs, goal.Revision, goal.UpdatedAt = orchestrationv2.GoalCancelled, nil, expectedRevision+1, now
+	checkpoint, err := s.nextCheckpoint(ctx, *goal, tasks, nonEmpty(reason, "scheduled execution rejected by user"), previous.ConfirmedEffectKeys, previous.ObservationRefs, without(previous.PendingApprovalIDs, approvalID), previous.WorldSlicesByDevice)
 	if err != nil {
 		return nil, err
 	}
@@ -618,8 +688,8 @@ func (s *Service) RecoverInterruptedGoals(ctx context.Context) error {
 		}
 		changed := false
 		for index := range tasks {
-			if tasks[index].Status == orchestrationv1.TaskRunning {
-				tasks[index].Status, tasks[index].DeviceID, tasks[index].UpdatedAt = orchestrationv1.TaskReady, "", time.Now().UTC()
+			if tasks[index].Status == orchestrationv2.TaskRunning {
+				tasks[index].Status, tasks[index].DeviceID, tasks[index].UpdatedAt = orchestrationv2.TaskReady, "", time.Now().UTC()
 				changed = true
 			}
 		}
@@ -628,8 +698,8 @@ func (s *Service) RecoverInterruptedGoals(ctx context.Context) error {
 		}
 		expected := goal.Revision
 		goal.ActiveTaskIDs = nil
-		goal.Status, goal.Revision, goal.UpdatedAt = orchestrationv1.GoalRunning, expected+1, time.Now().UTC()
-		checkpoint, checkpointErr := s.nextCheckpoint(ctx, *goal, tasks, "control plane restarted; interrupted specialists are ready to resume", previous.ConfirmedEffectKeys, previous.PendingApprovalIDs, previous.WorldSlicesByDevice)
+		goal.Status, goal.Revision, goal.UpdatedAt = orchestrationv2.GoalRunning, expected+1, time.Now().UTC()
+		checkpoint, checkpointErr := s.nextCheckpoint(ctx, *goal, tasks, "control plane restarted; interrupted specialists are ready to resume", previous.ConfirmedEffectKeys, previous.ObservationRefs, previous.PendingApprovalIDs, previous.WorldSlicesByDevice)
 		if checkpointErr != nil {
 			return checkpointErr
 		}
@@ -696,7 +766,7 @@ func (s *Service) WorldSlice(ctx context.Context, ownerID, goalID, taskID string
 	}
 	result := make(map[string]map[string]any)
 	for deviceID, values := range checkpoint.WorldSlicesByDevice {
-		if task.DeviceID != "" && task.DeviceID != deviceID {
+		if task.DeviceID != "" && task.DeviceID != deviceID && deviceID != orchestrationv2.WorldScopeServer {
 			continue
 		}
 		filtered := make(map[string]any)
@@ -717,10 +787,10 @@ func (s *Service) MarkScheduleTriggerReconciled(ctx context.Context, ownerID str
 	trigger.ReconciledAt, trigger.UpdatedAt = now, now
 	if trigger.Notify {
 		trigger.NotificationStatus = notificationStatus
-		if notificationStatus == orchestrationv1.NotificationSent {
+		if notificationStatus == orchestrationv2.NotificationSent {
 			trigger.NotifiedAt = now
 		}
-		if notificationStatus == orchestrationv1.NotificationFailed {
+		if notificationStatus == orchestrationv2.NotificationFailed {
 			trigger.Error = nonEmpty(notificationError, trigger.Error)
 		}
 	}
@@ -755,7 +825,7 @@ func (s *Service) load(ctx context.Context, ownerID, goalID string) (*entity.Per
 	return goal, tasks, checkpoint, nil
 }
 
-func (s *Service) nextCheckpoint(ctx context.Context, goal entity.PersistentGoal, tasks []entity.SpecialistTask, reason string, effects, approvals []string, world map[string]map[string]any) (entity.GoalCheckpoint, error) {
+func (s *Service) nextCheckpoint(ctx context.Context, goal entity.PersistentGoal, tasks []entity.SpecialistTask, reason string, effects, observations, approvals []string, world map[string]map[string]any) (entity.GoalCheckpoint, error) {
 	latest, err := s.store.LatestCheckpoint(ctx, goal.OwnerID, goal.GoalID)
 	if err != nil {
 		return entity.GoalCheckpoint{}, err
@@ -767,7 +837,7 @@ func (s *Service) nextCheckpoint(ctx context.Context, goal entity.PersistentGoal
 		}
 		sequence = latest.Sequence + 1
 	}
-	checkpoint, err := newCheckpoint(goal, tasks, world, nonEmpty(reason, "state transition"), effects, approvals, sequence)
+	checkpoint, err := newCheckpoint(goal, tasks, world, nonEmpty(reason, "state transition"), effects, observations, approvals, sequence)
 	if err != nil {
 		return entity.GoalCheckpoint{}, err
 	}
@@ -778,8 +848,8 @@ func (s *Service) nextCheckpoint(ctx context.Context, goal entity.PersistentGoal
 	return checkpoint, err
 }
 
-func newCheckpoint(goal entity.PersistentGoal, tasks []entity.SpecialistTask, world map[string]map[string]any, reason string, effects, approvals []string, sequence int64) (entity.GoalCheckpoint, error) {
-	value := entity.GoalCheckpoint{Schema: entity.Schema, CheckpointID: ulid.New(), GoalID: goal.GoalID, OwnerID: goal.OwnerID, Sequence: sequence, GoalRevision: goal.Revision, Status: goal.Status, TaskStates: append([]entity.SpecialistTask(nil), tasks...), Usage: goal.Usage, WorldSlicesByDevice: cloneWorldSlices(world), ConfirmedEffectKeys: unique(effects), PendingApprovalIDs: unique(approvals), Reason: reason, CreatedAt: time.Now().UTC()}
+func newCheckpoint(goal entity.PersistentGoal, tasks []entity.SpecialistTask, world map[string]map[string]any, reason string, effects, observations, approvals []string, sequence int64) (entity.GoalCheckpoint, error) {
+	value := entity.GoalCheckpoint{Schema: entity.Schema, CheckpointID: ulid.New(), GoalID: goal.GoalID, OwnerID: goal.OwnerID, Sequence: sequence, GoalRevision: goal.Revision, Status: goal.Status, TaskStates: append([]entity.SpecialistTask(nil), tasks...), Usage: goal.Usage, WorldSlicesByDevice: cloneWorldSlices(world), ConfirmedEffectKeys: unique(effects), ObservationRefs: unique(observations), PendingApprovalIDs: unique(approvals), Reason: reason, CreatedAt: time.Now().UTC()}
 	checksum, err := checkpointChecksum(value)
 	value.Checksum = checksum
 	return value, err
@@ -811,7 +881,7 @@ func verifyCheckpoint(value entity.GoalCheckpoint) error {
 
 func taskIndex(tasks []entity.SpecialistTask, taskID string) int {
 	for i := range tasks {
-		if tasks[i].TaskID == taskID {
+		if tasks[i].TaskID == taskID || tasks[i].TaskKey == taskID {
 			return i
 		}
 	}
@@ -820,7 +890,7 @@ func taskIndex(tasks []entity.SpecialistTask, taskID string) int {
 func runningCount(tasks []entity.SpecialistTask) int {
 	count := 0
 	for _, task := range tasks {
-		if task.Status == orchestrationv1.TaskRunning {
+		if task.Status == orchestrationv2.TaskRunning {
 			count++
 		}
 	}
@@ -829,7 +899,7 @@ func runningCount(tasks []entity.SpecialistTask) int {
 func runningTaskIDs(tasks []entity.SpecialistTask) []string {
 	ids := []string{}
 	for _, task := range tasks {
-		if task.Status == orchestrationv1.TaskRunning {
+		if task.Status == orchestrationv2.TaskRunning {
 			ids = append(ids, task.TaskID)
 		}
 	}
@@ -839,7 +909,7 @@ func runningTaskIDs(tasks []entity.SpecialistTask) []string {
 func dependenciesComplete(task entity.SpecialistTask, tasks []entity.SpecialistTask) bool {
 	for _, id := range task.DependsOn {
 		index := taskIndex(tasks, id)
-		if index < 0 || tasks[index].Status != orchestrationv1.TaskCompleted {
+		if index < 0 || tasks[index].Status != orchestrationv2.TaskCompleted {
 			return false
 		}
 	}
@@ -847,8 +917,8 @@ func dependenciesComplete(task entity.SpecialistTask, tasks []entity.SpecialistT
 }
 func refreshReadyTasks(tasks []entity.SpecialistTask) {
 	for index := range tasks {
-		if tasks[index].Status == orchestrationv1.TaskPending && dependenciesComplete(tasks[index], tasks) {
-			tasks[index].Status, tasks[index].UpdatedAt = orchestrationv1.TaskReady, time.Now().UTC()
+		if tasks[index].Status == orchestrationv2.TaskPending && dependenciesComplete(tasks[index], tasks) {
+			tasks[index].Status, tasks[index].UpdatedAt = orchestrationv2.TaskReady, time.Now().UTC()
 		}
 	}
 }
@@ -857,7 +927,7 @@ func allTasksCompleted(tasks []entity.SpecialistTask) bool {
 		return false
 	}
 	for _, task := range tasks {
-		if task.Status != orchestrationv1.TaskCompleted {
+		if task.Status != orchestrationv2.TaskCompleted {
 			return false
 		}
 	}
@@ -868,7 +938,7 @@ func allTasksTerminal(tasks []entity.SpecialistTask) bool {
 		return false
 	}
 	for _, task := range tasks {
-		if task.Status != orchestrationv1.TaskCompleted && task.Status != orchestrationv1.TaskFailed && task.Status != orchestrationv1.TaskCancelled {
+		if task.Status != orchestrationv2.TaskCompleted && task.Status != orchestrationv2.TaskFailed && task.Status != orchestrationv2.TaskCancelled {
 			return false
 		}
 	}
@@ -915,6 +985,68 @@ func normalizedTaskBudget(value entity.TaskBudget, goal entity.GoalBudget, taskC
 		MaxActions:       positiveIntShare(goal.MaxActions),
 	}
 }
+
+func buildTasks(goalID string, goalBudget entity.GoalBudget, requests []PlanTaskRequest, now time.Time) ([]entity.SpecialistTask, error) {
+	keyToID := make(map[string]string, len(requests))
+	keys := make([]string, len(requests))
+	for index, request := range requests {
+		key := strings.TrimSpace(request.TaskID)
+		if key == "" {
+			key = fmt.Sprintf("task-%02d", index+1)
+		}
+		if _, exists := keyToID[key]; exists {
+			return nil, fmt.Errorf("duplicate task key %q", key)
+		}
+		keys[index] = key
+		keyToID[key] = ulid.New()
+	}
+	tasks := make([]entity.SpecialistTask, 0, len(requests))
+	for index, request := range requests {
+		dependencies := make([]string, 0, len(request.DependsOn))
+		for _, dependencyKey := range unique(request.DependsOn) {
+			dependencyID, exists := keyToID[dependencyKey]
+			if !exists {
+				return nil, fmt.Errorf("task %s has unknown dependency key %q", keys[index], dependencyKey)
+			}
+			dependencies = append(dependencies, dependencyID)
+		}
+		parentID := ""
+		if parentKey := strings.TrimSpace(request.ParentTaskID); parentKey != "" {
+			var exists bool
+			parentID, exists = keyToID[parentKey]
+			if !exists {
+				return nil, fmt.Errorf("task %s has unknown parent key %q", keys[index], parentKey)
+			}
+		}
+		status := orchestrationv2.TaskPending
+		if len(dependencies) == 0 {
+			status = orchestrationv2.TaskReady
+		}
+		id := keyToID[keys[index]]
+		tasks = append(tasks, entity.SpecialistTask{
+			TaskID: id, TaskKey: keys[index], GoalID: goalID, ParentTaskID: parentID, Depth: request.Depth,
+			Specialist: request.Specialist, Objective: strings.TrimSpace(request.Objective), DependsOn: dependencies,
+			RequiredCapabilities: unique(request.RequiredCapabilities), WorldSliceRefs: unique(request.WorldSliceRefs),
+			RequiresDevice: taskRequiresDevice(request), PreferredDeviceID: strings.TrimSpace(request.PreferredDeviceID),
+			IdempotencyScope: goalID + ":" + id, Budget: normalizedTaskBudget(request.Budget, goalBudget, len(requests)),
+			Status: status, CreatedAt: now, UpdatedAt: now,
+		})
+	}
+	return tasks, nil
+}
+
+func taskRequiresDevice(request PlanTaskRequest) bool {
+	if request.RequiresDevice != nil {
+		return *request.RequiresDevice
+	}
+	switch request.Specialist {
+	case orchestrationv2.SpecialistBrowser, orchestrationv2.SpecialistDesktop, orchestrationv2.SpecialistFile:
+		return true
+	default:
+		return false
+	}
+}
+
 func addUsage(left, right entity.BudgetUsage) entity.BudgetUsage {
 	return entity.BudgetUsage{Tokens: left.Tokens + right.Tokens, DurationMS: left.DurationMS + right.DurationMS, SearchQueries: left.SearchQueries + right.SearchQueries, Pages: left.Pages + right.Pages, Actions: left.Actions + right.Actions}
 }
@@ -937,7 +1069,7 @@ func verifyCriteria(values []entity.SuccessCriterion, ids, evidence []string) {
 
 func normalizedGoalTrigger(value entity.GoalTrigger) entity.GoalTrigger {
 	if value.Type == "" {
-		return entity.GoalTrigger{Type: orchestrationv1.TriggerInteractive}
+		return entity.GoalTrigger{Type: orchestrationv2.TriggerInteractive}
 	}
 	return value
 }
@@ -955,17 +1087,9 @@ func preparePlannedGoal(ownerID string, request CreatePlannedGoalRequest, initia
 		}
 	}
 	goal := entity.PersistentGoal{Schema: entity.Schema, GoalID: ulid.New(), OwnerID: ownerID, AgentID: strings.TrimSpace(request.AgentID), ConversationID: strings.TrimSpace(request.ConversationID), Objective: strings.TrimSpace(request.Objective), Constraints: compact(request.Constraints), SuccessCriteria: criteria, Budget: budget, Deadline: request.Deadline, ApprovalPolicy: request.ApprovalPolicy, Trigger: normalizedGoalTrigger(request.Trigger), Status: initialStatus, Revision: 1, CreatedAt: now, UpdatedAt: now}
-	tasks := make([]entity.SpecialistTask, 0, len(request.Tasks))
-	for _, item := range request.Tasks {
-		id := strings.TrimSpace(item.TaskID)
-		if id == "" {
-			id = ulid.New()
-		}
-		status := orchestrationv1.TaskPending
-		if len(item.DependsOn) == 0 {
-			status = orchestrationv1.TaskReady
-		}
-		tasks = append(tasks, entity.SpecialistTask{TaskID: id, GoalID: goal.GoalID, ParentTaskID: strings.TrimSpace(item.ParentTaskID), Depth: item.Depth, Specialist: item.Specialist, Objective: strings.TrimSpace(item.Objective), DependsOn: unique(item.DependsOn), RequiredCapabilities: unique(item.RequiredCapabilities), WorldSliceRefs: unique(item.WorldSliceRefs), IdempotencyScope: goal.GoalID + ":" + id, Budget: normalizedTaskBudget(item.Budget, goal.Budget, len(request.Tasks)), Status: status, CreatedAt: now, UpdatedAt: now})
+	tasks, err := buildTasks(goal.GoalID, goal.Budget, request.Tasks, now)
+	if err != nil {
+		return entity.PersistentGoal{}, nil, entity.GoalCheckpoint{}, apierror.ErrBadRequest.WithMessage(err.Error())
 	}
 	graph := entity.TaskGraph{Schema: entity.Schema, GoalID: goal.GoalID, PlanRevision: 1, Nodes: tasks, CreatedAt: now}
 	if err := goal.Validate(); err != nil {
@@ -974,7 +1098,7 @@ func preparePlannedGoal(ownerID string, request CreatePlannedGoalRequest, initia
 	if err := graph.Validate(goal.Budget); err != nil {
 		return entity.PersistentGoal{}, nil, entity.GoalCheckpoint{}, apierror.ErrBadRequest.WithMessage(err.Error())
 	}
-	checkpoint, err := newCheckpoint(goal, tasks, nil, reason, nil, nil, 1)
+	checkpoint, err := newCheckpoint(goal, tasks, nil, reason, nil, nil, nil, 1)
 	if err != nil {
 		return entity.PersistentGoal{}, nil, entity.GoalCheckpoint{}, err
 	}
@@ -1027,6 +1151,24 @@ func without(values []string, removed string) []string {
 	}
 	return result
 }
+
+func hasNewValue(existing, requested []string) bool {
+	known := make(map[string]struct{}, len(existing))
+	for _, value := range existing {
+		known[strings.TrimSpace(value)] = struct{}{}
+	}
+	for _, value := range requested {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := known[value]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
 func union(left, right []string) []string {
 	return unique(append(append([]string(nil), left...), right...))
 }
@@ -1046,13 +1188,37 @@ func mergeWorldSlices(left, right map[string]map[string]any) map[string]map[stri
 		for key, value := range result[device] {
 			copy[key] = value
 		}
-		for key, value := range values {
+		for key, value := range safeWorldState(values) {
 			copy[key] = value
 		}
 		result[device] = copy
 	}
 	return result
 }
+
+// publishedResultWorld exposes only stable, explicitly addressable result
+// facts. Consumers still need to declare the exact keys in WorldSliceRefs;
+// raw prompts, credentials, and the complete execution context are never
+// copied into another specialist's input.
+func publishedResultWorld(task entity.SpecialistTask, result entity.SpecialistResult) map[string]map[string]any {
+	scope := strings.TrimSpace(task.DeviceID)
+	if scope == "" {
+		scope = orchestrationv2.WorldScopeServer
+	}
+	key := task.TaskKey
+	if key == "" {
+		key = task.TaskID
+	}
+	prefix := "result." + key + "."
+	values := map[string]any{
+		prefix + "summary":          result.Summary,
+		prefix + "status":           result.Status,
+		prefix + "evidence_refs":    append([]string(nil), result.EvidenceRefs...),
+		prefix + "observation_refs": append([]string(nil), result.ObservationRefs...),
+	}
+	return map[string]map[string]any{scope: values}
+}
+
 func cloneWorldSlices(value map[string]map[string]any) map[string]map[string]any {
 	if len(value) == 0 {
 		return nil

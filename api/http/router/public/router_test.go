@@ -17,6 +17,7 @@ import (
 	learninghandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/learning"
 	memoryhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/memory"
 	modelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/model"
+	operationshandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/operations"
 	orchestrationhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/orchestration"
 	skillhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/skill"
 	userhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/user"
@@ -32,6 +33,7 @@ import (
 	learningsvc "github.com/good-fish-man/agent-runtime-client/application/service/learning"
 	memorysvc "github.com/good-fish-man/agent-runtime-client/application/service/memory"
 	modelsvc "github.com/good-fish-man/agent-runtime-client/application/service/model"
+	operationssvc "github.com/good-fish-man/agent-runtime-client/application/service/operations"
 	orchestrationsvc "github.com/good-fish-man/agent-runtime-client/application/service/orchestration"
 	skillsvc "github.com/good-fish-man/agent-runtime-client/application/service/skill"
 	usersvc "github.com/good-fish-man/agent-runtime-client/application/service/user"
@@ -146,6 +148,7 @@ func TestRegisterNoConflicts(t *testing.T) {
 		"POST " + prefix + "/knowledge/ontology/migrations/:id/review",
 		"POST " + prefix + "/knowledge/ontology/migrations/:id/execute",
 		"POST " + prefix + "/goals",
+		"POST " + prefix + "/goals/planned",
 		"POST " + prefix + "/internal/goals",
 		"GET " + prefix + "/goals",
 		"GET " + prefix + "/goals/schedule-triggers",
@@ -180,5 +183,24 @@ func TestRegisterNilGraceful(t *testing.T) {
 
 	if got := len(engine.Routes()); got == 0 {
 		t.Fatalf("expected config/callback/weixin routes, got %d", got)
+	}
+}
+
+func TestGoldenJourneyEvidenceRouteIsInternalOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	Register(engine.Group("/v1"), &Handlers{
+		Operations: operationshandler.NewHandler(operationssvc.New("", nil, nil)),
+	})
+
+	routes := make(map[string]struct{}, len(engine.Routes()))
+	for _, route := range engine.Routes() {
+		routes[route.Method+" "+route.Path] = struct{}{}
+	}
+	if _, ok := routes["POST /v1/internal/operations/golden-journeys/evidence"]; !ok {
+		t.Fatal("trusted E2E runner route was not registered")
+	}
+	if _, ok := routes["POST /v1/operations/golden-journeys/evidence"]; ok {
+		t.Fatal("golden journey evidence is still writable through the public authenticated API")
 	}
 }

@@ -229,7 +229,14 @@ type snapshotResponse struct {
 }
 
 func decodeSnapshot(value delegationentity.LearningSnapshot) (snapshotResponse, error) {
-	result := snapshotResponse{Preference: dso.DelegationLearningPreference{Schema: dso.Schema, OwnerID: value.Preference.OwnerID, Enabled: value.Preference.Enabled, Revision: value.Preference.Revision, UpdatedBy: value.Preference.UpdatedBy, UpdatedAt: value.Preference.UpdatedAt}}
+	result := snapshotResponse{
+		Preference:  dso.DelegationLearningPreference{Schema: dso.Schema, OwnerID: value.Preference.OwnerID, Enabled: value.Preference.Enabled, Revision: value.Preference.Revision, UpdatedBy: value.Preference.UpdatedBy, UpdatedAt: value.Preference.UpdatedAt},
+		Candidates:  make([]dso.DelegationLearningCandidate, 0, len(value.Candidates)),
+		Evaluations: make([]dso.DelegationEvaluationResult, 0, len(value.Evaluations)),
+		Reviews:     make([]dso.DelegationReviewDecision, 0, len(value.Reviews)),
+		Rollouts:    make([]dso.DelegationLearningRollout, 0, len(value.Rollouts)),
+		Benchmarks:  make([]dso.DelegationBenchmarkReport, 0, len(value.Benchmarks)),
+	}
 	for _, record := range value.Candidates {
 		var item dso.DelegationLearningCandidate
 		if err := json.Unmarshal([]byte(record.Content), &item); err != nil {

@@ -61,7 +61,7 @@ func (s *Store) UpsertDevice(ctx context.Context, device *entity.RegisteredDevic
 				"capability_instances": value.CapabilityInstances, "online": value.Online,
 				"connected_at": value.ConnectedAt, "last_seen_at": value.LastSeenAt,
 				"lease_owner": value.LeaseOwner, "fencing_token": value.FencingToken,
-				"lease_expires_at": value.LeaseExpiresAt, "revision": gorm.Expr("revision + 1"),
+				"lease_expires_at": value.LeaseExpiresAt, "revision": revisionIncrement("os_device"),
 			}),
 		}).Create(value).Error; err != nil {
 			return err
@@ -181,15 +181,30 @@ func (s *Store) ReleaseDeviceLease(ctx context.Context, deviceID, owner string, 
 }
 
 func (s *Store) BindDevice(ctx context.Context, deviceID, userID string) error {
+	deviceID = strings.TrimSpace(deviceID)
+	userID = strings.TrimSpace(userID)
+	if deviceID == "" || userID == "" {
+		return fmt.Errorf("device_id and authenticated user are required")
+	}
 	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&po.Device{}).
-			Where("device_id = ? AND (user_id = '' OR user_id = ?)", deviceID, userID).
-			Updates(map[string]any{"user_id": userID, "revision": gorm.Expr("revision + 1")})
+		var device po.Device
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("device_id = ?", deviceID).Limit(1).Find(&device)
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected == 0 {
-			return fmt.Errorf("device is already bound to another user")
+			return irepository.ErrDeviceNotFound
+		}
+		if !device.Online || device.LeaseExpiresAt <= millis(time.Now().UTC()) {
+			return irepository.ErrDeviceOffline
+		}
+		if device.UserID != "" && device.UserID != userID {
+			return irepository.ErrDeviceOwnerMismatch
+		}
+		if err := tx.Model(&po.Device{}).Where("device_id = ?", deviceID).
+			Updates(map[string]any{"user_id": userID, "revision": gorm.Expr("revision + 1")}).Error; err != nil {
+			return err
 		}
 		if err := tx.Model(&po.CapabilityInstance{}).Where("device_id = ?", deviceID).
 			Updates(map[string]any{"owner_id": userID, "revision": gorm.Expr("revision + 1")}).Error; err != nil {
@@ -198,6 +213,60 @@ func (s *Store) BindDevice(ctx context.Context, deviceID, userID string) error {
 		return tx.Model(&po.DeviceCapability{}).Where("device_id = ?", deviceID).
 			Updates(map[string]any{"owner_id": userID, "revision": gorm.Expr("revision + 1")}).Error
 	}), "ControlStore.BindDevice")
+}
+
+// UnbindDevice releases an owned device only when no unfinished task can still
+// dispatch work to it. Device and capability ownership are changed atomically.
+func (s *Store) UnbindDevice(ctx context.Context, deviceID, userID string) error {
+	deviceID = strings.TrimSpace(deviceID)
+	userID = strings.TrimSpace(userID)
+	if deviceID == "" || userID == "" {
+		return fmt.Errorf("device_id and authenticated user are required")
+	}
+	return log.WrapError(s.data.DB(ctx).Transaction(func(tx *gorm.DB) error {
+		var device po.Device
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("device_id = ?", deviceID).Limit(1).Find(&device)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return irepository.ErrDeviceNotFound
+		}
+		if device.UserID == "" {
+			return nil
+		}
+		if device.UserID != userID {
+			return irepository.ErrDeviceOwnerMismatch
+		}
+
+		var unfinished int64
+		if err := tx.Model(&po.Task{}).
+			Where("device_id = ? AND user_id = ? AND status NOT IN ?", deviceID, userID, []string{
+				entity.TaskStatusCompleted, entity.TaskStatusFailed, entity.TaskStatusCancelled,
+			}).Count(&unfinished).Error; err != nil {
+			return err
+		}
+		if unfinished > 0 {
+			return fmt.Errorf("%w: %d task(s) must be completed or cancelled before unbinding", irepository.ErrDeviceHasActiveTasks, unfinished)
+		}
+
+		now := time.Now().UTC()
+		if err := tx.Model(&po.Device{}).
+			Where("device_id = ? AND user_id = ?", deviceID, userID).
+			Updates(map[string]any{
+				"user_id": "", "online": false, "lease_owner": "", "lease_expires_at": millis(now),
+				"fencing_token": gorm.Expr("fencing_token + 1"), "revision": gorm.Expr("revision + 1"), "updated_at": millis(now),
+			}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&po.CapabilityInstance{}).Where("device_id = ?", deviceID).
+			Updates(map[string]any{"owner_id": "", "online": false, "revision": gorm.Expr("revision + 1"), "updated_at": millis(now)}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&po.DeviceCapability{}).Where("device_id = ?", deviceID).
+			Updates(map[string]any{"owner_id": "", "revision": gorm.Expr("revision + 1"), "updated_at": millis(now)}).Error
+	}), "ControlStore.UnbindDevice")
 }
 
 func (s *Store) SetDeviceOnline(ctx context.Context, deviceID string, online bool, seenAt time.Time) error {
@@ -249,11 +318,11 @@ func syncCapabilityInventory(tx *gorm.DB, device *entity.RegisteredDevice, seenA
 		definition := po.CapabilityDefinition{
 			CapabilityID: instance.Capability, OwnerID: "system", Version: instance.Version,
 			Operations: operations, Modalities: modalities, InputSchema: "{}", OutputSchema: "{}",
-			Risk: entity.RiskReadOnly, Enabled: true, Revision: 1, CreatedAt: millis(seenAt), UpdatedAt: millis(seenAt),
+			Risk: minimumCapabilityRisk(instance.Capability, instance.Operations), Enabled: true, Revision: 1, CreatedAt: millis(seenAt), UpdatedAt: millis(seenAt),
 		}
 		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "capability_id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"version", "operations", "modalities", "enabled", "updated_at"}),
+			DoUpdates: clause.AssignmentColumns([]string{"version", "operations", "modalities", "risk", "enabled", "updated_at"}),
 		}).Create(&definition).Error; err != nil {
 			return err
 		}
@@ -267,7 +336,7 @@ func syncCapabilityInventory(tx *gorm.DB, device *entity.RegisteredDevice, seenA
 			DoUpdates: clause.Assignments(map[string]any{
 				"capability_id": value.CapabilityID, "device_id": value.DeviceID, "owner_id": value.OwnerID,
 				"version": value.Version, "operations": value.Operations, "modalities": value.Modalities,
-				"metadata": value.Metadata, "online": value.Online, "revision": gorm.Expr("revision + 1"), "updated_at": value.UpdatedAt,
+				"metadata": value.Metadata, "online": value.Online, "revision": revisionIncrement("os_capability_instance"), "updated_at": value.UpdatedAt,
 			}),
 		}).Create(&value).Error; err != nil {
 			return err
@@ -280,13 +349,17 @@ func syncCapabilityInventory(tx *gorm.DB, device *entity.RegisteredDevice, seenA
 			Columns: []clause.Column{{Name: "device_id"}, {Name: "instance_id"}},
 			DoUpdates: clause.Assignments(map[string]any{
 				"capability_id": link.CapabilityID, "owner_id": link.OwnerID,
-				"revision": gorm.Expr("revision + 1"), "updated_at": link.UpdatedAt,
+				"revision": revisionIncrement("os_device_capability"), "updated_at": link.UpdatedAt,
 			}),
 		}).Create(&link).Error; err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func revisionIncrement(table string) clause.Expr {
+	return gorm.Expr(table + ".revision + 1")
 }
 
 func (s *Store) FindDevice(ctx context.Context, deviceID string) (*entity.RegisteredDevice, error) {
@@ -1558,6 +1631,51 @@ func terminalObservationStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func minimumCapabilityRisk(capability string, operations []string) string {
+	values := append([]string{capability}, operations...)
+	risk := entity.RiskReadOnly
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		switch {
+		case containsRiskTerm(value, "credential", "password", "secret", "token", "cookie", "auth", "terminal", "shell", "python", "javascript", "code.execute"):
+			return entity.RiskSensitive
+		case containsRiskTerm(value, "purchase", "payment", "checkout", "book", "reserve", "send", "submit", "post", "publish", "upload", "delete", "remove", "install", "uninstall", "write"):
+			if controlRiskRank(entity.RiskExternalWrite) > controlRiskRank(risk) {
+				risk = entity.RiskExternalWrite
+			}
+		case containsRiskTerm(value, "click", "type", "press", "download", "close", "activate", "open_application", "app.open"):
+			if controlRiskRank(entity.RiskReversible) > controlRiskRank(risk) {
+				risk = entity.RiskReversible
+			}
+		}
+	}
+	return risk
+}
+
+func controlRiskRank(value string) int {
+	switch value {
+	case entity.RiskReadOnly:
+		return 0
+	case entity.RiskReversible:
+		return 1
+	case entity.RiskExternalWrite:
+		return 2
+	case entity.RiskSensitive:
+		return 3
+	default:
+		return -1
+	}
+}
+
+func containsRiskTerm(value string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(value, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func millis(value time.Time) int64 {

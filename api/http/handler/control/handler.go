@@ -54,6 +54,7 @@ func (h *Handler) registerRoutes(engine *gin.Engine, base string, auth gin.Handl
 	}
 	group.GET("/devices", h.Devices)
 	group.POST("/devices/:device_id/bind", h.BindDevice)
+	group.DELETE("/devices/:device_id/binding", h.UnbindDevice)
 	group.GET("/tasks", h.Tasks)
 	group.GET("/tasks/:task_id", h.Task)
 	group.GET("/tasks/:task_id/events", h.TaskEvents)
@@ -260,14 +261,18 @@ func (h *Handler) Device(c *gin.Context) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "device token required"})
 			return
 		}
-		websocket.Handler(h.serveDevice).ServeHTTP(c.Writer, c.Request)
+		websocket.Handler(func(socket *websocket.Conn) {
+			h.serveDevice(c.Request.Context(), socket)
+		}).ServeHTTP(c.Writer, c.Request)
 		return
 	}
 	if !secureEqual(bearerToken(c.GetHeader("Authorization")), h.deviceToken) {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid device token"})
 		return
 	}
-	websocket.Handler(h.serveDevice).ServeHTTP(c.Writer, c.Request)
+	websocket.Handler(func(socket *websocket.Conn) {
+		h.serveDevice(c.Request.Context(), socket)
+	}).ServeHTTP(c.Writer, c.Request)
 }
 
 type websocketConnection struct {
@@ -283,7 +288,7 @@ func (c *websocketConnection) Send(value any) error {
 
 func (c *websocketConnection) Close() error { return c.conn.Close() }
 
-func (h *Handler) serveDevice(socket *websocket.Conn) {
+func (h *Handler) serveDevice(ctx context.Context, socket *websocket.Conn) {
 	connection := &websocketConnection{conn: socket}
 	_ = socket.SetDeadline(time.Now().Add(20 * time.Second))
 	var helloPayload string
@@ -296,11 +301,11 @@ func (h *Handler) serveDevice(socket *websocket.Conn) {
 		_ = connection.Send(gin.H{"protocol": entity.Protocol, "type": entity.TypeError, "error": "HELLO is required"})
 		return
 	}
-	if err := h.hub.Register(context.Background(), hello, connection); err != nil {
+	if err := h.hub.Register(ctx, hello, connection); err != nil {
 		_ = connection.Send(gin.H{"protocol": entity.Protocol, "type": entity.TypeError, "error": err.Error()})
 		return
 	}
-	defer h.hub.Unregister(context.Background(), hello.DeviceID, connection)
+	defer h.hub.Unregister(context.WithoutCancel(ctx), hello.DeviceID, connection)
 	_ = socket.SetDeadline(time.Now().Add(45 * time.Second))
 	welcome, err := h.hub.DeviceLease(hello.DeviceID, connection)
 	if err != nil || connection.Send(welcome) != nil {
@@ -332,7 +337,7 @@ func (h *Handler) serveDevice(socket *websocket.Conn) {
 				_ = connection.Send(gin.H{"protocol": entity.Protocol, "type": entity.TypeError, "error": "stale device fencing token"})
 				return
 			}
-			h.hub.Touch(context.Background(), hello.DeviceID)
+			h.hub.Touch(ctx, hello.DeviceID)
 			welcome, err = h.hub.DeviceLease(hello.DeviceID, connection)
 			if err != nil {
 				return
@@ -345,8 +350,8 @@ func (h *Handler) serveDevice(socket *websocket.Conn) {
 			if err := entity.DecodeStrict([]byte(payload), &observation); err != nil {
 				continue
 			}
-			h.hub.Touch(context.Background(), hello.DeviceID)
-			if err := h.hub.ObserveFromDevice(context.Background(), hello.DeviceID, connection, observation); err != nil {
+			h.hub.Touch(ctx, hello.DeviceID)
+			if err := h.hub.ObserveFromDevice(ctx, hello.DeviceID, connection, observation); err != nil {
 				_ = connection.Send(gin.H{"protocol": entity.Protocol, "type": entity.TypeError, "error": err.Error()})
 			}
 		case entity.TypeProgress:
@@ -355,8 +360,8 @@ func (h *Handler) serveDevice(socket *websocket.Conn) {
 			if err := entity.DecodeStrict([]byte(payload), &progress); err != nil {
 				continue
 			}
-			h.hub.Touch(context.Background(), hello.DeviceID)
-			if err := h.hub.ProgressFromDevice(context.Background(), hello.DeviceID, connection, progress); err != nil {
+			h.hub.Touch(ctx, hello.DeviceID)
+			if err := h.hub.ProgressFromDevice(ctx, hello.DeviceID, connection, progress); err != nil {
 				_ = connection.Send(gin.H{"protocol": entity.Protocol, "type": entity.TypeError, "error": err.Error()})
 			}
 		}
@@ -373,11 +378,43 @@ func (h *Handler) Devices(c *gin.Context) {
 }
 
 func (h *Handler) BindDevice(c *gin.Context) {
-	if err := h.hub.BindDevice(c.Request.Context(), c.Param("device_id"), authctx.UserID(c.Request.Context())); err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	userID := authctx.UserID(c.Request.Context())
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication is required"})
+		return
+	}
+	if err := h.hub.BindDevice(c.Request.Context(), c.Param("device_id"), userID); err != nil {
+		c.JSON(deviceBindingErrorStatus(err), gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"device_id": c.Param("device_id"), "bound": true})
+}
+
+func (h *Handler) UnbindDevice(c *gin.Context) {
+	userID := authctx.UserID(c.Request.Context())
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication is required"})
+		return
+	}
+	err := h.hub.UnbindDevice(c.Request.Context(), c.Param("device_id"), userID)
+	if err != nil {
+		c.JSON(deviceBindingErrorStatus(err), gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"device_id": c.Param("device_id"), "bound": false})
+}
+
+func deviceBindingErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, service.ErrDeviceNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, service.ErrDeviceBoundToAnotherUser):
+		return http.StatusForbidden
+	case errors.Is(err, service.ErrDeviceOffline), errors.Is(err, service.ErrDeviceHasActiveTasks):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 func (h *Handler) Dispatch(c *gin.Context) {

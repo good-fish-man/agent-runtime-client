@@ -12,6 +12,7 @@ import (
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	chatpo "github.com/good-fish-man/agent-runtime-client/infra/repository/po/chat"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/experience"
+	"github.com/good-fish-man/agent-runtime-client/pkg/dbctx"
 	log "github.com/good-fish-man/logx"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -92,6 +93,22 @@ func (s *Store) ListPendingTerminalTasks(ctx context.Context, limit int) ([]enti
 		return nil, log.WrapError(err, "ExperienceStore.ListPendingTerminalTasks")
 	}
 	return rows, nil
+}
+
+// ListReadyOwners returns owner IDs with reusable, non-tombstoned Experience
+// records. Keyset pagination keeps the Evolution Orchestrator bounded.
+func (s *Store) ListReadyOwners(ctx context.Context, afterOwner string, limit int) ([]string, error) {
+	limit = normalizeLimit(limit)
+	owners := make([]string, 0, limit)
+	db := s.data.DB(ctx).Table("os_experience").Distinct("owner_id").
+		Where("status = ? AND tombstoned = ?", entity.StatusReady, false)
+	if strings.TrimSpace(afterOwner) != "" {
+		db = db.Where("owner_id > ?", strings.TrimSpace(afterOwner))
+	}
+	if err := db.Order("owner_id ASC").Limit(limit).Pluck("owner_id", &owners).Error; err != nil {
+		return nil, log.WrapError(err, "ExperienceStore.ListReadyOwners")
+	}
+	return owners, nil
 }
 
 func (s *Store) Create(ctx context.Context, stored *entity.StoredExperience) (bool, error) {
@@ -416,6 +433,29 @@ func (s *Store) Stats(ctx context.Context, ownerID string) (*entity.Stats, error
 	if err := db.Count(&stats.Total).Error; err != nil {
 		return nil, log.WrapError(err, "ExperienceStore.Stats.total")
 	}
+	terminalTasks := s.data.DB(ctx).Table("os_task").Where("status IN ?", []string{"COMPLETED", "FAILED", "CANCELLED"})
+	if ownerID != "" {
+		terminalTasks = terminalTasks.Where("user_id = ?", ownerID)
+	}
+	if err := terminalTasks.Count(&stats.TerminalTasks).Error; err != nil {
+		return nil, log.WrapError(err, "ExperienceStore.Stats.terminalTasks")
+	}
+	coveredTasks := s.data.DB(ctx).Table("os_experience AS experience").
+		Joins("JOIN os_task AS task ON task.task_id = experience.task_id").
+		Where("task.status IN ?", []string{"COMPLETED", "FAILED", "CANCELLED"})
+	if ownerID != "" {
+		coveredTasks = coveredTasks.Where("experience.owner_id = ? AND task.user_id = ?", ownerID, ownerID)
+	}
+	if err := coveredTasks.Count(&stats.CoveredTasks).Error; err != nil {
+		return nil, log.WrapError(err, "ExperienceStore.Stats.coveredTasks")
+	}
+	if stats.CoveredTasks > stats.TerminalTasks {
+		stats.CoveredTasks = stats.TerminalTasks
+	}
+	stats.PendingTasks = stats.TerminalTasks - stats.CoveredTasks
+	if stats.TerminalTasks > 0 {
+		stats.CoverageRate = float64(stats.CoveredTasks) / float64(stats.TerminalTasks)
+	}
 	for status, destination := range map[string]*int64{entity.StatusReady: &stats.Ready, entity.StatusSkipped: &stats.Skipped, entity.StatusDeleted: &stats.Deleted} {
 		query := s.data.DB(ctx).Model(&po.Experience{}).Where("status = ?", status)
 		if ownerID != "" {
@@ -513,7 +553,8 @@ func (s *Store) hydrate(ctx context.Context, audit *po.Experience) (*entity.Expe
 		return &value, nil
 	}
 	var payload po.ExperiencePayload
-	result := s.data.DB(ctx).Where("experience_id = ? AND owner_id = ?", audit.ExperienceID, audit.OwnerID).Limit(1).Find(&payload)
+	dbCtx := dbctx.SuppressQueryInfo(ctx)
+	result := s.data.DB(dbCtx).Where("experience_id = ? AND owner_id = ?", audit.ExperienceID, audit.OwnerID).Limit(1).Find(&payload)
 	if result.Error != nil {
 		return nil, log.WrapError(result.Error, "ExperienceStore.hydrate.payload")
 	}

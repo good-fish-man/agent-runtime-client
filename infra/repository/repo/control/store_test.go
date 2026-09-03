@@ -8,6 +8,7 @@ import (
 	"time"
 
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
+	irepository "github.com/good-fish-man/agent-runtime-client/domain/irepository/control"
 	"github.com/good-fish-man/agent-runtime-client/infra/data"
 	po "github.com/good-fish-man/agent-runtime-client/infra/repository/po/control"
 	"gorm.io/driver/sqlite"
@@ -105,6 +106,144 @@ func TestMarkAllDevicesOfflineKeepsLiveDeviceCapabilitiesOnline(t *testing.T) {
 	}
 	if instanceStatus["expired-device"] || !instanceStatus["live-device"] {
 		t.Fatalf("unexpected capability online state: %#v", instanceStatus)
+	}
+}
+
+func TestCapabilityInventoryUpsertIncrementsExistingRevision(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.TempDir()+"/inventory.db?_busy_timeout=5000"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&po.Device{}, &po.CapabilityDefinition{}, &po.CapabilityInstance{}, &po.DeviceCapability{}); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(data.New(db))
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	device := &entity.RegisteredDevice{
+		DeviceID: "device-inventory", Name: "Desktop",
+		Capabilities: []string{"browser.open"},
+		CapabilityInstances: []entity.CapabilityInstance{{
+			InstanceID: "device-inventory:browser-open", Capability: "browser.open", Version: "1",
+		}},
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := store.AcquireDeviceLease(context.Background(), device, "control-a", now.Add(time.Duration(attempt)*time.Second)); err != nil {
+			t.Fatalf("AcquireDeviceLease() attempt %d error = %v", attempt+1, err)
+		}
+	}
+	var instance po.CapabilityInstance
+	if err := db.Where("instance_id = ?", "device-inventory:browser-open").Take(&instance).Error; err != nil {
+		t.Fatal(err)
+	}
+	if instance.Revision != 2 {
+		t.Fatalf("capability instance revision = %d, want 2", instance.Revision)
+	}
+	var link po.DeviceCapability
+	if err := db.Where("device_id = ? AND instance_id = ?", "device-inventory", "device-inventory:browser-open").Take(&link).Error; err != nil {
+		t.Fatal(err)
+	}
+	if link.Revision != 2 {
+		t.Fatalf("device capability revision = %d, want 2", link.Revision)
+	}
+}
+
+func TestCapabilityInventoryDerivesConservativeRiskAndOperations(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.TempDir()+"/risk.db?_busy_timeout=5000"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&po.Device{}, &po.CapabilityDefinition{}, &po.CapabilityInstance{}, &po.DeviceCapability{}); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(data.New(db))
+	device := &entity.RegisteredDevice{
+		DeviceID: "device-risk", Name: "Desktop", Capabilities: []string{"browser.click"},
+		CapabilityInstances: []entity.CapabilityInstance{{
+			InstanceID: "device-risk:browser-click", Capability: "browser.click", Version: "1", Operations: []string{"click"},
+		}},
+	}
+	if _, err := store.AcquireDeviceLease(context.Background(), device, "control-a", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	var definition po.CapabilityDefinition
+	if err := db.Where("capability_id = ?", "browser.click").Take(&definition).Error; err != nil {
+		t.Fatal(err)
+	}
+	if definition.Risk != entity.RiskReversible || definition.Operations != `["click"]` {
+		t.Fatalf("capability definition = %+v", definition)
+	}
+}
+
+func TestUnbindDeviceRequiresOwnerAndNoUnfinishedTasks(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.TempDir()+"/unbind.db?_busy_timeout=5000"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&po.Device{}, &po.CapabilityDefinition{}, &po.CapabilityInstance{}, &po.DeviceCapability{}, &po.Task{}); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(data.New(db))
+	deviceID := "device-unbind"
+	instanceID := deviceID + ":browser-open"
+	if _, err := store.AcquireDeviceLease(context.Background(), &entity.RegisteredDevice{
+		DeviceID: deviceID, Name: "Desktop", Capabilities: []string{"browser.open"},
+		CapabilityInstances: []entity.CapabilityInstance{{InstanceID: instanceID, Capability: "browser.open"}},
+	}, "control-a", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindDevice(context.Background(), deviceID, "user-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UnbindDevice(context.Background(), deviceID, "user-b"); !errors.Is(err, irepository.ErrDeviceOwnerMismatch) {
+		t.Fatalf("other owner unbind error = %v, want ErrDeviceOwnerMismatch", err)
+	}
+
+	task := &po.Task{
+		TaskID: "task-active", UserID: "user-a", DeviceID: deviceID, Status: entity.TaskStatusRunning,
+		Revision: 1, ActiveSessions: "{}", Metadata: "{}", Result: "{}", ErrorDetail: "{}",
+	}
+	if err := db.Create(task).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UnbindDevice(context.Background(), deviceID, "user-a"); !errors.Is(err, irepository.ErrDeviceHasActiveTasks) {
+		t.Fatalf("active task unbind error = %v, want ErrDeviceHasActiveTasks", err)
+	}
+	if err := db.Model(&po.Task{}).Where("task_id = ?", task.TaskID).Update("status", entity.TaskStatusCompleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UnbindDevice(context.Background(), deviceID, "user-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	var device po.Device
+	if err := db.Where("device_id = ?", deviceID).Take(&device).Error; err != nil {
+		t.Fatal(err)
+	}
+	var instance po.CapabilityInstance
+	if err := db.Where("instance_id = ?", instanceID).Take(&instance).Error; err != nil {
+		t.Fatal(err)
+	}
+	var link po.DeviceCapability
+	if err := db.Where("device_id = ? AND instance_id = ?", deviceID, instanceID).Take(&link).Error; err != nil {
+		t.Fatal(err)
+	}
+	if device.UserID != "" || device.Online || device.LeaseOwner != "" || instance.OwnerID != "" || instance.Online || link.OwnerID != "" {
+		t.Fatalf("ownership and lease were not cleared atomically: device=%+v instance=%+v link=%+v", device, instance, link)
+	}
+	if err := store.ValidateDeviceLease(context.Background(), deviceID, "control-a", device.FencingToken-1, time.Now().UTC()); err == nil {
+		t.Fatal("lease from before the account release remained valid")
+	}
+	if err := store.BindDevice(context.Background(), deviceID, "user-b"); !errors.Is(err, irepository.ErrDeviceOffline) {
+		t.Fatalf("offline device bind error = %v, want ErrDeviceOffline", err)
+	}
+	if _, err := store.AcquireDeviceLease(context.Background(), &entity.RegisteredDevice{
+		DeviceID: deviceID, Name: "Desktop", Capabilities: []string{"browser.open"},
+		CapabilityInstances: []entity.CapabilityInstance{{InstanceID: instanceID, Capability: "browser.open"}},
+	}, "control-b", time.Now().UTC()); err != nil {
+		t.Fatalf("released device could not reconnect: %v", err)
+	}
+	if err := store.BindDevice(context.Background(), deviceID, "user-b"); err != nil {
+		t.Fatalf("new owner could not bind released device: %v", err)
 	}
 }
 
