@@ -51,7 +51,7 @@ evolution:
   minimum_novel_experiences: 2
   codex:
     enabled: false
-    model: "gpt-5.3-codex"
+    model: "gpt-5.6"
     api_key: "${OPENAI_API_KEY}"
     api_base: "https://api.openai.com/v1"
     reasoning_effort: "medium"
@@ -73,7 +73,7 @@ Environment overrides:
 | `ARC_EVOLUTION_CODEX_MODEL` | Codex model used by the Responses API |
 | `ARC_EVOLUTION_CODEX_API_KEY` | OpenAI API key; otherwise `OPENAI_API_KEY` is expanded from the sample config |
 | `ARC_EVOLUTION_CODEX_API_BASE` | Responses API base URL |
-| `ARC_EVOLUTION_CODEX_REASONING_EFFORT` | `low`, `medium`, `high`, or `xhigh` |
+| `ARC_EVOLUTION_CODEX_REASONING_EFFORT` | `none`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `ARC_EVOLUTION_CODEX_TIMEOUT_SEC` | Per-request timeout |
 | `ARC_EVOLUTION_CODEX_MAX_OUTPUT_TOKENS` | Structured output token ceiling |
 

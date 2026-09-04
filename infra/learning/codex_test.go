@@ -48,8 +48,8 @@ func TestCodexSynthesizerUsesResponsesStructuredOutput(t *testing.T) {
 	defer server.Close()
 
 	synthesizer, err := NewCodexSynthesizer(CodexConfig{
-		Model: "gpt-5.3-codex", APIKey: "test-key", APIBase: server.URL + "/v1",
-		ReasoningEffort: "high", MaxOutputTokens: 2048,
+		Model: "gpt-5.6", APIKey: "test-key", APIBase: server.URL + "/v1",
+		ReasoningEffort: "max", MaxOutputTokens: 2048,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,13 +72,13 @@ func TestCodexSynthesizerUsesResponsesStructuredOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Synthesize() error = %v", err)
 	}
-	if result.Model != "gpt-5.3-codex" || result.ResponseID != "resp_123" || len(result.InputDigest) != 64 {
+	if result.Model != "gpt-5.6" || result.ResponseID != "resp_123" || len(result.InputDigest) != 64 {
 		t.Fatalf("result = %+v", result)
 	}
 	if result.Proposal.Description != "Codex synthesized navigation" {
 		t.Fatalf("proposal = %+v", result.Proposal)
 	}
-	if captured.Model != "gpt-5.3-codex" || captured.Store || captured.Reasoning.Effort != "high" || captured.MaxOutputTokens != 2048 {
+	if captured.Model != "gpt-5.6" || captured.Store || captured.Reasoning.Effort != "max" || captured.MaxOutputTokens != 2048 {
 		t.Fatalf("request = %+v", captured)
 	}
 	if captured.SafetyIdentifier != "athena-hashed-owner" || captured.Text.Format.Type != "json_schema" || !captured.Text.Format.Strict {
@@ -91,8 +91,8 @@ func TestCodexSynthesizerUsesResponsesStructuredOutput(t *testing.T) {
 
 func TestCodexSynthesizerRejectsUnsafeConfiguration(t *testing.T) {
 	for name, config := range map[string]CodexConfig{
-		"missing key":   {Model: "gpt-5.3-codex", APIKey: ""},
-		"non Codex":     {Model: "gpt-5.6-sol", APIKey: "test-key"},
+		"missing key":   {Model: "gpt-5.6", APIKey: ""},
+		"unsupported":   {Model: "gpt-4o", APIKey: "test-key"},
 		"insecure base": {Model: "gpt-5.3-codex", APIKey: "test-key", APIBase: "http://api.example.test/v1"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -100,6 +100,16 @@ func TestCodexSynthesizerRejectsUnsafeConfiguration(t *testing.T) {
 				t.Fatalf("NewCodexSynthesizer(%+v) succeeded", config)
 			}
 		})
+	}
+}
+
+func TestCodexSynthesizerSupportsGPT56FamilyAndReasoningEfforts(t *testing.T) {
+	for _, model := range []string{"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.3-codex"} {
+		for _, effort := range []string{"none", "low", "medium", "high", "xhigh", "max"} {
+			if _, err := NewCodexSynthesizer(CodexConfig{Model: model, APIKey: "test-key", ReasoningEffort: effort}); err != nil {
+				t.Fatalf("model %q effort %q: %v", model, effort, err)
+			}
+		}
 	}
 }
 

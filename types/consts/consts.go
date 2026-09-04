@@ -61,7 +61,7 @@ const (
 	DefaultEvolutionExperienceLimit      = 1000
 	DefaultEvolutionCandidatesPerScan    = 10
 	DefaultEvolutionMinimumNovel         = 2
-	DefaultEvolutionCodexModel           = "gpt-5.3-codex"
+	DefaultEvolutionCodexModel           = "gpt-5.6"
 	DefaultEvolutionCodexAPIBase         = "https://api.openai.com/v1"
 	DefaultEvolutionCodexTimeoutSec      = 120
 	DefaultEvolutionCodexMaxOutputTokens = 4096

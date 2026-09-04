@@ -282,6 +282,7 @@ func seedModelCatalog(ctx context.Context, d *data.Data) error {
 func defaultModelCatalog() []*modelpo.ModelCatalog {
 	return []*modelpo.ModelCatalog{
 		// OpenAI
+		{Provider: "OpenAI", ModelType: "llm", ModelFamily: "GPT-5.6", ModelVersion: "gpt-5.6", DisplayName: "GPT-5.6 (Sol alias)", DefaultBaseUrl: "https://api.openai.com/v1", ContextWindow: "1.05m", Capabilities: "chat,vision,tools,reasoning", Enabled: true, Sort: 9},
 		{Provider: "OpenAI", ModelType: "llm", ModelFamily: "GPT-5.6", ModelVersion: "gpt-5.6-sol", DisplayName: "GPT-5.6 Sol", DefaultBaseUrl: "https://api.openai.com/v1", ContextWindow: "1.05m", Capabilities: "chat,vision,tools,reasoning", Enabled: true, Sort: 10},
 		{Provider: "OpenAI", ModelType: "llm", ModelFamily: "GPT-5.6", ModelVersion: "gpt-5.6-terra", DisplayName: "GPT-5.6 Terra", DefaultBaseUrl: "https://api.openai.com/v1", ContextWindow: "1.05m", Capabilities: "chat,vision,tools,reasoning", Enabled: true, Sort: 11},
 		{Provider: "OpenAI", ModelType: "llm", ModelFamily: "GPT-5.6", ModelVersion: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna", DefaultBaseUrl: "https://api.openai.com/v1", ContextWindow: "1.05m", Capabilities: "chat,vision,tools,reasoning", Enabled: true, Sort: 12},

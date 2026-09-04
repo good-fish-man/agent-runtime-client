@@ -7,6 +7,7 @@ func TestDefaultModelCatalogIncludesCurrentModels(t *testing.T) {
 		provider      string
 		contextWindow string
 	}{
+		"gpt-5.6":             {provider: "OpenAI", contextWindow: "1.05m"},
 		"gpt-5.6-sol":         {provider: "OpenAI", contextWindow: "1.05m"},
 		"claude-sonnet-5":     {provider: "Anthropic", contextWindow: "1m"},
 		"gemini-3.6-flash":    {provider: "Google", contextWindow: "1m"},

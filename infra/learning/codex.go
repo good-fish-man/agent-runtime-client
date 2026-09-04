@@ -19,7 +19,7 @@ import (
 
 const (
 	defaultCodexAPIBase         = "https://api.openai.com/v1"
-	defaultCodexModel           = "gpt-5.3-codex"
+	defaultCodexModel           = "gpt-5.6"
 	defaultCodexTimeout         = 120 * time.Second
 	defaultCodexMaxOutputTokens = 4096
 	maximumResponseBodyBytes    = 1 << 20
@@ -57,8 +57,8 @@ func NewCodexSynthesizer(config CodexConfig) (*CodexSynthesizer, error) {
 	if model == "" {
 		model = defaultCodexModel
 	}
-	if !strings.Contains(strings.ToLower(model), "codex") {
-		return nil, fmt.Errorf("Codex synthesis model %q is not a Codex model", model)
+	if !isSupportedSynthesisModel(model) {
+		return nil, fmt.Errorf("Codex synthesis model %q must be a Codex or GPT-5.6 model", model)
 	}
 	apiKey := strings.TrimSpace(os.ExpandEnv(config.APIKey))
 	if apiKey == "" || strings.Contains(apiKey, "${") {
@@ -73,7 +73,7 @@ func NewCodexSynthesizer(config CodexConfig) (*CodexSynthesizer, error) {
 		reasoningEffort = "medium"
 	}
 	switch reasoningEffort {
-	case "low", "medium", "high", "xhigh":
+	case "none", "low", "medium", "high", "xhigh", "max":
 	default:
 		return nil, fmt.Errorf("unsupported Codex reasoning effort %q", reasoningEffort)
 	}
@@ -93,6 +93,11 @@ func NewCodexSynthesizer(config CodexConfig) (*CodexSynthesizer, error) {
 		reasoningEffort: reasoningEffort, maxOutputTokens: maxOutputTokens,
 		client: &http.Client{Timeout: timeout},
 	}, nil
+}
+
+func isSupportedSynthesisModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(model, "codex") || model == "gpt-5.6" || strings.HasPrefix(model, "gpt-5.6-")
 }
 
 func (s *CodexSynthesizer) WithHTTPClient(client *http.Client) *CodexSynthesizer {

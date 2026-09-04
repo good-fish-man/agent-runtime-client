@@ -51,7 +51,7 @@ evolution:
   minimum_novel_experiences: 2
   codex:
     enabled: false
-    model: "gpt-5.3-codex"
+    model: "gpt-5.6"
     api_key: "${OPENAI_API_KEY}"
     api_base: "https://api.openai.com/v1"
     reasoning_effort: "medium"
@@ -73,7 +73,7 @@ evolution:
 | `ARC_EVOLUTION_CODEX_MODEL` | Responses API 使用的 Codex 模型 |
 | `ARC_EVOLUTION_CODEX_API_KEY` | OpenAI API Key；否则示例配置会展开 `OPENAI_API_KEY` |
 | `ARC_EVOLUTION_CODEX_API_BASE` | Responses API 基础地址 |
-| `ARC_EVOLUTION_CODEX_REASONING_EFFORT` | `low`、`medium`、`high` 或 `xhigh` |
+| `ARC_EVOLUTION_CODEX_REASONING_EFFORT` | `none`、`low`、`medium`、`high`、`xhigh` 或 `max` |
 | `ARC_EVOLUTION_CODEX_TIMEOUT_SEC` | 单次请求超时 |
 | `ARC_EVOLUTION_CODEX_MAX_OUTPUT_TOKENS` | 结构化输出 Token 上限 |
 
