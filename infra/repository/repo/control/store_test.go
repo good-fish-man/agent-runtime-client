@@ -251,12 +251,12 @@ func TestApplyWorldPatchSupportsSetMergeRemoveAndEscapedPointers(t *testing.T) {
 	state := map[string]any{
 		"browser": map[string]any{"title": "Before", "stale": true},
 	}
-	patch := entity.WorldPatch{Mutations: []entity.WorldMutation{
+	patch := validStoreWorldPatch([]entity.WorldMutation{
 		{Operation: "set", Path: "/browser/title", Value: "After"},
 		{Operation: "merge", Path: "/browser", Value: map[string]any{"url": "https://example.com"}},
 		{Operation: "remove", Path: "/browser/stale"},
 		{Operation: "set", Path: "/entities/a~1b/name~0value", Value: "escaped"},
-	}}
+	})
 	if err := applyWorldPatch(state, patch); err != nil {
 		t.Fatal(err)
 	}
@@ -271,9 +271,9 @@ func TestApplyWorldPatchSupportsSetMergeRemoveAndEscapedPointers(t *testing.T) {
 
 func TestApplyWorldPatchRejectsPathThroughScalar(t *testing.T) {
 	state := map[string]any{"browser": "not-an-object"}
-	err := applyWorldPatch(state, entity.WorldPatch{Mutations: []entity.WorldMutation{{
+	err := applyWorldPatch(state, validStoreWorldPatch([]entity.WorldMutation{{
 		Operation: "set", Path: "/browser/title", Value: "unsafe",
-	}}})
+	}}))
 	if err == nil {
 		t.Fatal("patch silently replaced a scalar with an object")
 	}
@@ -284,12 +284,103 @@ func TestApplyWorldPatchRejectsPathThroughScalar(t *testing.T) {
 
 func TestApplyWorldPatchRejectsMergeIntoScalar(t *testing.T) {
 	state := map[string]any{"browser": "not-an-object"}
-	err := applyWorldPatch(state, entity.WorldPatch{Mutations: []entity.WorldMutation{{
+	err := applyWorldPatch(state, validStoreWorldPatch([]entity.WorldMutation{{
 		Operation: "merge", Path: "/browser", Value: map[string]any{"title": "unsafe"},
-	}}})
+	}}))
 	if err == nil {
 		t.Fatal("merge silently replaced a scalar with an object")
 	}
+}
+
+func TestStructuredWorldProjectionPersistsTypedRecords(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.TempDir()+"/world.db?_busy_timeout=5000"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&po.WorldEntity{}, &po.WorldRelation{}, &po.WorldFact{}); err != nil {
+		t.Fatal(err)
+	}
+	observed := time.Now().UTC().Truncate(time.Millisecond)
+	patch := validStoreWorldPatch([]entity.WorldMutation{{Operation: "set", Path: "/entities/agent-1"}, {Operation: "set", Path: "/entities/device-1"}, {Operation: "set", Path: "/relations/uses-1"}, {Operation: "set", Path: "/facts/status-1"}})
+	patch.Confidence = .85
+	patch.TTLSeconds = 600
+	state := map[string]any{"entities": map[string]any{"agent-1": map[string]any{"type": "Agent", "canonical_name": "Athena"}, "device-1": map[string]any{"type": "Device"}}, "relations": map[string]any{"uses-1": map[string]any{"predicate": "uses", "source_id": "agent-1", "target_id": "device-1"}}, "facts": map[string]any{"status-1": map[string]any{"subject_id": "device-1", "subject_type": "Device", "predicate": "status", "value": "online", "value_type": "string"}}}
+	observation := entity.Observation{TaskID: "task-1", ObservedAt: observed, WorldPatch: &patch}
+	if err := persistSemanticWorld(db, "owner-1", "trace-1", observation, state, 3); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(data.New(db))
+	query := entity.WorldQuery{Schema: "athena.world-query.v1", TaskID: "task-1", AsOf: observed, Limit: 100}
+	entities, relations, facts, err := store.QueryWorld(context.Background(), "owner-1", query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entities) != 2 || len(relations) != 1 || len(facts) != 1 || facts[0].Value != "online" {
+		t.Fatalf("entities=%#v relations=%#v facts=%#v", entities, relations, facts)
+	}
+	if entities[0].Confidence != .85 || !entities[0].ExpiresAt.Equal(observed.Add(10*time.Minute)) {
+		t.Fatalf("entity metadata=%+v", entities[0])
+	}
+}
+
+func TestWorldProviderRegistryIsOwnerScopedAndRevisionFenced(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.TempDir()+"/providers.db?_busy_timeout=5000"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&po.WorldProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(data.New(db))
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	provider := entity.WorldProvider{
+		ProviderID: "provider-1", OwnerID: "owner-1", Name: "Knowledge graph", Kind: entity.WorldProviderSPARQL,
+		Endpoint: "https://graph.example.com/sparql", QueryTemplate: "SELECT * WHERE { ?s ?p ?o } LIMIT 10",
+		AuthMode: entity.WorldProviderAuthBearer, CredentialEnv: "ATHENA_WORLD_PROVIDER_GRAPH_TOKEN", OntologyPack: "core", OntologyVersion: "1.0.0",
+		DefaultConfidence: .8, TTLSeconds: 300, TimeoutMS: 5000, Enabled: true, ReadOnly: true,
+		Capabilities: []string{"query", "rdf"}, HealthStatus: entity.WorldProviderHealthUnknown, Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateWorldProvider(context.Background(), provider); err != nil {
+		t.Fatal(err)
+	}
+	if foreign, err := store.FindWorldProvider(context.Background(), "owner-2", provider.ProviderID); err != nil || foreign != nil {
+		t.Fatalf("foreign owner lookup = %#v, %v", foreign, err)
+	}
+	loaded, err := store.FindWorldProvider(context.Background(), provider.OwnerID, provider.ProviderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil || loaded.Endpoint != provider.Endpoint || loaded.CredentialEnv != provider.CredentialEnv || !reflect.DeepEqual(loaded.Capabilities, provider.Capabilities) {
+		t.Fatalf("provider round trip = %#v", loaded)
+	}
+	loaded.Name, loaded.Enabled, loaded.Revision, loaded.UpdatedAt = "Updated graph", false, 2, now.Add(time.Second)
+	if err := store.UpdateWorldProvider(context.Background(), *loaded, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateWorldProvider(context.Background(), *loaded, 1); err == nil {
+		t.Fatal("stale provider revision was accepted")
+	}
+	checkedAt := now.Add(2 * time.Second)
+	if err := store.RecordWorldProviderHealth(context.Background(), provider.OwnerID, provider.ProviderID, entity.WorldProviderHealthAvailable, "Connection succeeded", checkedAt); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ListWorldProviders(context.Background(), provider.OwnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Enabled || items[0].HealthStatus != entity.WorldProviderHealthAvailable || items[0].LastCheckedAt == nil || !items[0].LastCheckedAt.Equal(checkedAt) {
+		t.Fatalf("updated provider = %#v", items)
+	}
+	if err := store.DeleteWorldProvider(context.Background(), "owner-2", provider.ProviderID); err == nil {
+		t.Fatal("foreign owner deleted provider")
+	}
+	if err := store.DeleteWorldProvider(context.Background(), provider.OwnerID, provider.ProviderID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validStoreWorldPatch(mutations []entity.WorldMutation) entity.WorldPatch {
+	return entity.WorldPatch{OntologyPack: "test", OntologyVersion: "1.0.0", Evidence: []entity.EvidenceRef{{EvidenceID: "evidence-1", Kind: "test"}}, Confidence: 1, TTLSeconds: 60, Mutations: mutations}
 }
 
 func TestSameDurableActionRejectsArgumentMutation(t *testing.T) {

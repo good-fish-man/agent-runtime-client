@@ -442,6 +442,7 @@ func (s *Service) build(task *controlentity.TaskSession, events []controlentity.
 	base.EnvironmentFingerprint = environmentFingerprint(task)
 	base.ActionRefs = actionRefs(task)
 	base.ObservationRefs, redactions = s.observationRefs(task, redactions)
+	base.WorldChanges, redactions = s.worldChanges(events, redactions)
 	base.Verification = verification(task)
 	if trace := finalSemanticTrace(task); trace != nil && trace.VerificationSummary != nil {
 		switch trace.VerificationSummary.Status {
@@ -473,6 +474,7 @@ func (s *Service) build(task *controlentity.TaskSession, events []controlentity.
 		base.DecisionSummary = ""
 		base.ActionRefs = nil
 		base.ObservationRefs = nil
+		base.WorldChanges = nil
 		base.Failure = nil
 		base.Cost = entity.Experience{}.Cost
 		return &entity.StoredExperience{Experience: base, EventRefs: refs, Redactions: redactions}, nil
@@ -486,6 +488,37 @@ func (s *Service) build(task *controlentity.TaskSession, events []controlentity.
 	}
 	searchText := experienceSearchText(base)
 	return &entity.StoredExperience{Experience: base, Payload: string(payload), SearchText: searchText, Vector: vectorize(searchText), EventRefs: refs, Redactions: redactions}, nil
+}
+
+func (s *Service) worldChanges(events []controlentity.EventEnvelope, redactions []entity.Redaction) ([]entity.WorldChange, []entity.Redaction) {
+	result := make([]entity.WorldChange, 0)
+	for _, event := range events {
+		if event.Type != controlentity.EventWorldPatched || event.Payload["changes"] == nil {
+			continue
+		}
+		body, err := json.Marshal(event.Payload["changes"])
+		if err != nil {
+			continue
+		}
+		var changes []entity.WorldChange
+		if json.Unmarshal(body, &changes) != nil {
+			continue
+		}
+		for _, change := range changes {
+			if change.Kind != "entities" && change.Kind != "relations" && change.Kind != "facts" {
+				continue
+			}
+			safe := change
+			var beforeHits []entity.Redaction
+			safe.Before, beforeHits = s.redactor.Sanitize(change.Before, fmt.Sprintf("$.world_changes[%d].before", len(result)))
+			var hits []entity.Redaction
+			safe.After, hits = s.redactor.Sanitize(change.After, fmt.Sprintf("$.world_changes[%d].after", len(result)))
+			result = append(result, safe)
+			redactions = append(redactions, beforeHits...)
+			redactions = append(redactions, hits...)
+		}
+	}
+	return result, redactions
 }
 
 func (s *Service) sanitizeString(value, path string, existing []entity.Redaction) (string, []entity.Redaction) {

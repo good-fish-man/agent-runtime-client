@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 
 	"google.golang.org/grpc"
@@ -12,6 +13,7 @@ import (
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/runtime"
 	irepo "github.com/good-fish-man/agent-runtime-client/domain/irepository/runtime"
 	"github.com/good-fish-man/agent-runtime-client/types/consts"
+	protocol "github.com/good-fish-man/athena-protocol/protocol/v5"
 	log "github.com/good-fish-man/logx"
 )
 
@@ -127,9 +129,29 @@ func (g *Gateway) ListCapabilities(ctx context.Context, traceID string) ([]entit
 		result = append(result, entity.CapabilityDefinition{
 			ID: item.GetId(), Description: item.GetDescription(), Input: item.GetInput(), Output: item.GetOutput(),
 			ReadOnly: item.GetReadOnly(), Risk: item.GetRisk(), Status: item.GetStatus(), Provider: item.GetProvider(), Reason: item.GetReason(),
+			Preconditions: worldConditionsFromProto(item.GetPreconditions()), ExpectedEffects: worldEffectsFromProto(item.GetExpectedEffects()), Postconditions: worldConditionsFromProto(item.GetPostconditions()),
 		})
 	}
 	return result, nil
+}
+
+func worldConditionsFromProto(values []*runtimev1.WorldCondition) []protocol.WorldCondition {
+	result := make([]protocol.WorldCondition, 0, len(values))
+	for _, value := range values {
+		var decoded any
+		_ = json.Unmarshal(value.GetValueJson(), &decoded)
+		result = append(result, protocol.WorldCondition{Path: value.GetPath(), Operator: value.GetOperator(), Value: decoded, Required: value.GetRequired()})
+	}
+	return result
+}
+func worldEffectsFromProto(values []*runtimev1.WorldEffect) []protocol.WorldEffect {
+	result := make([]protocol.WorldEffect, 0, len(values))
+	for _, value := range values {
+		var decoded any
+		_ = json.Unmarshal(value.GetValueJson(), &decoded)
+		result = append(result, protocol.WorldEffect{Operation: value.GetOperation(), Path: value.GetPath(), Value: decoded})
+	}
+	return result
 }
 
 // unaryCtx attaches trace metadata and a per-call timeout for unary RPCs.

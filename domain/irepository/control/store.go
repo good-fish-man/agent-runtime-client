@@ -35,6 +35,10 @@ type Store interface {
 	FindObservationByIdempotency(context.Context, string) (*entity.Observation, error)
 	ListEvents(context.Context, string, int64, int) ([]entity.EventEnvelope, error)
 	FindWorldState(context.Context, string) (*entity.WorldState, error)
+	QueryWorld(context.Context, string, entity.WorldQuery) ([]entity.WorldEntity, []entity.WorldRelation, []entity.WorldFact, error)
+	RecordWorldConflict(context.Context, entity.WorldConflict) error
+	ListWorldConflicts(context.Context, string, string, int) ([]entity.WorldConflict, error)
+	ResolveWorldConflict(context.Context, string, string, string, int64) (*entity.WorldConflict, error)
 }
 
 type OutboxMessage struct {

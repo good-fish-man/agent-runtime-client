@@ -198,6 +198,10 @@ func TestOntologyNeedsOfflineCandidateHumanReviewAndMigrationTool(t *testing.T) 
 	if err != nil || len(packs) != 1 {
 		t.Fatalf("packs=%+v error=%v", packs, err)
 	}
+	activePack, activeVersion, err := service.ResolveActiveOntology(ctx, "owner-1")
+	if err != nil || activePack.PackID != packs[0].PackID || activeVersion.Version != packs[0].Current || activeVersion.Status != knowledgev1.OntologyApproved {
+		t.Fatalf("active ontology pack=%+v version=%+v error=%v", activePack, activeVersion, err)
+	}
 	persistEvidence(t, service, officialEvidence("e-reviewed", "owner-1", "https://example.go.jp/ontology", "Reviewed domain vocabulary", time.Now().UTC()))
 	candidate, err := service.CreateOntologyCandidate(ctx, "owner-1", CreateOntologyCandidateRequest{
 		PackID: packs[0].PackID, BaseVersion: "1.0.0", Version: "1.1.0", CompatibleWith: []string{"1.0.0"}, EvidenceRefs: []string{"e-reviewed"},
@@ -206,6 +210,9 @@ func TestOntologyNeedsOfflineCandidateHumanReviewAndMigrationTool(t *testing.T) 
 	})
 	if err != nil || candidate.Status != knowledgev1.OntologyReviewRequired || !candidate.Evaluation.Passed || candidate.Evaluation.Environment != "OFFLINE" {
 		t.Fatalf("candidate=%+v error=%v", candidate, err)
+	}
+	if _, err := service.ReviewOntologyCandidate(ctx, "owner-1", "codex:gpt-5", candidate.CandidateID, ReviewOntologyCandidateRequest{Approved: true, ReviewNote: "self approve", ExpectedRevision: candidate.Revision}); err == nil {
+		t.Fatal("Codex identity approved its own ontology candidate")
 	}
 	approved, err := service.ReviewOntologyCandidate(ctx, "owner-1", "reviewer-1", candidate.CandidateID, ReviewOntologyCandidateRequest{Approved: true, ReviewNote: "Offline checks passed", ExpectedRevision: candidate.Revision})
 	if err != nil || approved.Proposed.ApprovedBy != "reviewer-1" {
@@ -230,6 +237,40 @@ func TestOntologyNeedsOfflineCandidateHumanReviewAndMigrationTool(t *testing.T) 
 	packs, err = service.ListOntologyPacks(ctx, "owner-1")
 	if err != nil || len(packs) != 1 || packs[0].Current != "1.1.0" {
 		t.Fatalf("ontology pointer was not advanced atomically: packs=%+v error=%v", packs, err)
+	}
+}
+
+func TestNewOntologyPackStartsAsNonExecutablePlanningBaseline(t *testing.T) {
+	service := newKnowledgeService(t)
+	ctx := context.Background()
+	if err := service.EnsureCoreOntology(ctx, "owner-1"); err != nil {
+		t.Fatal(err)
+	}
+	pack, err := service.CreateOntologyPack(ctx, "owner-1", CreateOntologyPackRequest{Name: "Factory operations", Domain: "factory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pack.Current != "0.0.0" {
+		t.Fatalf("planning baseline = %q, want 0.0.0", pack.Current)
+	}
+	persistEvidence(t, service, officialEvidence("factory-evidence", "owner-1", "https://example.com/factory-ontology", "Reviewed factory vocabulary", time.Now().UTC()))
+	candidate, err := service.CreateOntologyCandidate(ctx, "owner-1", CreateOntologyCandidateRequest{
+		PackID: pack.PackID, BaseVersion: pack.Current, Version: "1.0.0", CompatibleWith: []string{pack.Current}, EvidenceRefs: []string{"factory-evidence"},
+		ValidationRules: []knowledgev1.ValidationRule{{SubjectType: "Machine", Predicate: "feeds", ValueType: "Machine", Required: false}},
+		Definition: knowledgev1.OntologyDefinition{
+			Entities:  []knowledgev1.OntologyEntity{{ID: "Machine"}},
+			Relations: []knowledgev1.OntologyRelation{{ID: "feeds", SourceType: "Machine", TargetType: "Machine"}},
+		},
+	})
+	if err != nil || candidate.Status != knowledgev1.OntologyReviewRequired || !candidate.Evaluation.Passed {
+		t.Fatalf("planning candidate = %+v, error = %v", candidate, err)
+	}
+	activePack, _, err := service.ResolveActiveOntology(ctx, "owner-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activePack.PackID == pack.PackID {
+		t.Fatal("a planned ontology pack became active without review and migration")
 	}
 }
 

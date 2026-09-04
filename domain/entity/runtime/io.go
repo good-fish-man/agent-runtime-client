@@ -1,5 +1,7 @@
 package runtime
 
+import protocol "github.com/good-fish-man/athena-protocol/protocol/v5"
+
 // ---- Inputs ----
 
 // RunInput is a domain request to execute a single run.
@@ -48,15 +50,18 @@ type VisualInput struct {
 }
 
 type CapabilityDefinition struct {
-	ID          string            `json:"id"`
-	Description string            `json:"description"`
-	Input       map[string]string `json:"input,omitempty"`
-	Output      string            `json:"output,omitempty"`
-	ReadOnly    bool              `json:"read_only"`
-	Risk        string            `json:"risk"`
-	Status      string            `json:"status"`
-	Provider    string            `json:"provider,omitempty"`
-	Reason      string            `json:"reason,omitempty"`
+	ID              string                    `json:"id"`
+	Description     string                    `json:"description"`
+	Input           map[string]string         `json:"input,omitempty"`
+	Output          string                    `json:"output,omitempty"`
+	ReadOnly        bool                      `json:"read_only"`
+	Risk            string                    `json:"risk"`
+	Status          string                    `json:"status"`
+	Provider        string                    `json:"provider,omitempty"`
+	Reason          string                    `json:"reason,omitempty"`
+	Preconditions   []protocol.WorldCondition `json:"preconditions"`
+	ExpectedEffects []protocol.WorldEffect    `json:"expected_effects"`
+	Postconditions  []protocol.WorldCondition `json:"postconditions"`
 }
 
 type MediaGenerationInput struct {

@@ -315,28 +315,32 @@ func syncCapabilityInventory(tx *gorm.DB, device *entity.RegisteredDevice, seenA
 		if err != nil {
 			return err
 		}
+		worldContract, err := encodeJSON(instance.World)
+		if err != nil {
+			return err
+		}
 		definition := po.CapabilityDefinition{
 			CapabilityID: instance.Capability, OwnerID: "system", Version: instance.Version,
 			Operations: operations, Modalities: modalities, InputSchema: "{}", OutputSchema: "{}",
-			Risk: minimumCapabilityRisk(instance.Capability, instance.Operations), Enabled: true, Revision: 1, CreatedAt: millis(seenAt), UpdatedAt: millis(seenAt),
+			Risk: minimumCapabilityRisk(instance.Capability, instance.Operations), WorldContract: worldContract, Enabled: true, Revision: 1, CreatedAt: millis(seenAt), UpdatedAt: millis(seenAt),
 		}
 		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "capability_id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"version", "operations", "modalities", "risk", "enabled", "updated_at"}),
+			DoUpdates: clause.AssignmentColumns([]string{"version", "operations", "modalities", "risk", "world_contract", "enabled", "updated_at"}),
 		}).Create(&definition).Error; err != nil {
 			return err
 		}
 		value := po.CapabilityInstance{
 			InstanceID: instance.InstanceID, CapabilityID: instance.Capability, DeviceID: device.DeviceID,
 			OwnerID: device.UserID, Version: instance.Version, Operations: operations, Modalities: modalities,
-			Metadata: metadata, Online: device.Online, Revision: 1, CreatedAt: millis(seenAt), UpdatedAt: millis(seenAt),
+			Metadata: metadata, WorldContract: worldContract, Online: device.Online, Revision: 1, CreatedAt: millis(seenAt), UpdatedAt: millis(seenAt),
 		}
 		if err := tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "instance_id"}},
 			DoUpdates: clause.Assignments(map[string]any{
 				"capability_id": value.CapabilityID, "device_id": value.DeviceID, "owner_id": value.OwnerID,
 				"version": value.Version, "operations": value.Operations, "modalities": value.Modalities,
-				"metadata": value.Metadata, "online": value.Online, "revision": revisionIncrement("os_capability_instance"), "updated_at": value.UpdatedAt,
+				"metadata": value.Metadata, "world_contract": value.WorldContract, "online": value.Online, "revision": revisionIncrement("os_capability_instance"), "updated_at": value.UpdatedAt,
 			}),
 		}).Create(&value).Error; err != nil {
 			return err
@@ -892,7 +896,7 @@ func (s *Store) SaveObservation(ctx context.Context, observation entity.Observat
 		if err := projectObservationEvidence(tx, observation, task.UserID, traceID); err != nil {
 			return err
 		}
-		worldRevision, err := projectWorldState(tx, observation)
+		worldRevision, err := projectStructuredWorld(tx, observation, task.UserID, traceID)
 		if err != nil {
 			return err
 		}
@@ -997,6 +1001,229 @@ func (s *Store) FindWorldState(ctx context.Context, taskID string) (*entity.Worl
 	world := &entity.WorldState{TaskID: value.TaskID, Revision: value.Revision, State: map[string]any{}, UpdatedAt: fromMillis(value.UpdatedAt)}
 	decodeJSON(value.State, &world.State)
 	return world, nil
+}
+
+func (s *Store) QueryWorld(ctx context.Context, ownerID string, query entity.WorldQuery) ([]entity.WorldEntity, []entity.WorldRelation, []entity.WorldFact, error) {
+	query.Normalize()
+	if err := query.Validate(); err != nil {
+		return nil, nil, nil, err
+	}
+	now := millis(query.AsOf)
+	scope := ""
+	if query.TaskID != "" {
+		scope = "task:" + query.TaskID
+	}
+
+	entityDB := s.data.DB(ctx).Where("owner_id = ?", ownerID)
+	relationDB := s.data.DB(ctx).Where("owner_id = ?", ownerID)
+	factDB := s.data.DB(ctx).Where("owner_id = ?", ownerID)
+	if scope != "" {
+		entityDB = entityDB.Where("scope = ?", scope)
+		relationDB = relationDB.Where("scope = ?", scope)
+		factDB = factDB.Where("scope = ?", scope)
+	} else if len(query.Scopes) > 0 {
+		entityDB = entityDB.Where("scope IN ?", query.Scopes)
+		relationDB = relationDB.Where("scope IN ?", query.Scopes)
+		factDB = factDB.Where("scope IN ?", query.Scopes)
+	}
+	if !query.IncludeExpired {
+		entityDB = entityDB.Where("expires_at > ?", now)
+		relationDB = relationDB.Where("expires_at > ?", now)
+		factDB = factDB.Where("expires_at > ?", now)
+	}
+	if len(query.EntityTypes) > 0 {
+		entityDB = entityDB.Where("kind IN ?", query.EntityTypes)
+	}
+	if len(query.Predicates) > 0 {
+		relationDB = relationDB.Where("kind IN ?", query.Predicates)
+		factDB = factDB.Where("predicate IN ?", query.Predicates)
+	}
+	if text := strings.TrimSpace(query.Text); text != "" {
+		like := "%" + text + "%"
+		entityDB = entityDB.Where("entity_id LIKE ? OR properties LIKE ?", like, like)
+		relationDB = relationDB.Where("relation_id LIKE ? OR properties LIKE ?", like, like)
+		factDB = factDB.Where("fact_id LIKE ? OR value LIKE ? OR properties LIKE ?", like, like, like)
+	}
+	var entityRows []po.WorldEntity
+	var relationRows []po.WorldRelation
+	var factRows []po.WorldFact
+	if err := entityDB.Order("updated_at DESC").Limit(query.Limit).Find(&entityRows).Error; err != nil {
+		return nil, nil, nil, log.WrapError(err, "ControlStore.QueryWorld.entities")
+	}
+	if err := relationDB.Order("updated_at DESC").Limit(query.Limit).Find(&relationRows).Error; err != nil {
+		return nil, nil, nil, log.WrapError(err, "ControlStore.QueryWorld.relations")
+	}
+	if err := factDB.Order("updated_at DESC").Limit(query.Limit).Find(&factRows).Error; err != nil {
+		return nil, nil, nil, log.WrapError(err, "ControlStore.QueryWorld.facts")
+	}
+	entities := make([]entity.WorldEntity, 0, len(entityRows))
+	for _, row := range entityRows {
+		value := entity.WorldEntity{EntityID: row.EntityID, Scope: row.Scope, Type: row.Kind, Confidence: row.Confidence, ObservedAt: fromMillis(row.ObservedAt), ExpiresAt: fromMillis(row.ExpiresAt), Revision: row.Revision}
+		decodeJSON(row.Properties, &value.Properties)
+		decodeJSON(row.Evidence, &value.Evidence)
+		value.CanonicalName, _ = value.Properties["canonical_name"].(string)
+		value.Aliases = stringSlice(value.Properties["aliases"])
+		entities = append(entities, value)
+	}
+	relations := make([]entity.WorldRelation, 0, len(relationRows))
+	for _, row := range relationRows {
+		value := entity.WorldRelation{RelationID: row.RelationID, Scope: row.Scope, SourceID: row.FromID, TargetID: row.ToID, Predicate: row.Kind, Confidence: row.Confidence, ObservedAt: fromMillis(row.ObservedAt), ExpiresAt: fromMillis(row.ExpiresAt), Revision: row.Revision}
+		decodeJSON(row.Properties, &value.Properties)
+		decodeJSON(row.Evidence, &value.Evidence)
+		relations = append(relations, value)
+	}
+	facts := make([]entity.WorldFact, 0, len(factRows))
+	for _, row := range factRows {
+		value := entity.WorldFact{FactID: row.FactID, Scope: row.Scope, SubjectID: row.SubjectID, SubjectType: row.SubjectType, Predicate: row.Predicate, ValueType: row.ValueType, Confidence: row.Confidence, ObservedAt: fromMillis(row.ObservedAt), ExpiresAt: fromMillis(row.ExpiresAt), Revision: row.Revision}
+		decodeJSON(row.Value, &value.Value)
+		decodeJSON(row.Properties, &value.Properties)
+		decodeJSON(row.Evidence, &value.Evidence)
+		facts = append(facts, value)
+	}
+	return entities, relations, facts, nil
+}
+
+func (s *Store) RecordWorldConflict(ctx context.Context, conflict entity.WorldConflict) error {
+	candidates, _ := encodeJSON(conflict.CandidateIDs)
+	details, _ := encodeJSON(conflict.Details)
+	return s.data.DB(ctx).Create(&po.WorldConflict{ConflictID: conflict.ConflictID, OwnerID: conflict.OwnerID, TaskID: conflict.TaskID, ObservationID: conflict.ObservationID, Kind: conflict.Kind, Subject: conflict.Subject, CandidateIDs: candidates, Details: details, Status: conflict.Status, Resolution: conflict.Resolution, Revision: conflict.Revision, CreatedAt: millis(conflict.CreatedAt), UpdatedAt: millis(conflict.UpdatedAt)}).Error
+}
+
+func (s *Store) ListWorldConflicts(ctx context.Context, ownerID, status string, limit int) ([]entity.WorldConflict, error) {
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	db := s.data.DB(ctx).Where("owner_id = ?", ownerID)
+	if status != "" {
+		db = db.Where("status = ?", status)
+	}
+	var rows []po.WorldConflict
+	if err := db.Order("updated_at DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, log.WrapError(err, "ControlStore.ListWorldConflicts")
+	}
+	result := make([]entity.WorldConflict, 0, len(rows))
+	for _, row := range rows {
+		value := entity.WorldConflict{ConflictID: row.ConflictID, OwnerID: row.OwnerID, TaskID: row.TaskID, ObservationID: row.ObservationID, Kind: row.Kind, Subject: row.Subject, Status: row.Status, Resolution: row.Resolution, Revision: row.Revision, CreatedAt: fromMillis(row.CreatedAt), UpdatedAt: fromMillis(row.UpdatedAt)}
+		decodeJSON(row.CandidateIDs, &value.CandidateIDs)
+		decodeJSON(row.Details, &value.Details)
+		result = append(result, value)
+	}
+	return result, nil
+}
+
+func (s *Store) ResolveWorldConflict(ctx context.Context, ownerID, conflictID, resolution string, expectedRevision int64) (*entity.WorldConflict, error) {
+	now := time.Now().UTC()
+	updated := s.data.DB(ctx).Model(&po.WorldConflict{}).Where("owner_id = ? AND conflict_id = ? AND status = 'OPEN' AND revision = ?", ownerID, conflictID, expectedRevision).Updates(map[string]any{"status": "RESOLVED", "resolution": strings.TrimSpace(resolution), "revision": expectedRevision + 1, "updated_at": millis(now)})
+	if updated.Error != nil {
+		return nil, updated.Error
+	}
+	if updated.RowsAffected == 0 {
+		return nil, fmt.Errorf("world conflict not found or revision changed")
+	}
+	items, err := s.ListWorldConflicts(ctx, ownerID, "RESOLVED", 500)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		if items[i].ConflictID == conflictID {
+			return &items[i], nil
+		}
+	}
+	return nil, fmt.Errorf("world conflict not found")
+}
+
+func (s *Store) CreateWorldProvider(ctx context.Context, value entity.WorldProvider) error {
+	content, err := encodeJSON(value)
+	if err != nil {
+		return err
+	}
+	row := po.WorldProvider{ProviderID: value.ProviderID, OwnerID: value.OwnerID, Name: value.Name, Kind: value.Kind, Enabled: value.Enabled, Revision: value.Revision, Config: content, HealthStatus: value.HealthStatus, HealthMessage: value.HealthMessage, CreatedAt: millis(value.CreatedAt), UpdatedAt: millis(value.UpdatedAt)}
+	return log.WrapError(s.data.DB(ctx).Create(&row).Error, "ControlStore.CreateWorldProvider")
+}
+
+func (s *Store) FindWorldProvider(ctx context.Context, ownerID, providerID string) (*entity.WorldProvider, error) {
+	var row po.WorldProvider
+	result := s.data.DB(ctx).Where("owner_id = ? AND provider_id = ?", ownerID, providerID).Limit(1).Find(&row)
+	if result.Error != nil {
+		return nil, log.WrapError(result.Error, "ControlStore.FindWorldProvider")
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil
+	}
+	return worldProviderToEntity(row), nil
+}
+
+func (s *Store) ListWorldProviders(ctx context.Context, ownerID string) ([]entity.WorldProvider, error) {
+	var rows []po.WorldProvider
+	if err := s.data.DB(ctx).Where("owner_id = ?", ownerID).Order("name ASC, provider_id ASC").Find(&rows).Error; err != nil {
+		return nil, log.WrapError(err, "ControlStore.ListWorldProviders")
+	}
+	result := make([]entity.WorldProvider, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, *worldProviderToEntity(row))
+	}
+	return result, nil
+}
+
+func (s *Store) UpdateWorldProvider(ctx context.Context, value entity.WorldProvider, expectedRevision int64) error {
+	content, err := encodeJSON(value)
+	if err != nil {
+		return err
+	}
+	updated := s.data.DB(ctx).Model(&po.WorldProvider{}).
+		Where("owner_id = ? AND provider_id = ? AND revision = ?", value.OwnerID, value.ProviderID, expectedRevision).
+		Updates(map[string]any{"name": value.Name, "kind": value.Kind, "enabled": value.Enabled, "revision": value.Revision, "config": content, "health_status": value.HealthStatus, "health_message": value.HealthMessage, "last_checked_at": millisPtr(value.LastCheckedAt), "updated_at": millis(value.UpdatedAt)})
+	if updated.Error != nil {
+		return log.WrapError(updated.Error, "ControlStore.UpdateWorldProvider")
+	}
+	if updated.RowsAffected == 0 {
+		return fmt.Errorf("world provider not found or revision changed")
+	}
+	return nil
+}
+
+func (s *Store) DeleteWorldProvider(ctx context.Context, ownerID, providerID string) error {
+	deleted := s.data.DB(ctx).Where("owner_id = ? AND provider_id = ?", ownerID, providerID).Delete(&po.WorldProvider{})
+	if deleted.Error != nil {
+		return log.WrapError(deleted.Error, "ControlStore.DeleteWorldProvider")
+	}
+	if deleted.RowsAffected == 0 {
+		return fmt.Errorf("world provider not found")
+	}
+	return nil
+}
+
+func (s *Store) RecordWorldProviderHealth(ctx context.Context, ownerID, providerID, status, message string, checkedAt time.Time) error {
+	updated := s.data.DB(ctx).Model(&po.WorldProvider{}).Where("owner_id = ? AND provider_id = ?", ownerID, providerID).
+		Updates(map[string]any{"health_status": status, "health_message": message, "last_checked_at": millis(checkedAt), "updated_at": millis(checkedAt)})
+	if updated.Error != nil {
+		return log.WrapError(updated.Error, "ControlStore.RecordWorldProviderHealth")
+	}
+	if updated.RowsAffected == 0 {
+		return fmt.Errorf("world provider not found")
+	}
+	return nil
+}
+
+func worldProviderToEntity(row po.WorldProvider) *entity.WorldProvider {
+	value := &entity.WorldProvider{}
+	decodeJSON(row.Config, value)
+	value.ProviderID, value.OwnerID, value.Name, value.Kind = row.ProviderID, row.OwnerID, row.Name, row.Kind
+	value.Enabled, value.Revision = row.Enabled, row.Revision
+	value.HealthStatus, value.HealthMessage = row.HealthStatus, row.HealthMessage
+	value.CreatedAt, value.UpdatedAt = fromMillis(row.CreatedAt), fromMillis(row.UpdatedAt)
+	if row.LastCheckedAt > 0 {
+		checked := fromMillis(row.LastCheckedAt)
+		value.LastCheckedAt = &checked
+	}
+	return value
+}
+
+func millisPtr(value *time.Time) int64 {
+	if value == nil {
+		return 0
+	}
+	return millis(*value)
 }
 
 func (s *Store) ClaimOutbox(ctx context.Context, limit int) ([]irepository.OutboxMessage, error) {
@@ -1321,6 +1548,23 @@ func defaultString(value, fallback string) string {
 	return value
 }
 
+func stringSlice(value any) []string {
+	values, ok := value.([]any)
+	if !ok {
+		if typed, ok := value.([]string); ok {
+			return typed
+		}
+		return nil
+	}
+	result := make([]string, 0, len(values))
+	for _, item := range values {
+		if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+			result = append(result, text)
+		}
+	}
+	return result
+}
+
 func appendEvent(tx *gorm.DB, event entity.EventEnvelope) error {
 	if event.EventID == "" {
 		event.EventID = entity.NewID("event")
@@ -1377,7 +1621,7 @@ func appendEvent(tx *gorm.DB, event entity.EventEnvelope) error {
 	}).Error
 }
 
-func projectWorldState(tx *gorm.DB, observation entity.Observation) (int64, error) {
+func projectStructuredWorld(tx *gorm.DB, observation entity.Observation, ownerID, traceID string) (int64, error) {
 	now := time.Now().UTC()
 	var stored po.WorldState
 	result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("task_id = ?", observation.TaskID).Limit(1).Find(&stored)
@@ -1404,12 +1648,20 @@ func projectWorldState(tx *gorm.DB, observation entity.Observation) (int64, erro
 		"observed_at": observation.ObservedAt, "action_id": observation.ActionID, "step_id": observation.StepID,
 	}
 	device["last_seen_at"] = observation.ObservedAt
+	changes := make([]entity.WorldChange, 0)
 	if observation.WorldPatch != nil {
 		if observation.WorldPatch.BaseRevision != 0 && observation.WorldPatch.BaseRevision != stored.Revision {
 			return 0, fmt.Errorf("world revision conflict: got %d, current %d", observation.WorldPatch.BaseRevision, stored.Revision)
 		}
+		for _, mutation := range observation.WorldPatch.Mutations {
+			before, _ := worldValueAt(state, mutation.Path)
+			changes = append(changes, entity.WorldChange{Kind: worldMutationKind(mutation.Path), ObjectID: worldMutationObjectID(mutation.Path), Operation: mutation.Operation, Path: mutation.Path, Before: before})
+		}
 		if err := applyWorldPatch(state, *observation.WorldPatch); err != nil {
 			return 0, err
+		}
+		for index, mutation := range observation.WorldPatch.Mutations {
+			changes[index].After, _ = worldValueAt(state, mutation.Path)
 		}
 	}
 	encoded, err := encodeJSON(state)
@@ -1432,14 +1684,171 @@ func projectWorldState(tx *gorm.DB, observation entity.Observation) (int64, erro
 			return 0, fmt.Errorf("world revision conflict: expected %d", stored.Revision)
 		}
 	}
+	if observation.WorldPatch != nil {
+		if err := persistSemanticWorld(tx, ownerID, traceID, observation, state, revision); err != nil {
+			return 0, err
+		}
+	}
 	if err := appendEvent(tx, entity.EventEnvelope{
 		Type: entity.EventWorldPatched, Aggregate: "world", AggregateID: observation.TaskID,
 		TaskID: observation.TaskID, StepID: observation.StepID, ActionID: observation.ActionID,
-		Revision: revision, Payload: map[string]any{"world_revision": revision, "device_id": deviceID, "session_id": sessionID},
+		Revision: revision, Payload: map[string]any{"world_revision": revision, "device_id": deviceID, "session_id": sessionID, "ontology_pack": worldPatchPack(observation.WorldPatch), "ontology_version": worldPatchVersion(observation.WorldPatch), "changes": changes},
 	}); err != nil {
 		return 0, err
 	}
 	return revision, nil
+}
+
+func persistSemanticWorld(tx *gorm.DB, ownerID, traceID string, observation entity.Observation, state map[string]any, revision int64) error {
+	patch := observation.WorldPatch
+	if patch == nil {
+		return nil
+	}
+	scope := "task:" + observation.TaskID
+	observedAt := observation.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	expiresAt := observedAt.Add(time.Duration(patch.TTLSeconds) * time.Second)
+	evidence, err := encodeJSON(patch.Evidence)
+	if err != nil {
+		return err
+	}
+	touched := map[string]map[string]struct{}{"entities": {}, "relations": {}, "facts": {}}
+	for _, mutation := range patch.Mutations {
+		parts := jsonPointerParts(mutation.Path)
+		if len(parts) >= 2 {
+			if values, ok := touched[parts[0]]; ok {
+				values[parts[1]] = struct{}{}
+			}
+		}
+	}
+	for id := range touched["entities"] {
+		value, ok := semanticObject(state, "entities", id)
+		if !ok {
+			if err := tx.Where("owner_id = ? AND scope = ? AND entity_id = ?", ownerID, scope, id).Delete(&po.WorldEntity{}).Error; err != nil {
+				return err
+			}
+			continue
+		}
+		properties, err := encodeJSON(value)
+		if err != nil {
+			return err
+		}
+		row := po.WorldEntity{EntityID: id, OwnerID: ownerID, Scope: scope, Kind: mapString(value, "type"), Properties: properties, Evidence: evidence, Confidence: patch.Confidence, ObservedAt: millis(observedAt), ExpiresAt: millis(expiresAt), Revision: revision, TraceID: traceID, CreatedAt: millis(observedAt), UpdatedAt: millis(observedAt)}
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "entity_id"}}, DoUpdates: clause.AssignmentColumns([]string{"owner_id", "scope", "kind", "properties", "evidence", "confidence", "observed_at", "expires_at", "revision", "trace_id", "updated_at"})}).Create(&row).Error; err != nil {
+			return err
+		}
+	}
+	for id := range touched["relations"] {
+		value, ok := semanticObject(state, "relations", id)
+		if !ok {
+			if err := tx.Where("owner_id = ? AND scope = ? AND relation_id = ?", ownerID, scope, id).Delete(&po.WorldRelation{}).Error; err != nil {
+				return err
+			}
+			continue
+		}
+		properties, err := encodeJSON(value)
+		if err != nil {
+			return err
+		}
+		row := po.WorldRelation{RelationID: id, OwnerID: ownerID, Scope: scope, FromID: firstMapString(value, "source_id", "source"), ToID: firstMapString(value, "target_id", "target"), Kind: firstMapString(value, "predicate", "type"), Properties: properties, Evidence: evidence, Confidence: patch.Confidence, ObservedAt: millis(observedAt), ExpiresAt: millis(expiresAt), Revision: revision, TraceID: traceID, CreatedAt: millis(observedAt), UpdatedAt: millis(observedAt)}
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "relation_id"}}, DoUpdates: clause.AssignmentColumns([]string{"owner_id", "scope", "from_id", "to_id", "kind", "properties", "evidence", "confidence", "observed_at", "expires_at", "revision", "trace_id", "updated_at"})}).Create(&row).Error; err != nil {
+			return err
+		}
+	}
+	for id := range touched["facts"] {
+		value, ok := semanticObject(state, "facts", id)
+		if !ok {
+			if err := tx.Where("owner_id = ? AND scope = ? AND fact_id = ?", ownerID, scope, id).Delete(&po.WorldFact{}).Error; err != nil {
+				return err
+			}
+			continue
+		}
+		properties, err := encodeJSON(value)
+		if err != nil {
+			return err
+		}
+		encodedValue, err := encodeJSON(value["value"])
+		if err != nil {
+			return err
+		}
+		row := po.WorldFact{FactID: id, OwnerID: ownerID, TaskID: observation.TaskID, Scope: scope, SubjectID: mapString(value, "subject_id"), SubjectType: mapString(value, "subject_type"), Predicate: mapString(value, "predicate"), Value: encodedValue, ValueType: mapString(value, "value_type"), Properties: properties, Evidence: evidence, Confidence: patch.Confidence, ObservedAt: millis(observedAt), ExpiresAt: millis(expiresAt), Revision: revision, TraceID: traceID, CreatedAt: millis(observedAt), UpdatedAt: millis(observedAt)}
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "fact_id"}}, DoUpdates: clause.AssignmentColumns([]string{"owner_id", "task_id", "scope", "subject_id", "subject_type", "predicate", "value", "value_type", "properties", "evidence", "confidence", "observed_at", "expires_at", "revision", "trace_id", "updated_at"})}).Create(&row).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func semanticObject(state map[string]any, root, id string) (map[string]any, bool) {
+	values, ok := state[root].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	value, ok := values[id].(map[string]any)
+	return value, ok
+}
+func worldPatchPack(patch *entity.WorldPatch) string {
+	if patch == nil {
+		return ""
+	}
+	return patch.OntologyPack
+}
+func worldPatchVersion(patch *entity.WorldPatch) string {
+	if patch == nil {
+		return ""
+	}
+	return patch.OntologyVersion
+}
+func mapString(value map[string]any, key string) string {
+	result, _ := value[key].(string)
+	return strings.TrimSpace(result)
+}
+func firstMapString(value map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if result := mapString(value, key); result != "" {
+			return result
+		}
+	}
+	return ""
+}
+func worldMutationKind(path string) string {
+	parts := jsonPointerParts(path)
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return "world"
+}
+func worldMutationObjectID(path string) string {
+	parts := jsonPointerParts(path)
+	if len(parts) > 1 {
+		return parts[1]
+	}
+	return ""
+}
+func worldValueAt(state map[string]any, path string) (any, bool) {
+	parts := jsonPointerParts(path)
+	var value any = state
+	for _, part := range parts {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		value, ok = object[part]
+		if !ok {
+			return nil, false
+		}
+	}
+	body, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var cloned any
+	if json.Unmarshal(body, &cloned) != nil {
+		return nil, false
+	}
+	return cloned, true
 }
 
 func applyWorldPatch(state map[string]any, patch entity.WorldPatch) error {

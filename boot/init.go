@@ -73,6 +73,7 @@ import (
 	voiceavatarhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/voiceavatar"
 	weixinhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/weixin"
 	workspacehandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/workspace"
+	worldmodelhandler "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/worldmodel"
 
 	agentsvc "github.com/good-fish-man/agent-runtime-client/application/service/agent"
 	browsercredentialsvc "github.com/good-fish-man/agent-runtime-client/application/service/browsercredential"
@@ -208,6 +209,7 @@ func Init(ctx context.Context, cfgPath string) (*App, error) {
 		})
 		deploymentService = deploymentsvc.NewService(deploymentrepo.NewStore(store))
 		knowledgeService = knowledgesvc.NewService(knowledgerepo.NewStore(store))
+		controlHub.SetOntologyResolver(knowledgeService)
 		orchestrationService = orchestrationsvc.NewService(orchestrationrepo.NewStore(store))
 		delegationStore := delegationrepo.NewStore(store)
 		delegationOrchestrator = delegationsvc.NewOrchestrator(delegationStore, delegationsvc.Config{}, nil)
@@ -343,6 +345,7 @@ func buildPublicHandlers(ctx context.Context, cfg *config.Config, store *data.Da
 		pub.Learning = learninghandler.NewHandler(learningService).WithEvolution(evolutionOrchestrator)
 		pub.Deployment = deploymenthandler.NewHandler(deploymentService)
 		pub.Knowledge = knowledgehandler.NewHandler(knowledgeService)
+		pub.WorldModel = worldmodelhandler.NewHandler(controlHub.WorldModel())
 		pub.Orchestration = orchestrationhandler.NewHandler(orchestrationService)
 		pub.PluginRegistry = pluginregistryhandler.NewHandler(pluginregistrysvc.NewService(store, cfg.Plugins).WithRuntime(cfg.Runtime.HTTPAddr))
 		pub.BrowserCredential = browsercredentialhandler.NewHandler(browsercredentialsvc.NewService(store))

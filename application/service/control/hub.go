@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	worldmodel "github.com/good-fish-man/agent-runtime-client/application/service/worldmodel"
 	entity "github.com/good-fish-man/agent-runtime-client/domain/entity/control"
 	irepository "github.com/good-fish-man/agent-runtime-client/domain/irepository/control"
 	"github.com/good-fish-man/agent-runtime-client/pkg/dbctx"
@@ -85,6 +86,7 @@ type Hub struct {
 	sessions     map[string]*entity.TaskSession
 	active       map[string]map[string]string
 	store        irepository.Store
+	world        *worldmodel.Service
 	eventsMu     sync.RWMutex
 	subscribers  map[string]map[chan entity.EventEnvelope]struct{}
 	workerMu     sync.Mutex
@@ -107,7 +109,18 @@ func NewHub(stores ...irepository.Store) *Hub {
 	if len(stores) > 0 {
 		store = stores[0]
 	}
-	return &Hub{devices: make(map[string]*Device), pending: make(map[string]*pendingAction), completed: make(map[string]entity.Observation), sessions: make(map[string]*entity.TaskSession), active: make(map[string]map[string]string), store: store, subscribers: make(map[string]map[chan entity.EventEnvelope]struct{}), instanceID: controlPlaneInstanceID()}
+	hub := &Hub{devices: make(map[string]*Device), pending: make(map[string]*pendingAction), completed: make(map[string]entity.Observation), sessions: make(map[string]*entity.TaskSession), active: make(map[string]map[string]string), store: store, subscribers: make(map[string]map[chan entity.EventEnvelope]struct{}), instanceID: controlPlaneInstanceID()}
+	if store != nil {
+		hub.world = worldmodel.NewService(store)
+	}
+	return hub
+}
+
+func (h *Hub) SetOntologyResolver(resolver worldmodel.OntologyResolver) {
+	if h == nil || h.world == nil {
+		return
+	}
+	h.world.SetOntologyResolver(resolver)
 }
 
 func controlPlaneInstanceID() string {
@@ -856,6 +869,27 @@ func (h *Hub) WorldState(ctx context.Context, taskID string) (state *entity.Worl
 	return h.store.FindWorldState(ctx, taskID)
 }
 
+func (h *Hub) WorldSnapshot(ctx context.Context, ownerID, taskID string) (*worldmodel.Snapshot, error) {
+	if h == nil || h.world == nil {
+		return nil, nil
+	}
+	return h.world.Snapshot(ctx, ownerID, taskID)
+}
+
+func (h *Hub) OntologyContext(ctx context.Context, ownerID string) (*worldmodel.OntologyContext, error) {
+	if h == nil || h.world == nil {
+		return nil, nil
+	}
+	return h.world.OntologyContext(ctx, ownerID)
+}
+
+func (h *Hub) WorldModel() *worldmodel.Service {
+	if h == nil {
+		return nil
+	}
+	return h.world
+}
+
 func (h *Hub) Approvals(ctx context.Context, ownerID, status string, limit int) ([]entity.Approval, error) {
 	if h.store == nil {
 		return []entity.Approval{}, nil
@@ -982,7 +1016,7 @@ func (h *Hub) Observe(ctx context.Context, observation entity.Observation) (err 
 		"has_world_patch", observation.WorldPatch != nil,
 	)
 	if h.store != nil {
-		if err := h.store.SaveObservation(ctx, safeObservation); err != nil {
+		if err := h.commitObservation(ctx, safeObservation); err != nil {
 			worldSpan.End(err, "durable", true)
 			return err
 		}
@@ -1572,7 +1606,7 @@ func policyObservation(action entity.Action, status, message string) entity.Obse
 
 func (h *Hub) persistImmediateObservation(ctx context.Context, action entity.Action, observation entity.Observation) error {
 	if h.store != nil {
-		if err := h.store.SaveObservation(ctx, observation); err != nil {
+		if err := h.commitObservation(ctx, observation); err != nil {
 			return err
 		}
 	}
@@ -1603,7 +1637,7 @@ func (h *Hub) persistTerminalObservation(ctx context.Context, action entity.Acti
 	h.completed[action.IdempotencyKey] = observation
 	h.mu.Unlock()
 	if h.store != nil {
-		if err := h.store.SaveObservation(ctx, observation); err != nil {
+		if err := h.commitObservation(ctx, observation); err != nil {
 			log.Warnw(ctx, "persist terminal control observation failed", "task_id", action.TaskID, "action_id", action.ActionID, "error_chain", log.FormatError(err))
 			return
 		}
@@ -1623,6 +1657,16 @@ func (h *Hub) persistTerminalObservation(ctx context.Context, action entity.Acti
 		taskStatus = entity.StatusCancelled
 	}
 	_ = h.SetTaskStatus(ctx, action.TaskID, taskStatus)
+}
+
+func (h *Hub) commitObservation(ctx context.Context, observation entity.Observation) error {
+	if h.world != nil {
+		return h.world.CommitObservation(ctx, observation)
+	}
+	if h.store == nil {
+		return nil
+	}
+	return h.store.SaveObservation(ctx, observation)
 }
 
 func (h *Hub) CancelByConversation(ctx context.Context, userID, conversationID, reason string) error {

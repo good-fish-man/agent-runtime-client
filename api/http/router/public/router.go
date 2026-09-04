@@ -36,6 +36,7 @@ import (
 	voiceavatarh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/voiceavatar"
 	weixinh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/weixin"
 	workspaceh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/workspace"
+	worldmodelh "github.com/good-fish-man/agent-runtime-client/api/http/handler/public/worldmodel"
 )
 
 // Handlers aggregates the public resource handlers wired by the composition
@@ -68,6 +69,7 @@ type Handlers struct {
 	Job                *jobh.Handler
 	Workspace          *workspaceh.Handler
 	VoiceAvatar        *voiceavatarh.Handler
+	WorldModel         *worldmodelh.Handler
 }
 
 // Register mounts all available resource routes under the given group.
@@ -295,6 +297,19 @@ func Register(g *gin.RouterGroup, h *Handlers) {
 		r.POST("/ontology/migrations", h.Knowledge.CreateOntologyMigration)
 		r.POST("/ontology/migrations/:id/review", h.Knowledge.ReviewOntologyMigration)
 		r.POST("/ontology/migrations/:id/execute", h.Knowledge.ExecuteOntologyMigration)
+	}
+	if h.WorldModel != nil {
+		r := g.Group("/world")
+		r.POST("/query", h.WorldModel.Query)
+		r.GET("/conflicts", h.WorldModel.Conflicts)
+		r.POST("/conflicts/:id/resolve", h.WorldModel.ResolveConflict)
+		r.POST("/providers", h.WorldModel.CreateProvider)
+		r.GET("/providers", h.WorldModel.ListProviders)
+		r.PUT("/providers/:id", h.WorldModel.UpdateProvider)
+		r.DELETE("/providers/:id", h.WorldModel.DeleteProvider)
+		r.POST("/providers/:id/test", h.WorldModel.TestProvider)
+		r.POST("/providers/:id/query", h.WorldModel.QueryProvider)
+		r.GET("/ontology-context", h.WorldModel.OntologyContext)
 	}
 	if h.Orchestration != nil {
 		r := g.Group("/goals")

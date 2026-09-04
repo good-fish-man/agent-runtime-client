@@ -1,6 +1,6 @@
 package control
 
-import protocolv4 "github.com/good-fish-man/athena-protocol/protocol/v4"
+import protocolv4 "github.com/good-fish-man/athena-protocol/protocol/v5"
 
 const (
 	Protocol                  = protocolv4.Protocol
@@ -102,6 +102,16 @@ type ExpectedObservation = protocolv4.ExpectedObservation
 type WorldMutation = protocolv4.WorldMutation
 type WorldPatch = protocolv4.WorldPatch
 type WorldState = protocolv4.WorldState
+type WorldEntity = protocolv4.WorldEntity
+type WorldRelation = protocolv4.WorldRelation
+type WorldFact = protocolv4.WorldFact
+type WorldSnapshot = protocolv4.WorldSnapshot
+type WorldQuery = protocolv4.WorldQuery
+type WorldConflict = protocolv4.WorldConflict
+type WorldChange = protocolv4.WorldChange
+type WorldCondition = protocolv4.WorldCondition
+type WorldEffect = protocolv4.WorldEffect
+type CapabilityWorldContract = protocolv4.CapabilityWorldContract
 type Action = protocolv4.Action
 type Observation = protocolv4.Observation
 type Progress = protocolv4.Progress

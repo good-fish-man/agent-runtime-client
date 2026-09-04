@@ -34,6 +34,18 @@ func TestBuildExperienceLearnsOnlyFromVerifiedEffectSuccess(t *testing.T) {
 	}
 }
 
+func TestBuildExperienceUsesPersistedWorldChanges(t *testing.T) {
+	task := semanticExperienceTask(t, semantics.OutcomeSucceeded)
+	events := []controlentity.EventEnvelope{{EventID: "event-world", Type: controlentity.EventWorldPatched, Payload: map[string]any{"changes": []any{map[string]any{"kind": "facts", "object_id": "fact-1", "operation": "set", "path": "/facts/fact-1/value", "before": "old", "after": "new"}}}}}
+	stored, err := (&Service{redactor: NewRedactor()}).build(task, events, testLearningPreference(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Experience.WorldChanges) != 1 || stored.Experience.WorldChanges[0].After != "new" {
+		t.Fatalf("world changes = %#v", stored.Experience.WorldChanges)
+	}
+}
+
 func TestBuildExperienceDoesNotLearnFromPlainCompletedStatus(t *testing.T) {
 	now := time.Now().UTC()
 	task := &controlentity.TaskSession{

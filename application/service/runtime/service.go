@@ -118,6 +118,9 @@ func (s *RuntimeService) Run(ctx context.Context, req *dto.RunReq) (*entity.Comp
 	if err := s.injectKnowledge(ctx, in.Context, in.Prompt); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.Run.injectKnowledge")
 	}
+	if err := s.injectWorldSnapshot(ctx, in.Context, runtimeTaskID(in.RequestID, in.Context, in.TraceID)); err != nil {
+		return nil, log.WrapError(err, "RuntimeService.Run.injectWorldSnapshot")
+	}
 	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, in.KnowledgeBases, in.Options); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.Run.attachRunManifest")
 	}
@@ -160,6 +163,9 @@ func (s *RuntimeService) RunStream(ctx context.Context, req *dto.RunReq, emit St
 	if err := s.injectKnowledge(ctx, in.Context, in.Prompt); err != nil {
 		return log.WrapError(err, "RuntimeService.RunStream.injectKnowledge")
 	}
+	if err := s.injectWorldSnapshot(ctx, in.Context, runtimeTaskID(in.RequestID, in.Context, in.TraceID)); err != nil {
+		return log.WrapError(err, "RuntimeService.RunStream.injectWorldSnapshot")
+	}
 	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, in.KnowledgeBases, in.Options); err != nil {
 		return log.WrapError(err, "RuntimeService.RunStream.attachRunManifest")
 	}
@@ -200,6 +206,9 @@ func (s *RuntimeService) RunAgent(ctx context.Context, req *dto.AgentReq) (*enti
 	if err := s.injectKnowledge(ctx, in.Context, in.Task); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.RunAgent.injectKnowledge")
 	}
+	if err := s.injectWorldSnapshot(ctx, in.Context, runtimeTaskID(in.RequestID, in.Context, in.TraceID)); err != nil {
+		return nil, log.WrapError(err, "RuntimeService.RunAgent.injectWorldSnapshot")
+	}
 	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, nil, nil); err != nil {
 		return nil, log.WrapError(err, "RuntimeService.RunAgent.attachRunManifest")
 	}
@@ -235,6 +244,9 @@ func (s *RuntimeService) RunAgentStream(ctx context.Context, req *dto.AgentReq, 
 	}
 	if err := s.injectKnowledge(ctx, in.Context, in.Task); err != nil {
 		return log.WrapError(err, "RuntimeService.RunAgentStream.injectKnowledge")
+	}
+	if err := s.injectWorldSnapshot(ctx, in.Context, runtimeTaskID(in.RequestID, in.Context, in.TraceID)); err != nil {
+		return log.WrapError(err, "RuntimeService.RunAgentStream.injectWorldSnapshot")
 	}
 	if err := s.attachRunManifest(ctx, in.Context, in.RequestID, req.DeviceID, in.Models, in.Capabilities, nil, nil); err != nil {
 		return log.WrapError(err, "RuntimeService.RunAgentStream.attachRunManifest")
@@ -288,6 +300,9 @@ func (s *RuntimeService) runControlLoop(ctx context.Context, in *entity.RunInput
 			return context.Canceled
 		}
 		applyDeviceObservation(in.Context, originalPrompt, pending, observation)
+		if err := s.injectWorldSnapshot(ctx, in.Context, taskID); err != nil {
+			return log.WrapError(err, "RuntimeService.runControlLoop.refreshWorldSnapshot")
+		}
 		in.VisualInputs = visualInputsFromObservation(in.Models, observation)
 		in.Prompt = nextDeviceObservationPrompt(originalPrompt, pending, observation)
 	}
@@ -338,6 +353,9 @@ func (s *RuntimeService) runAgentControlLoop(ctx context.Context, in *entity.Age
 			return context.Canceled
 		}
 		applyDeviceObservation(in.Context, originalTask, pending, observation)
+		if err := s.injectWorldSnapshot(ctx, in.Context, taskID); err != nil {
+			return log.WrapError(err, "RuntimeService.runAgentControlLoop.refreshWorldSnapshot")
+		}
 		in.VisualInputs = visualInputsFromObservation(in.Models, observation)
 		in.Task = nextDeviceObservationPrompt(originalTask, pending, observation)
 	}
@@ -1007,7 +1025,7 @@ func (s *RuntimeService) hydrateControlContext(ctx context.Context, values map[s
 		values["desktop_bridge"] = true
 	}
 	if s.controlHub.HasAvailableCapability(userID,
-		"browser.task", "browser.open", "browser.navigate", "browser.observe", "browser.click", "browser.play", "browser.pause", "browser.type", "browser.hover", "browser.select", "browser.drag", "browser.press", "browser.scroll", "browser.back", "browser.forward", "browser.refresh", "browser.wait", "browser.download", "browser.screenshot", "browser.automation", "browser.close",
+		"browser.task", "browser.open", "browser.navigate", "browser.observe", "browser.click", "browser.play", "browser.pause", "browser.type", "browser.hover", "browser.select", "browser.drag", "browser.pointer", "browser.press", "browser.scroll", "browser.back", "browser.forward", "browser.refresh", "browser.wait", "browser.download", "browser.screenshot", "browser.automation", "browser.close",
 	) {
 		values["browser_controller"] = true
 	}
@@ -1831,11 +1849,68 @@ func (s *RuntimeService) injectKnowledge(ctx context.Context, values map[string]
 	values["knowledge_context"] = map[string]any{
 		"schema": knowledgev1.Schema, "snapshot_id": result.Snapshot.SnapshotID,
 		"checksum": result.Snapshot.Checksum, "as_of": result.Snapshot.AsOf,
+		"ontology_pack": result.Snapshot.OntologyPack, "ontology_version": result.Snapshot.OntologyVer,
 		"claims": claims, "contradictions": conflicts,
 	}
 	values["knowledge_snapshot_id"] = result.Snapshot.SnapshotID
 	values["knowledge_snapshot_checksum"] = result.Snapshot.Checksum
 	return nil
+}
+
+func (s *RuntimeService) injectWorldSnapshot(ctx context.Context, values map[string]any, taskID string) error {
+	if values == nil {
+		return nil
+	}
+	// These fields are issued by the trusted control plane and must never be
+	// accepted from a public request.
+	delete(values, "world_snapshot")
+	delete(values, "world_revision")
+	delete(values, "world_snapshot_checksum")
+	delete(values, "ontology_context")
+	delete(values, "ontology_pack")
+	delete(values, "ontology_version")
+	delete(values, "ontology_checksum")
+	if s == nil || s.controlHub == nil {
+		return nil
+	}
+	ownerID := authctx.UserID(ctx)
+	taskID = strings.TrimSpace(taskID)
+	if ownerID == "" || taskID == "" {
+		return nil
+	}
+	snapshot, err := s.controlHub.WorldSnapshot(ctx, ownerID, taskID)
+	if err != nil {
+		return err
+	}
+	if snapshot == nil {
+		return nil
+	}
+	values["world_snapshot"] = snapshot
+	values["world_revision"] = snapshot.Revision
+	values["world_snapshot_checksum"] = snapshot.Checksum
+	values["ontology_pack"] = snapshot.OntologyPack
+	values["ontology_version"] = snapshot.OntologyVersion
+	values["ontology_checksum"] = snapshot.OntologyChecksum
+	ontologyContext, err := s.controlHub.OntologyContext(ctx, ownerID)
+	if err != nil {
+		return err
+	}
+	if ontologyContext != nil {
+		values["ontology_context"] = ontologyContext
+	}
+	return nil
+}
+
+func runtimeTaskID(requestID string, values map[string]any, trace string) string {
+	if value := strings.TrimSpace(requestID); value != "" {
+		return value
+	}
+	for _, key := range []string{"world_task_id", "task_id"} {
+		if value := contextString(values, key); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(trace)
 }
 
 func boundedKnowledgeText(value string, maximum int) string {

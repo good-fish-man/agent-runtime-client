@@ -551,7 +551,9 @@ func (s *Service) CreateOntologyPack(ctx context.Context, ownerID string, reques
 	if strings.TrimSpace(request.Name) == "" || strings.TrimSpace(request.Domain) == "" {
 		return nil, apierror.ErrBadRequest.WithMessage("ontology name and domain are required")
 	}
-	pack := entity.OntologyPack{Schema: entity.Schema, PackID: ulid.New(), OwnerID: ownerID, Name: strings.TrimSpace(request.Name), Domain: strings.TrimSpace(request.Domain), Display: request.Display, CreatedAt: time.Now().UTC()}
+	// 0.0.0 is a non-executable planning baseline. The first real version must
+	// still pass candidate evaluation, human review, and an approved migration.
+	pack := entity.OntologyPack{Schema: entity.Schema, PackID: ulid.New(), OwnerID: ownerID, Name: strings.TrimSpace(request.Name), Domain: strings.TrimSpace(request.Domain), Current: "0.0.0", Display: request.Display, CreatedAt: time.Now().UTC()}
 	if err := s.store.CreateOntologyPack(ctx, pack); err != nil {
 		return nil, err
 	}
@@ -565,11 +567,62 @@ func (s *Service) ListOntologyPacks(ctx context.Context, ownerID string) ([]enti
 	return s.store.ListOntologyPacks(ctx, ownerID)
 }
 
+// ResolveActiveOntology returns the exact approved ontology version used by
+// world-state validation and snapshot creation.
+func (s *Service) ResolveActiveOntology(ctx context.Context, ownerID string) (*entity.OntologyPack, *entity.OntologyVersion, error) {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return nil, nil, fmt.Errorf("ontology owner is required")
+	}
+	if err := s.EnsureCoreOntology(ctx, ownerID); err != nil {
+		return nil, nil, log.WrapError(err, "KnowledgeService.ResolveActiveOntology.ensureCore")
+	}
+	packs, err := s.store.ListOntologyPacks(ctx, ownerID)
+	if err != nil {
+		return nil, nil, log.WrapError(err, "KnowledgeService.ResolveActiveOntology.list")
+	}
+	for index := range packs {
+		pack := &packs[index]
+		if pack.Domain != "core" || strings.TrimSpace(pack.Current) == "" {
+			continue
+		}
+		version, err := s.store.FindOntologyVersion(ctx, ownerID, pack.PackID, pack.Current)
+		if err != nil {
+			return nil, nil, log.WrapError(err, "KnowledgeService.ResolveActiveOntology.version")
+		}
+		if version == nil {
+			return nil, nil, fmt.Errorf("active ontology version %s@%s was not found", pack.PackID, pack.Current)
+		}
+		if version.Status != knowledgev1.OntologyApproved && version.Status != knowledgev1.OntologyApplied {
+			return nil, nil, fmt.Errorf("active ontology version %s@%s is not approved", pack.PackID, pack.Current)
+		}
+		if err := version.Validate(); err != nil {
+			return nil, nil, fmt.Errorf("active ontology version is invalid: %w", err)
+		}
+		return pack, version, nil
+	}
+	return nil, nil, fmt.Errorf("active core ontology was not found")
+}
+
 func (s *Service) ListOntologyCandidates(ctx context.Context, ownerID string, limit int) ([]entity.OntologyCandidate, error) {
 	return s.store.ListOntologyCandidates(ctx, ownerID, limit)
 }
 
 func (s *Service) CreateOntologyCandidate(ctx context.Context, ownerID string, request CreateOntologyCandidateRequest) (*entity.OntologyCandidate, error) {
+	return s.createOntologyCandidate(ctx, ownerID, ownerID, request)
+}
+
+// ProposeOntologyCandidate is the only ontology mutation surface intended for
+// Codex. It creates a review-required candidate and exposes no review,
+// migration, or production-apply authority.
+func (s *Service) ProposeOntologyCandidate(ctx context.Context, ownerID, proposerID string, request CreateOntologyCandidateRequest) (*entity.OntologyCandidate, error) {
+	if !automatedOntologyActor(proposerID) {
+		return nil, apierror.ErrBadRequest.WithMessage("automated ontology proposer must use a codex or model identity")
+	}
+	return s.createOntologyCandidate(ctx, ownerID, proposerID, request)
+}
+
+func (s *Service) createOntologyCandidate(ctx context.Context, ownerID, proposerID string, request CreateOntologyCandidateRequest) (*entity.OntologyCandidate, error) {
 	now := time.Now().UTC()
 	pack, err := s.store.FindOntologyPack(ctx, ownerID, request.PackID)
 	if err != nil {
@@ -603,7 +656,7 @@ func (s *Service) CreateOntologyCandidate(ctx context.Context, ownerID string, r
 	if !evaluation.Passed {
 		status = knowledgev1.OntologyRejected
 	}
-	candidate := entity.OntologyCandidate{Schema: entity.Schema, CandidateID: ulid.New(), OwnerID: ownerID, PackID: request.PackID, BaseVersion: request.BaseVersion, Proposed: version, EvidenceRefs: unique(request.EvidenceRefs), Evaluation: evaluation, CreatedBy: ownerID, Status: status, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	candidate := entity.OntologyCandidate{Schema: entity.Schema, CandidateID: ulid.New(), OwnerID: ownerID, PackID: request.PackID, BaseVersion: request.BaseVersion, Proposed: version, EvidenceRefs: unique(request.EvidenceRefs), Evaluation: evaluation, CreatedBy: proposerID, Status: status, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	if err := candidate.Validate(); err != nil {
 		return nil, apierror.ErrBadRequest.WithMessage(err.Error())
 	}
@@ -614,6 +667,9 @@ func (s *Service) CreateOntologyCandidate(ctx context.Context, ownerID string, r
 }
 
 func (s *Service) ReviewOntologyCandidate(ctx context.Context, ownerID, actorID, candidateID string, request ReviewOntologyCandidateRequest) (*entity.OntologyCandidate, error) {
+	if automatedOntologyActor(actorID) {
+		return nil, apierror.ErrForbidden.WithMessage("Codex may propose ontology candidates but cannot review them")
+	}
 	candidate, err := s.store.FindOntologyCandidate(ctx, ownerID, candidateID)
 	if err != nil {
 		return nil, err
@@ -678,6 +734,9 @@ func (s *Service) CreateOntologyMigration(ctx context.Context, ownerID, actorID 
 }
 
 func (s *Service) ReviewOntologyMigration(ctx context.Context, ownerID, actorID, migrationID string, request ReviewOntologyMigrationRequest) (*entity.OntologyMigration, error) {
+	if automatedOntologyActor(actorID) {
+		return nil, apierror.ErrForbidden.WithMessage("Codex cannot approve ontology migrations")
+	}
 	migration, err := s.store.FindOntologyMigration(ctx, ownerID, migrationID)
 	if err != nil {
 		return nil, log.WrapError(err, "KnowledgeService.ReviewOntologyMigration.find")
@@ -711,6 +770,11 @@ func (s *Service) ReviewOntologyMigration(ctx context.Context, ownerID, actorID,
 		return nil, log.WrapError(err, "KnowledgeService.ReviewOntologyMigration.persist")
 	}
 	return migration, nil
+}
+
+func automatedOntologyActor(actorID string) bool {
+	value := strings.ToLower(strings.TrimSpace(actorID))
+	return strings.HasPrefix(value, "codex:") || strings.HasPrefix(value, "model:") || strings.HasPrefix(value, "ai:")
 }
 
 func (s *Service) ExecuteOntologyMigration(ctx context.Context, ownerID, migrationID string) (*entity.OntologyMigration, error) {

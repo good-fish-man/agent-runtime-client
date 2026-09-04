@@ -238,6 +238,25 @@ func TestHydrateControlContextFromConnectedDevice(t *testing.T) {
 	}
 }
 
+func TestHydrateControlContextRecognizesPointerOnlyBrowserController(t *testing.T) {
+	hub := controlsvc.NewHub()
+	connection := &testConnection{}
+	if err := hub.Register(context.Background(), controlentity.DeviceMessage{
+		DeviceID: "device-pointer", Capabilities: []string{"browser.pointer"},
+	}, connection); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.ResolveDevice(context.Background(), "user-pointer", "", "browser.pointer"); err != nil {
+		t.Fatal(err)
+	}
+	service := &RuntimeService{controlHub: hub}
+	values := map[string]any{}
+	service.hydrateControlContext(authctx.WithUserID(context.Background(), "user-pointer"), values)
+	if values["browser_controller"] != true {
+		t.Fatalf("pointer capability did not enable browser controller: %#v", values)
+	}
+}
+
 type testConnection struct{}
 
 func (testConnection) Send(any) error { return nil }

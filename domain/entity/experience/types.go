@@ -49,6 +49,7 @@ type RetentionPolicy = experiencev1.RetentionPolicy
 type Provenance = experiencev1.Provenance
 type ActionRef = experiencev1.ActionRef
 type ObservationRef = experiencev1.ObservationRef
+type WorldChange = experiencev1.WorldChange
 type Verification = experiencev1.Verification
 type CostSummary = experiencev1.CostSummary
 type ModelUsage = experiencev1.ModelUsage

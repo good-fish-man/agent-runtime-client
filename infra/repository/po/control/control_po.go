@@ -23,38 +23,40 @@ type Device struct {
 func (*Device) TableName() string { return "os_device" }
 
 type CapabilityDefinition struct {
-	CapabilityID string `gorm:"column:capability_id;primaryKey;type:varchar(160)"`
-	OwnerID      string `gorm:"column:owner_id;type:varchar(128);not null;default:system;index"`
-	Version      string `gorm:"column:version;type:varchar(64);not null"`
-	Description  string `gorm:"column:description;type:text"`
-	Operations   string `gorm:"column:operations;type:text;not null"`
-	Modalities   string `gorm:"column:modalities;type:text;not null"`
-	InputSchema  string `gorm:"column:input_schema;type:text;not null"`
-	OutputSchema string `gorm:"column:output_schema;type:text;not null"`
-	Risk         string `gorm:"column:risk;type:varchar(16);not null"`
-	Enabled      bool   `gorm:"column:enabled;not null;default:true;index"`
-	Revision     int64  `gorm:"column:revision;type:bigint;not null;default:1"`
-	TraceID      string `gorm:"column:trace_id;type:varchar(128);index"`
-	CreatedAt    int64  `gorm:"column:created_at;type:bigint;not null"`
-	UpdatedAt    int64  `gorm:"column:updated_at;type:bigint;not null;index"`
+	CapabilityID  string `gorm:"column:capability_id;primaryKey;type:varchar(160)"`
+	OwnerID       string `gorm:"column:owner_id;type:varchar(128);not null;default:system;index"`
+	Version       string `gorm:"column:version;type:varchar(64);not null"`
+	Description   string `gorm:"column:description;type:text"`
+	Operations    string `gorm:"column:operations;type:text;not null"`
+	Modalities    string `gorm:"column:modalities;type:text;not null"`
+	InputSchema   string `gorm:"column:input_schema;type:text;not null"`
+	OutputSchema  string `gorm:"column:output_schema;type:text;not null"`
+	Risk          string `gorm:"column:risk;type:varchar(16);not null"`
+	WorldContract string `gorm:"column:world_contract;type:text;not null;default:'{}'"`
+	Enabled       bool   `gorm:"column:enabled;not null;default:true;index"`
+	Revision      int64  `gorm:"column:revision;type:bigint;not null;default:1"`
+	TraceID       string `gorm:"column:trace_id;type:varchar(128);index"`
+	CreatedAt     int64  `gorm:"column:created_at;type:bigint;not null"`
+	UpdatedAt     int64  `gorm:"column:updated_at;type:bigint;not null;index"`
 }
 
 func (*CapabilityDefinition) TableName() string { return "os_capability_definition" }
 
 type CapabilityInstance struct {
-	InstanceID   string `gorm:"column:instance_id;primaryKey;type:varchar(160)"`
-	CapabilityID string `gorm:"column:capability_id;type:varchar(160);not null;index"`
-	DeviceID     string `gorm:"column:device_id;type:varchar(128);not null;index"`
-	OwnerID      string `gorm:"column:owner_id;type:varchar(128);not null;index"`
-	Version      string `gorm:"column:version;type:varchar(64)"`
-	Operations   string `gorm:"column:operations;type:text;not null"`
-	Modalities   string `gorm:"column:modalities;type:text;not null"`
-	Metadata     string `gorm:"column:metadata;type:text;not null"`
-	Online       bool   `gorm:"column:online;not null;default:false;index"`
-	Revision     int64  `gorm:"column:revision;type:bigint;not null;default:1"`
-	TraceID      string `gorm:"column:trace_id;type:varchar(128);index"`
-	CreatedAt    int64  `gorm:"column:created_at;type:bigint;not null"`
-	UpdatedAt    int64  `gorm:"column:updated_at;type:bigint;not null;index"`
+	InstanceID    string `gorm:"column:instance_id;primaryKey;type:varchar(160)"`
+	CapabilityID  string `gorm:"column:capability_id;type:varchar(160);not null;index"`
+	DeviceID      string `gorm:"column:device_id;type:varchar(128);not null;index"`
+	OwnerID       string `gorm:"column:owner_id;type:varchar(128);not null;index"`
+	Version       string `gorm:"column:version;type:varchar(64)"`
+	Operations    string `gorm:"column:operations;type:text;not null"`
+	Modalities    string `gorm:"column:modalities;type:text;not null"`
+	Metadata      string `gorm:"column:metadata;type:text;not null"`
+	WorldContract string `gorm:"column:world_contract;type:text;not null;default:'{}'"`
+	Online        bool   `gorm:"column:online;not null;default:false;index"`
+	Revision      int64  `gorm:"column:revision;type:bigint;not null;default:1"`
+	TraceID       string `gorm:"column:trace_id;type:varchar(128);index"`
+	CreatedAt     int64  `gorm:"column:created_at;type:bigint;not null"`
+	UpdatedAt     int64  `gorm:"column:updated_at;type:bigint;not null;index"`
 }
 
 func (*CapabilityInstance) TableName() string { return "os_capability_instance" }
@@ -268,6 +270,7 @@ type WorldEntity struct {
 	Scope      string  `gorm:"column:scope;type:varchar(128);not null;index"`
 	Kind       string  `gorm:"column:kind;type:varchar(128);not null;index"`
 	Properties string  `gorm:"column:properties;type:text;not null"`
+	Evidence   string  `gorm:"column:evidence;type:text;not null;default:'[]'"`
 	Confidence float64 `gorm:"column:confidence;type:decimal(6,5);not null;default:1"`
 	ObservedAt int64   `gorm:"column:observed_at;type:bigint;not null;index"`
 	ExpiresAt  int64   `gorm:"column:expires_at;type:bigint;index"`
@@ -287,6 +290,7 @@ type WorldRelation struct {
 	ToID       string  `gorm:"column:to_id;type:varchar(128);not null;index"`
 	Kind       string  `gorm:"column:kind;type:varchar(128);not null;index"`
 	Properties string  `gorm:"column:properties;type:text;not null"`
+	Evidence   string  `gorm:"column:evidence;type:text;not null;default:'[]'"`
 	Confidence float64 `gorm:"column:confidence;type:decimal(6,5);not null;default:1"`
 	ObservedAt int64   `gorm:"column:observed_at;type:bigint;not null;index"`
 	ExpiresAt  int64   `gorm:"column:expires_at;type:bigint;index"`
@@ -297,6 +301,67 @@ type WorldRelation struct {
 }
 
 func (*WorldRelation) TableName() string { return "os_world_relation" }
+
+type WorldFact struct {
+	FactID      string  `gorm:"column:fact_id;primaryKey;type:varchar(128)"`
+	OwnerID     string  `gorm:"column:owner_id;type:varchar(128);not null;index"`
+	TaskID      string  `gorm:"column:task_id;type:varchar(128);not null;index"`
+	Scope       string  `gorm:"column:scope;type:varchar(128);not null;index"`
+	SubjectID   string  `gorm:"column:subject_id;type:varchar(128);not null;index"`
+	SubjectType string  `gorm:"column:subject_type;type:varchar(128);not null;index"`
+	Predicate   string  `gorm:"column:predicate;type:varchar(128);not null;index"`
+	Value       string  `gorm:"column:value;type:text;not null"`
+	ValueType   string  `gorm:"column:value_type;type:varchar(128);not null"`
+	Properties  string  `gorm:"column:properties;type:text;not null"`
+	Evidence    string  `gorm:"column:evidence;type:text;not null"`
+	Confidence  float64 `gorm:"column:confidence;type:decimal(6,5);not null"`
+	ObservedAt  int64   `gorm:"column:observed_at;type:bigint;not null;index"`
+	ExpiresAt   int64   `gorm:"column:expires_at;type:bigint;not null;index"`
+	Revision    int64   `gorm:"column:revision;type:bigint;not null"`
+	TraceID     string  `gorm:"column:trace_id;type:varchar(128);index"`
+	CreatedAt   int64   `gorm:"column:created_at;type:bigint;not null"`
+	UpdatedAt   int64   `gorm:"column:updated_at;type:bigint;not null;index"`
+}
+
+func (*WorldFact) TableName() string { return "os_world_fact" }
+
+type WorldConflict struct {
+	ConflictID    string `gorm:"column:conflict_id;primaryKey;type:varchar(128)"`
+	OwnerID       string `gorm:"column:owner_id;type:varchar(128);not null;index"`
+	TaskID        string `gorm:"column:task_id;type:varchar(128);not null;index"`
+	ObservationID string `gorm:"column:observation_id;type:varchar(128);not null;index"`
+	Kind          string `gorm:"column:kind;type:varchar(64);not null;index"`
+	Subject       string `gorm:"column:subject;type:varchar(256);not null"`
+	CandidateIDs  string `gorm:"column:candidate_ids;type:text;not null"`
+	Details       string `gorm:"column:details;type:text;not null"`
+	Status        string `gorm:"column:status;type:varchar(32);not null;index"`
+	Resolution    string `gorm:"column:resolution;type:text"`
+	Revision      int64  `gorm:"column:revision;type:bigint;not null"`
+	CreatedAt     int64  `gorm:"column:created_at;type:bigint;not null"`
+	UpdatedAt     int64  `gorm:"column:updated_at;type:bigint;not null;index"`
+}
+
+func (*WorldConflict) TableName() string { return "os_world_conflict" }
+
+// WorldProvider stores an owner-scoped external graph/world-model connection.
+// Config contains no credential material; it may only reference a server-side
+// environment variable resolved at request time.
+type WorldProvider struct {
+	ProviderID    string `gorm:"column:provider_id;primaryKey;type:varchar(128)"`
+	OwnerID       string `gorm:"column:owner_id;type:varchar(128);not null;index:idx_world_provider_owner_enabled,priority:1"`
+	Name          string `gorm:"column:name;type:varchar(160);not null"`
+	Kind          string `gorm:"column:kind;type:varchar(32);not null;index"`
+	Enabled       bool   `gorm:"column:enabled;not null;default:true;index:idx_world_provider_owner_enabled,priority:2"`
+	Revision      int64  `gorm:"column:revision;type:bigint;not null;default:1"`
+	Config        string `gorm:"column:config;type:text;not null"`
+	HealthStatus  string `gorm:"column:health_status;type:varchar(32);not null;default:'UNKNOWN';index"`
+	HealthMessage string `gorm:"column:health_message;type:text"`
+	LastCheckedAt int64  `gorm:"column:last_checked_at;type:bigint;not null;default:0"`
+	CreatedAt     int64  `gorm:"column:created_at;type:bigint;not null"`
+	UpdatedAt     int64  `gorm:"column:updated_at;type:bigint;not null;index"`
+}
+
+func (*WorldProvider) TableName() string { return "os_world_provider" }
 
 type WorldEvidenceRef struct {
 	EvidenceID string `gorm:"column:evidence_id;primaryKey;type:varchar(128)"`

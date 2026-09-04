@@ -16,6 +16,7 @@ type OntologyVersion = knowledgev1.OntologyVersion
 type OntologyDefinition = knowledgev1.OntologyDefinition
 type OntologyEntity = knowledgev1.OntologyEntity
 type OntologyRelation = knowledgev1.OntologyRelation
+type ValidationRule = knowledgev1.ValidationRule
 type OntologyCandidate = knowledgev1.OntologyCandidate
 type OntologyEvaluation = knowledgev1.OntologyEvaluation
 type OntologyEvaluationCheck = knowledgev1.OntologyEvaluationCheck
